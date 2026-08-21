@@ -1,0 +1,45 @@
+# Makes the ingress controller preserve the visitor's IP.
+#
+# Traffic reaches the pods as:
+#   visitor -> host nginx (back/docker/nginx/default.conf) -> minikube node -> ingress-nginx -> pod
+#
+# The host nginx sets `X-Forwarded-For: $proxy_add_x_forwarded_for`, so the
+# visitor's address is on the request when it arrives at the node. But
+# ingress-nginx defaults `use-forwarded-headers` to **false**, which makes it
+# ignore any incoming X-Forwarded-* and rewrite them with the address it sees —
+# the host nginx's private IP. The visitor's address is discarded at that hop.
+#
+# The pod then geolocates a private address, geoip-lite returns null, and every
+# shop_behavior_events row is written with countryCode NULL: analytics shows no
+# country at all.
+#
+# Setting this to "true" makes ingress-nginx pass the incoming header through and
+# append its own peer, so the pod receives e.g.
+#   X-Forwarded-For: 196.200.128.1, 192.168.49.1
+# and the app's `trust proxy` (see back/src/main.ts) walks past the private hops
+# to the first public address.
+#
+# Not a spoofing risk here: the host nginx *appends* with
+# $proxy_add_x_forwarded_for, so a forged prefix always sits to the LEFT of the
+# address nginx observed, and the app stops at the right-most public entry.
+#
+# Apply with:
+#   kubectl apply -f back/docker/k8s/ingress-nginx-configmap.yaml
+#   kubectl -n ingress-nginx rollout restart deployment ingress-nginx-controller
+#
+# NOTE: name/namespace must match the controller minikube installed. Verify with:
+#   kubectl get deploy -A | grep ingress
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+data:
+  use-forwarded-headers: "true"
+  # Trust the private ranges the host nginx and the cluster live in, so the
+  # controller resolves $remote_addr to the real client for its own logs too.
+  proxy-real-ip-cidr: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+  compute-full-forwarded-for: "true"
