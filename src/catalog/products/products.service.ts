@@ -1,0 +1,1033 @@
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { AssetUrlService } from '../../asset-url/asset-url.service';
+import { MediaService } from '../../media/media.service';
+import { TranslationsService } from '../../translations/translations.service';
+import { CommerceEventBus } from '../../commerce-events/commerce-event-bus.service';
+import { COMMERCE_EVENTS } from '../../commerce-events/commerce-events.constants';
+import { ProductSearchService } from './product-search.service';
+import { slugify } from '../../common/utils/slug.util';
+import { Prisma, Product, ProductVariant } from '../../../generated/prisma/client';
+import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
+import { ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
+import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
+
+const ET_SHOP_PRODUCT = 'shop_product';
+
+@Injectable()
+export class ProductsService {
+  private readonly logger = new Logger(ProductsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly assetUrls: AssetUrlService,
+    private readonly media: MediaService,
+    private readonly translations: TranslationsService,
+    private readonly eventBus: CommerceEventBus,
+    private readonly searchService: ProductSearchService,
+  ) {}
+
+  private syncProductMediaUsage(product: Product): void {
+    const keys: Array<{ key: string; field: string }> = [];
+    if (product.featuredImageKey) keys.push({ key: product.featuredImageKey, field: 'featuredImageKey' });
+    for (const k of product.galleryImageKeys ?? []) keys.push({ key: k, field: 'galleryImageKeys' });
+    for (const m of (product.media as unknown as ProductMediaItem[]) ?? []) {
+      keys.push({ key: m.key, field: 'media' });
+      if (m.posterKey) keys.push({ key: m.posterKey, field: 'media' });
+    }
+    for (const s of (product.storyGallery as unknown as ProductStoryItem[]) ?? []) keys.push({ key: s.key, field: 'storyGallery' });
+    for (const z of (product.zoomedImages as unknown as ProductZoomedImage[]) ?? []) keys.push({ key: z.key, field: 'zoomedImages' });
+    for (const p of (product.packageContents as unknown as ProductPackageContentItem[]) ?? []) keys.push({ key: p.key, field: 'packageContents' });
+    for (const v of (product.socialVideos as unknown as ProductSocialVideo[]) ?? []) keys.push({ key: v.key, field: 'socialVideos' });
+
+    this.media.syncEntityUsages('product', product.id, keys).catch((err) => this.logger.warn(`Media usage sync failed for product ${product.id}: ${(err as Error).message}`));
+  }
+
+  // ── URL resolution ────────────────────────────────────────────────────
+
+  /** Resolves featured + gallery + media + story/zoomed/package/social keys in one Redis batch. */
+  private async resolveProductUrls<T extends Record<string, unknown>>(product: T): Promise<T> {
+    const media = (product.media as ProductMediaItem[]) ?? [];
+    const story = (product.storyGallery as ProductStoryItem[]) ?? [];
+    const social = ((product.socialVideos as ProductSocialVideo[]) ?? []).filter((v) => v.isActive !== false);
+    const zoomed = (product.zoomedImages as ProductZoomedImage[]) ?? [];
+    const packageContents = (product.packageContents as ProductPackageContentItem[]) ?? [];
+    const variants = product.variants as Array<{ mediaKeys?: string[]; mediaUrls?: string[] }> | undefined;
+
+    const allKeys = new Set<string>();
+    if (product.featuredImageKey) allKeys.add(product.featuredImageKey as string);
+    for (const k of (product.galleryImageKeys as string[]) ?? []) allKeys.add(k);
+    for (const m of media) {
+      allKeys.add(m.key);
+      if (m.posterKey) allKeys.add(m.posterKey);
+    }
+    for (const s of story) allKeys.add(s.key);
+    for (const z of zoomed) allKeys.add(z.key);
+    for (const p of packageContents) allKeys.add(p.key);
+    for (const v of social) allKeys.add(v.key);
+    if (variants) for (const v of variants) for (const k of v.mediaKeys ?? []) allKeys.add(k);
+
+    const urlMap = await this.assetUrls.resolveBatch([...allKeys]);
+
+    if (variants) {
+      for (const v of variants) v.mediaUrls = (v.mediaKeys ?? []).map((k) => urlMap.get(k)).filter(Boolean) as string[];
+    }
+
+    return {
+      ...product,
+      featuredImageUrl: product.featuredImageKey ? (urlMap.get(product.featuredImageKey as string) ?? null) : null,
+      galleryImageUrls: ((product.galleryImageKeys as string[]) ?? []).map((k) => urlMap.get(k)).filter(Boolean),
+      media: media.map((m) => ({
+        ...m,
+        url: urlMap.get(m.key) ?? '',
+        posterUrl: m.posterKey ? (urlMap.get(m.posterKey) ?? null) : null,
+      })),
+      storyGallery: story.map((s) => ({ ...s, url: urlMap.get(s.key) ?? '' })),
+      socialVideos: social.map((v) => ({ ...v, url: urlMap.get(v.key) ?? '' })).filter((v) => v.url),
+      zoomedImages: zoomed.map((z) => ({ ...z, url: urlMap.get(z.key) ?? '' })),
+      packageContents: packageContents.map((p) => ({
+        ...p,
+        url: urlMap.get(p.key) ?? '',
+      })),
+    };
+  }
+
+  /** List resolution: featured image + up to 5 gallery images for card hover switchers. */
+  private async resolveProductsUrls<T extends Record<string, unknown>>(products: T[]): Promise<T[]> {
+    if (!products.length) return [];
+    const MAX_CARD_IMAGES = 5;
+
+    const cardKeys = products.map((p) => {
+      const keys: string[] = [];
+      if (p.featuredImageKey) keys.push(p.featuredImageKey as string);
+      for (const m of (p.media as ProductMediaItem[]) ?? []) {
+        if (keys.length >= MAX_CARD_IMAGES) break;
+        if (m.type !== 'image' || keys.includes(m.key)) continue;
+        keys.push(m.key);
+      }
+      return keys;
+    });
+
+    const urlMap = await this.assetUrls.resolveBatch([...new Set(cardKeys.flat())]);
+    return products.map((p, i) => ({
+      ...p,
+      featuredImageUrl: p.featuredImageKey ? (urlMap.get(p.featuredImageKey as string) ?? null) : null,
+      cardImageUrls: cardKeys[i].map((k) => urlMap.get(k)).filter(Boolean),
+    }));
+  }
+
+  /** For variants whose priceCents is null (computed pricing), substitute the product's basePriceCents. */
+  private resolveVariantPricesInPlace(product: { basePriceCents: number | null; variants?: Array<{ priceCents: number | null }> }): void {
+    for (const v of product.variants ?? []) {
+      if (v.priceCents === null || v.priceCents === undefined) v.priceCents = product.basePriceCents ?? 0;
+    }
+  }
+
+  // ── Admin list ──────────────────────────────────────────────────────────
+
+  async adminList(filter: ProductListFilter = {}) {
+    const { status, search, featured, isTestProduct, limit = 20, offset = 0 } = filter;
+    const where: Prisma.ProductWhereInput = {
+      deletedAt: null,
+      ...(status ? { status: status as Product['status'] } : {}),
+      ...(featured !== undefined ? { featured } : {}),
+      ...(isTestProduct !== undefined ? { isTestProduct } : {}),
+      ...(search
+        ? {
+            OR: [{ title: { contains: search, mode: 'insensitive' } }, { sku: { contains: search, mode: 'insensitive' } }],
+          }
+        : {}),
+    };
+
+    const [raw, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: { categories: true, tags: true },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    return { items: await this.resolveProductsUrls(raw), total };
+  }
+
+  async adminListDeleted(filter: { search?: string; limit?: number; offset?: number } = {}) {
+    const { search, limit = 20, offset = 0 } = filter;
+    const where: Prisma.ProductWhereInput = {
+      deletedAt: { not: null },
+      ...(search
+        ? {
+            OR: [{ title: { contains: search, mode: 'insensitive' } }, { sku: { contains: search, mode: 'insensitive' } }],
+          }
+        : {}),
+    };
+    const [raw, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: { categories: true },
+        orderBy: { deletedAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+    return { items: await this.resolveProductsUrls(raw), total };
+  }
+
+  // ── Public list ───────────────────────────────────────────────────────
+
+  async publicList(filter: ProductListFilter & { lang?: string } = {}) {
+    const { categoryId, tagId, search, featured, ids, lang, limit = 24, offset = 0 } = filter;
+
+    // Ranked by Postgres full-text search (falls back to a prefix match so
+    // short/partial terms still hit) rather than a plain ILIKE substring —
+    // ids come back best-match-first, capped to a pool the where-filters
+    // below then narrow by category/tag/featured.
+    const rankedIds = search ? await this.searchProductIds(search) : null;
+    if (rankedIds && rankedIds.length === 0) return { items: [], total: 0 };
+
+    const where: Prisma.ProductWhereInput = {
+      status: 'active',
+      deletedAt: null,
+      ...(categoryId ? { categories: { some: { id: categoryId } } } : {}),
+      ...(tagId ? { tags: { some: { id: tagId } } } : {}),
+      ...(featured !== undefined ? { featured } : {}),
+      ...(ids?.length ? { id: { in: ids } } : {}),
+      ...(rankedIds ? { id: { in: rankedIds } } : {}),
+    };
+
+    // Pagination must happen after re-sorting by search rank below, so with
+    // a search term the full (pool-bounded) match set is fetched unpaginated.
+    const [raw, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: {
+          categories: true,
+          tags: true,
+          variants: { include: { inventoryItem: true } },
+        },
+        orderBy: rankedIds ? undefined : [{ featured: 'desc' }, { createdAt: 'desc' }],
+        ...(rankedIds ? {} : { take: limit, skip: offset }),
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    if (rankedIds) {
+      const rank = new Map(rankedIds.map((id, i) => [id, i]));
+      raw.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+    }
+    const page = rankedIds ? raw.slice(offset, offset + limit) : raw;
+
+    const withUrls = await this.resolveProductsUrls(page);
+    for (const p of withUrls as unknown as Array<{
+      basePriceCents: number | null;
+      variants?: Array<{ priceCents: number | null }>;
+    }>) {
+      this.resolveVariantPricesInPlace(p);
+    }
+
+    for (const p of withUrls as unknown as Array<{
+      variants?: Array<{
+        isDefault: boolean;
+        inventoryItem: { available: number } | null;
+      }>;
+      outOfStock?: boolean;
+      defaultVariantOutOfStock?: boolean;
+    }>) {
+      const variants = p.variants ?? [];
+      p.outOfStock = variants.length > 0 && variants.every((v) => (v.inventoryItem?.available ?? 0) <= 0);
+      const def = variants.find((v) => v.isDefault);
+      p.defaultVariantOutOfStock = def ? (def.inventoryItem?.available ?? 0) <= 0 : false;
+    }
+
+    const items = await this.translations.maybeApply(withUrls, ET_SHOP_PRODUCT, lang);
+    // Admin-only reference links must never reach a public response.
+    for (const p of items as unknown as Array<Record<string, unknown>>) delete p.privateLinks;
+    return { items, total };
+  }
+
+  /** Best-match-first product ids for a search term: Postgres full-text match, or a prefix-match fallback for short/partial terms. Capped so downstream filtering stays cheap. */
+  private async searchProductIds(search: string, poolSize = 200): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+      SELECT id FROM shop_products
+      WHERE status = 'active' AND "deletedAt" IS NULL
+        AND (
+          to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(brand, '') || ' ' || coalesce("shortDescription", '')) @@ plainto_tsquery('simple', ${search})
+          OR title ILIKE ${'%' + search + '%'}
+          OR brand ILIKE ${'%' + search + '%'}
+          OR sku ILIKE ${'%' + search + '%'}
+        )
+      ORDER BY
+        ts_rank(to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(brand, '') || ' ' || coalesce("shortDescription", '')), plainto_tsquery('simple', ${search})) DESC,
+        (title ILIKE ${search + '%'}) DESC
+      LIMIT ${poolSize}
+    `;
+    return rows.map((r) => r.id);
+  }
+
+  // ── Find one ──────────────────────────────────────────────────────────
+
+  async findById(id: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id },
+      include: {
+        categories: true,
+        tags: true,
+        primaryCategory: true,
+        freeShippingUpgradeMethods: true,
+        variants: {
+          include: {
+            options: { include: { optionValue: true, attribute: true } },
+            inventoryItem: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+    const resolved = await this.resolveProductUrls(product);
+    this.resolveVariantPricesInPlace(resolved as never);
+    return resolved;
+  }
+
+  async findBySlug(slug: string, lang?: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { slug, status: 'active', deletedAt: null },
+      include: {
+        categories: true,
+        tags: true,
+        primaryCategory: true,
+        variants: {
+          include: {
+            options: { include: { optionValue: true, attribute: true } },
+            inventoryItem: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+    const resolved = await this.resolveProductUrls(product);
+    this.resolveVariantPricesInPlace(resolved as never);
+    const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
+    delete (translated as unknown as Record<string, unknown>).privateLinks;
+    return translated;
+  }
+
+  // ── Create ────────────────────────────────────────────────────────────
+
+  async create(dto: CreateProductDto): Promise<Product> {
+    const slug = dto.slug ? slugify(dto.slug) : slugify(dto.title);
+    const existing = await this.prisma.product.findUnique({ where: { slug } });
+    if (existing) throw new ConflictException(`Slug "${slug}" already in use`);
+
+    const media = dto.media ? normalizeMedia(dto.media) : [];
+    const legacy = dto.media ? deriveLegacyImageFields(media) : null;
+
+    const product = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({
+        data: {
+          slug,
+          title: dto.title,
+          sku: dto.sku ?? null,
+          shortDescription: dto.shortDescription ?? null,
+          description: dto.description ?? null,
+          brand: dto.brand ?? null,
+          specifications: (dto.specifications as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+          infoSections: dto.infoSections ? (normalizeInfoSections(dto.infoSections) as unknown as Prisma.InputJsonValue) : [],
+          trustBadges: dto.trustBadges ? (normalizeTrustBadges(dto.trustBadges) as unknown as Prisma.InputJsonValue) : [],
+          faqs: dto.faqs ? (normalizeFaqs(dto.faqs) as unknown as Prisma.InputJsonValue) : [],
+          zoomedImages: dto.zoomedImages ? (normalizeZoomedImages(dto.zoomedImages) as unknown as Prisma.InputJsonValue) : [],
+          packageContents: dto.packageContents ? (normalizePackageContents(dto.packageContents) as unknown as Prisma.InputJsonValue) : [],
+          storyGallery: dto.storyGallery ? (normalizeStoryGallery(dto.storyGallery) as unknown as Prisma.InputJsonValue) : [],
+          socialVideos: dto.socialVideos ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : [],
+          socialVideosTitle: dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null,
+          storyNarrativeTitle: dto.storyNarrativeTitle?.trim() ? dto.storyNarrativeTitle : null,
+          documents: dto.documents ? (normalizeDocuments(dto.documents) as unknown as Prisma.InputJsonValue) : [],
+          privateLinks: dto.privateLinks ? (normalizeLinks(dto.privateLinks) as unknown as Prisma.InputJsonValue) : [],
+          featuredImageKey: legacy ? legacy.featuredImageKey : (dto.featuredImageKey ?? null),
+          galleryImageKeys: legacy ? legacy.galleryImageKeys : (dto.galleryImageKeys ?? []),
+          media: media as unknown as Prisma.InputJsonValue,
+          seoTitle: dto.seoTitle ?? null,
+          seoDescription: dto.seoDescription ?? null,
+          canonicalUrl: dto.canonicalUrl ?? null,
+          featured: dto.featured ?? false,
+          isTestProduct: dto.isTestProduct ?? false,
+          freeShipping: dto.freeShipping ?? false,
+          freeShippingDaysMin: dto.freeShippingDaysMin ?? null,
+          freeShippingDaysMax: dto.freeShippingDaysMax ?? null,
+          status: 'draft',
+          primaryCategoryId: dto.primaryCategoryId ?? null,
+          basePriceCents: dto.basePriceCents,
+          upsellingEnabled: dto.upsellingEnabled ?? false,
+          upsellTiers: dto.upsellTiers ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : [],
+          categories: dto.categoryIds?.length ? { connect: dto.categoryIds.map((id) => ({ id })) } : undefined,
+          tags: dto.tagIds?.length ? { connect: dto.tagIds.map((id) => ({ id })) } : undefined,
+          freeShippingUpgradeMethods: dto.freeShippingUpgradeMethodIds?.length
+            ? { connect: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) }
+            : undefined,
+        },
+      });
+
+      // Default variant uses null priceCents — computed from product.basePriceCents + option adjustments.
+      const variant = await tx.productVariant.create({
+        data: {
+          productId: created.id,
+          sku: dto.sku ?? `${slug}-default`,
+          title: 'Default',
+          priceCents: null,
+          compareAtPriceCents: dto.compareAtPriceCents ?? null,
+          isDefault: true,
+          sortOrder: 0,
+        },
+      });
+
+      await tx.inventoryItem.create({
+        data: {
+          variantId: variant.id,
+          productId: created.id,
+          available: dto.initialStock ?? 0,
+        },
+      });
+
+      return created;
+    });
+
+    this.syncProductMediaUsage(product);
+    return product;
+  }
+
+  // ── Update ────────────────────────────────────────────────────────────
+
+  async update(id: string, dto: UpdateProductDto): Promise<Product> {
+    const existing = await this.prisma.product.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Product not found');
+
+    let slug = existing.slug;
+    if (dto.slug && dto.slug !== existing.slug) {
+      const conflict = await this.prisma.product.findUnique({
+        where: { slug: dto.slug },
+      });
+      if (conflict && conflict.id !== id) throw new ConflictException('Slug already in use');
+      slug = dto.slug;
+    }
+
+    const media = dto.media !== undefined ? normalizeMedia(dto.media) : (existing.media as unknown as ProductMediaItem[]);
+    const legacy = dto.media !== undefined ? deriveLegacyImageFields(media) : null;
+
+    await this.prisma.product.update({
+      where: { id },
+      data: {
+        slug,
+        title: dto.title ?? undefined,
+        sku: dto.sku !== undefined ? (dto.sku ?? null) : undefined,
+        shortDescription: dto.shortDescription !== undefined ? (dto.shortDescription ?? null) : undefined,
+        description: dto.description !== undefined ? (dto.description ?? null) : undefined,
+        brand: dto.brand !== undefined ? (dto.brand ?? null) : undefined,
+        specifications: dto.specifications !== undefined ? ((dto.specifications as Prisma.InputJsonValue) ?? Prisma.JsonNull) : undefined,
+        infoSections: dto.infoSections !== undefined ? (normalizeInfoSections(dto.infoSections) as unknown as Prisma.InputJsonValue) : undefined,
+        trustBadges: dto.trustBadges !== undefined ? (normalizeTrustBadges(dto.trustBadges) as unknown as Prisma.InputJsonValue) : undefined,
+        faqs: dto.faqs !== undefined ? (normalizeFaqs(dto.faqs) as unknown as Prisma.InputJsonValue) : undefined,
+        zoomedImages: dto.zoomedImages !== undefined ? (normalizeZoomedImages(dto.zoomedImages) as unknown as Prisma.InputJsonValue) : undefined,
+        packageContents: dto.packageContents !== undefined ? (normalizePackageContents(dto.packageContents) as unknown as Prisma.InputJsonValue) : undefined,
+        storyGallery: dto.storyGallery !== undefined ? (normalizeStoryGallery(dto.storyGallery) as unknown as Prisma.InputJsonValue) : undefined,
+        socialVideos: dto.socialVideos !== undefined ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : undefined,
+        socialVideosTitle: dto.socialVideosTitle !== undefined ? (dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null) : undefined,
+        storyNarrativeTitle: dto.storyNarrativeTitle !== undefined ? (dto.storyNarrativeTitle?.trim() ? dto.storyNarrativeTitle : null) : undefined,
+        documents: dto.documents !== undefined ? (normalizeDocuments(dto.documents) as unknown as Prisma.InputJsonValue) : undefined,
+        privateLinks: dto.privateLinks !== undefined ? (normalizeLinks(dto.privateLinks) as unknown as Prisma.InputJsonValue) : undefined,
+        featuredImageKey: legacy ? legacy.featuredImageKey : dto.featuredImageKey !== undefined ? (dto.featuredImageKey ?? null) : undefined,
+        galleryImageKeys: legacy ? legacy.galleryImageKeys : dto.galleryImageKeys,
+        media: dto.media !== undefined ? (media as unknown as Prisma.InputJsonValue) : undefined,
+        seoTitle: dto.seoTitle !== undefined ? (dto.seoTitle ?? null) : undefined,
+        seoDescription: dto.seoDescription !== undefined ? (dto.seoDescription ?? null) : undefined,
+        canonicalUrl: dto.canonicalUrl !== undefined ? (dto.canonicalUrl ?? null) : undefined,
+        featured: dto.featured,
+        isTestProduct: dto.isTestProduct,
+        freeShipping: dto.freeShipping,
+        freeShippingDaysMin: dto.freeShippingDaysMin !== undefined ? (dto.freeShippingDaysMin ?? null) : undefined,
+        freeShippingDaysMax: dto.freeShippingDaysMax !== undefined ? (dto.freeShippingDaysMax ?? null) : undefined,
+        status: dto.status,
+        primaryCategoryId: dto.primaryCategoryId !== undefined ? (dto.primaryCategoryId ?? null) : undefined,
+        basePriceCents: dto.basePriceCents !== undefined ? (dto.basePriceCents ?? null) : undefined,
+        upsellingEnabled: dto.upsellingEnabled,
+        upsellTiers: dto.upsellTiers !== undefined ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : undefined,
+        categories: dto.categoryIds !== undefined ? { set: dto.categoryIds.map((cid) => ({ id: cid })) } : undefined,
+        tags: dto.tagIds !== undefined ? { set: dto.tagIds.map((tid) => ({ id: tid })) } : undefined,
+        freeShippingUpgradeMethods:
+          dto.freeShippingUpgradeMethodIds !== undefined ? { set: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) } : undefined,
+      },
+    });
+
+    // When basePriceCents is explicitly set, clear per-variant price overrides so all
+    // variants fall through to the new base price (computed pricing model).
+    if (dto.basePriceCents !== undefined && dto.basePriceCents !== null) {
+      await this.prisma.productVariant.updateMany({
+        where: { productId: id },
+        data: { priceCents: null },
+      });
+    }
+    if (dto.compareAtPriceCents !== undefined) {
+      await this.prisma.productVariant.updateMany({
+        where: { productId: id, isDefault: true },
+        data: { compareAtPriceCents: dto.compareAtPriceCents ?? null },
+      });
+    }
+
+    const fresh = await this.prisma.product.findUniqueOrThrow({
+      where: { id },
+    });
+    this.syncProductMediaUsage(fresh);
+    this.eventBus.emit(COMMERCE_EVENTS.PRODUCT_UPDATED, { productId: id }, { entityId: id, source: 'ProductsService.update' });
+    return this.findById(id);
+  }
+
+  // ── Publish / archive / delete ──────────────────────────────────────────
+
+  async publish(id: string): Promise<Product> {
+    const existing = await this.prisma.product.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Product not found');
+    await this.prisma.product.update({
+      where: { id },
+      data: {
+        status: 'active',
+        publishedAt: existing.publishedAt ?? new Date(),
+      },
+    });
+    this.eventBus.emit(COMMERCE_EVENTS.PRODUCT_UPDATED, { productId: id }, { entityId: id, source: 'ProductsService.publish' });
+    return this.findById(id);
+  }
+
+  async archive(id: string): Promise<Product> {
+    await this.assertExists(id);
+    await this.prisma.product.update({
+      where: { id },
+      data: { status: 'archived' },
+    });
+    this.eventBus.emit(COMMERCE_EVENTS.PRODUCT_UPDATED, { productId: id }, { entityId: id, source: 'ProductsService.archive' });
+    return this.findById(id);
+  }
+
+  async softDelete(id: string): Promise<void> {
+    await this.assertExists(id);
+    await this.prisma.product.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    this.searchService.removeFromIndex(id).catch(() => {});
+  }
+
+  async hardDelete(id: string): Promise<void> {
+    await this.assertExists(id);
+    await this.prisma.product.delete({ where: { id } });
+    this.searchService.removeFromIndex(id).catch(() => {});
+  }
+
+  async restore(id: string) {
+    await this.assertExists(id);
+    await this.prisma.product.update({
+      where: { id },
+      data: { deletedAt: null },
+    });
+    return this.findById(id);
+  }
+
+  private async assertExists(id: string): Promise<void> {
+    const existing = await this.prisma.product.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Product not found');
+  }
+
+  // ── Variant helpers ───────────────────────────────────────────────────
+
+  private async resolveOptionValues(optionValueIds: string[]) {
+    if (!optionValueIds.length) return [];
+    const rows = await this.prisma.variationOptionValue.findMany({
+      where: { id: { in: optionValueIds } },
+      include: { attribute: true },
+    });
+    if (rows.length !== optionValueIds.length) throw new BadRequestException('One or more option value IDs are invalid');
+    const attrIds = rows.map((r) => r.attributeId);
+    if (new Set(attrIds).size !== attrIds.length) throw new BadRequestException('Duplicate attributes in variant options');
+    return rows.sort((a, b) => (a.attribute.sortOrder ?? 0) - (b.attribute.sortOrder ?? 0));
+  }
+
+  private async checkCombinationUniqueness(productId: string, hash: string | null, excludeVariantId?: string): Promise<void> {
+    if (!hash) return;
+    const existing = await this.prisma.productVariant.findFirst({
+      where: { productId, combinationHash: hash },
+    });
+    if (existing && existing.id !== excludeVariantId) throw new ConflictException('A variant with this combination of options already exists');
+  }
+
+  private async generateUniqueVariantSku(base: string, excludeId?: string): Promise<string> {
+    let sku = base.slice(0, 200);
+    let n = 2;
+    for (;;) {
+      const hit = await this.prisma.productVariant.findUnique({
+        where: { sku },
+      });
+      if (!hit || hit.id === excludeId) return sku;
+      sku = `${base.slice(0, 196)}-${n++}`;
+    }
+  }
+
+  private async generateUniqueVariantSlug(productId: string, base: string | null, excludeId?: string): Promise<string | null> {
+    if (!base) return null;
+    let slug = base.slice(0, 300);
+    let n = 2;
+    for (;;) {
+      const hit = await this.prisma.productVariant.findFirst({
+        where: { productId, variantSlug: slug },
+      });
+      if (!hit || hit.id === excludeId) return slug;
+      slug = `${base.slice(0, 296)}-${n++}`;
+    }
+  }
+
+  private async saveVariantOptions(variantId: string, productId: string, optionValues: Array<{ id: string; attributeId: string; value: string }>): Promise<void> {
+    for (const ov of optionValues) {
+      await this.prisma.variantOption.create({
+        data: {
+          variantId,
+          attributeId: ov.attributeId,
+          optionValueId: ov.id,
+          value: ov.value,
+        },
+      });
+      await this.prisma.productVariantAttribute.upsert({
+        where: {
+          productId_attributeId: { productId, attributeId: ov.attributeId },
+        },
+        create: { productId, attributeId: ov.attributeId, sortOrder: 0 },
+        update: {},
+      });
+    }
+  }
+
+  // ── Variant CRUD ──────────────────────────────────────────────────────
+
+  async addVariant(productId: string, dto: CreateVariantDto): Promise<ProductVariant> {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+
+    if (dto.sku) {
+      const conflict = await this.prisma.productVariant.findUnique({
+        where: { sku: dto.sku },
+      });
+      if (conflict) throw new ConflictException(`SKU "${dto.sku}" already in use`);
+    }
+
+    const optionValues = await this.resolveOptionValues((dto.options ?? []).map((o) => o.optionValueId));
+    const combinationHash = buildCombinationHash(optionValues.map((v) => v.id));
+    await this.checkCombinationUniqueness(productId, combinationHash);
+
+    const sku = dto.sku ?? (await this.generateUniqueVariantSku(buildVariantSkuBase(product, optionValues)));
+    const title = dto.title ?? (optionValues.length ? buildVariantTitle(optionValues) : sku);
+    const variantSlug = await this.generateUniqueVariantSlug(productId, buildVariantSlug(optionValues));
+
+    const variantId = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.productVariant.create({
+        data: {
+          productId,
+          sku,
+          title,
+          combinationHash,
+          variantSlug,
+          priceCents: dto.priceCents ?? null,
+          compareAtPriceCents: dto.compareAtPriceCents ?? null,
+          barcode: dto.barcode ?? null,
+          weightGrams: dto.weightGrams ?? null,
+          mediaKeys: dto.mediaKeys ?? [],
+          featuredMediaKey: dto.featuredMediaKey ?? null,
+          isDefault: dto.isDefault ?? false,
+          sortOrder: dto.sortOrder ?? 0,
+        },
+      });
+      for (const ov of optionValues) {
+        await tx.variantOption.create({
+          data: {
+            variantId: saved.id,
+            attributeId: ov.attributeId,
+            optionValueId: ov.id,
+            value: ov.value,
+          },
+        });
+        await tx.productVariantAttribute.upsert({
+          where: {
+            productId_attributeId: { productId, attributeId: ov.attributeId },
+          },
+          create: { productId, attributeId: ov.attributeId, sortOrder: 0 },
+          update: {},
+        });
+      }
+      await tx.inventoryItem.create({
+        data: {
+          variantId: saved.id,
+          productId,
+          available: dto.initialStock ?? 0,
+        },
+      });
+      return saved.id;
+    });
+
+    return this.prisma.productVariant.findUniqueOrThrow({
+      where: { id: variantId },
+      include: { options: { include: { optionValue: true, attribute: true } } },
+    });
+  }
+
+  async updateVariant(variantId: string, dto: UpdateVariantDto): Promise<ProductVariant> {
+    const variant = await this.prisma.productVariant.findUnique({
+      where: { id: variantId },
+    });
+    if (!variant) throw new NotFoundException('Variant not found');
+
+    if (dto.sku && dto.sku !== variant.sku) {
+      const conflict = await this.prisma.productVariant.findUnique({
+        where: { sku: dto.sku },
+      });
+      if (conflict && conflict.id !== variantId) throw new ConflictException('SKU already in use');
+    }
+
+    const optionValues = dto.options !== undefined ? await this.resolveOptionValues(dto.options?.map((o) => o.optionValueId) ?? []) : null;
+    if (optionValues !== null) {
+      const newHash = buildCombinationHash(optionValues.map((v) => v.id));
+      await this.checkCombinationUniqueness(variant.productId, newHash, variantId);
+    }
+
+    const combinationHash = optionValues !== null ? buildCombinationHash(optionValues.map((v) => v.id)) : variant.combinationHash;
+    const variantSlug = optionValues !== null ? await this.generateUniqueVariantSlug(variant.productId, buildVariantSlug(optionValues), variantId) : variant.variantSlug;
+    const title = dto.title ?? (optionValues !== null && optionValues.length ? buildVariantTitle(optionValues) : variant.title);
+    const requestedSku = dto.sku ?? variant.sku;
+    const finalSku = requestedSku !== variant.sku ? await this.generateUniqueVariantSku(requestedSku, variantId) : requestedSku;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.productVariant.update({
+        where: { id: variantId },
+        data: {
+          sku: finalSku,
+          title,
+          combinationHash,
+          variantSlug,
+          priceCents: dto.priceCents !== undefined ? (dto.priceCents ?? null) : undefined,
+          compareAtPriceCents: dto.compareAtPriceCents !== undefined ? (dto.compareAtPriceCents ?? null) : undefined,
+          barcode: dto.barcode !== undefined ? (dto.barcode ?? null) : undefined,
+          weightGrams: dto.weightGrams !== undefined ? (dto.weightGrams ?? null) : undefined,
+          mediaKeys: dto.mediaKeys,
+          featuredMediaKey: dto.featuredMediaKey !== undefined ? (dto.featuredMediaKey ?? null) : undefined,
+          isDefault: dto.isDefault,
+          sortOrder: dto.sortOrder,
+        },
+      });
+
+      if (optionValues !== null) {
+        await tx.variantOption.deleteMany({ where: { variantId } });
+        for (const ov of optionValues) {
+          await tx.variantOption.create({
+            data: {
+              variantId,
+              attributeId: ov.attributeId,
+              optionValueId: ov.id,
+              value: ov.value,
+            },
+          });
+          await tx.productVariantAttribute.upsert({
+            where: {
+              productId_attributeId: {
+                productId: variant.productId,
+                attributeId: ov.attributeId,
+              },
+            },
+            create: {
+              productId: variant.productId,
+              attributeId: ov.attributeId,
+              sortOrder: 0,
+            },
+            update: {},
+          });
+        }
+      }
+    });
+
+    return this.prisma.productVariant.findUniqueOrThrow({
+      where: { id: variantId },
+      include: { options: { include: { optionValue: true, attribute: true } } },
+    });
+  }
+
+  async deleteVariant(variantId: string): Promise<void> {
+    const variant = await this.prisma.productVariant.findUnique({
+      where: { id: variantId },
+    });
+    if (!variant) throw new NotFoundException('Variant not found');
+    await this.prisma.productVariant.delete({ where: { id: variantId } });
+  }
+
+  /** Auto-generates every variant combination from the product's linked attributes (Cartesian product of active option values). */
+  async generateVariantCombinations(productId: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+
+    const productAttrs = await this.prisma.productVariantAttribute.findMany({
+      where: { productId },
+      include: { attribute: { include: { optionValues: true } } },
+      orderBy: { sortOrder: 'asc' },
+    });
+    if (!productAttrs.length) throw new BadRequestException('Product has no linked variation attributes');
+
+    const axes = productAttrs.map((pa) => ({
+      defaultOptionValueId: pa.defaultOptionValueId,
+      optionValues: pa.attribute.optionValues.filter((ov) => ov.isActive).sort((a, b) => a.sortOrder - b.sortOrder),
+    }));
+    if (axes.some((ax) => ax.optionValues.length === 0)) throw new BadRequestException('One or more attributes have no active option values');
+
+    const defaultIds = axes.map((ax) => ax.defaultOptionValueId).filter(Boolean) as string[];
+    const defaultHash = defaultIds.length === axes.length ? buildCombinationHash(defaultIds) : null;
+
+    type OV = (typeof axes)[number]['optionValues'][number];
+    const allCombos: OV[][] = axes.reduce<OV[][]>((acc, ax) => acc.flatMap((a) => ax.optionValues.map((ov) => [...a, ov])), [[]]);
+
+    let created = 0;
+    let skipped = 0;
+    let sortOrder = await this.prisma.productVariant.count({
+      where: { productId },
+    });
+    const combinations: Array<{
+      title: string;
+      sku: string;
+      isNew: boolean;
+      combinationHash: string;
+    }> = [];
+
+    const existingVariant = await this.prisma.productVariant.findFirst({
+      where: { productId },
+      orderBy: { createdAt: 'asc' },
+    });
+    const generatedVariantPrice: number | null = product.basePriceCents !== null ? null : (existingVariant?.priceCents ?? 0);
+
+    for (const optionValues of allCombos) {
+      const hash = buildCombinationHash(optionValues.map((v) => v.id));
+      if (!hash) continue;
+      const isDefault = defaultHash !== null && hash === defaultHash;
+
+      const existing = await this.prisma.productVariant.findFirst({
+        where: { productId, combinationHash: hash },
+      });
+      if (existing) {
+        if (defaultHash !== null && existing.isDefault !== isDefault) {
+          await this.prisma.productVariant.update({
+            where: { id: existing.id },
+            data: { isDefault },
+          });
+        }
+        skipped++;
+        combinations.push({
+          title: existing.title,
+          sku: existing.sku,
+          isNew: false,
+          combinationHash: hash,
+        });
+        continue;
+      }
+
+      const sku = await this.generateUniqueVariantSku(buildVariantSkuBase(product, optionValues));
+      const title = buildVariantTitle(optionValues);
+      const variantSlug = await this.generateUniqueVariantSlug(productId, buildVariantSlug(optionValues));
+
+      await this.prisma.$transaction(async (tx) => {
+        const saved = await tx.productVariant.create({
+          data: {
+            productId,
+            sku,
+            title,
+            combinationHash: hash,
+            variantSlug,
+            priceCents: generatedVariantPrice,
+            isDefault,
+            sortOrder: sortOrder++,
+          },
+        });
+        for (const ov of optionValues) {
+          await tx.variantOption.create({
+            data: {
+              variantId: saved.id,
+              attributeId: ov.attributeId,
+              optionValueId: ov.id,
+              value: ov.value,
+            },
+          });
+          await tx.productVariantAttribute.upsert({
+            where: {
+              productId_attributeId: { productId, attributeId: ov.attributeId },
+            },
+            create: { productId, attributeId: ov.attributeId, sortOrder: 0 },
+            update: {},
+          });
+        }
+        await tx.inventoryItem.create({
+          data: { variantId: saved.id, productId, available: 0 },
+        });
+      });
+      created++;
+      combinations.push({ title, sku, isNew: true, combinationHash: hash });
+    }
+
+    if (defaultHash !== null) {
+      await this.prisma.productVariant.updateMany({
+        where: { productId, combinationHash: defaultHash },
+        data: { isDefault: true },
+      });
+      await this.prisma.productVariant.updateMany({
+        where: { productId, combinationHash: { not: defaultHash } },
+        data: { isDefault: false },
+      });
+    }
+
+    // Delete stale variants — those whose hash is no longer in the current valid set.
+    // The original default variant (null combinationHash) is preserved.
+    const validHashes = new Set(allCombos.map((ovs) => buildCombinationHash(ovs.map((v) => v.id))).filter(Boolean) as string[]);
+    const allVariants = await this.prisma.productVariant.findMany({
+      where: { productId },
+      select: { id: true, combinationHash: true },
+    });
+    const staleIds = allVariants.filter((v) => v.combinationHash && !validHashes.has(v.combinationHash)).map((v) => v.id);
+
+    let deleted = 0;
+    if (staleIds.length > 0) {
+      await this.prisma.productVariant.deleteMany({
+        where: { id: { in: staleIds } },
+      });
+      deleted = staleIds.length;
+    }
+
+    return { created, skipped, deleted, combinations };
+  }
+
+  // ── Product-level attribute scoping ────────────────────────────────────
+
+  async getProductAttributes(productId: string) {
+    await this.assertExists(productId);
+    return this.prisma.productVariantAttribute.findMany({
+      where: { productId },
+      include: { attribute: { include: { optionValues: true } } },
+      orderBy: { sortOrder: 'asc' },
+    });
+  }
+
+  async addProductAttribute(productId: string, attributeId: string, defaultOptionValueId?: string | null, sortOrder = 0) {
+    await this.assertExists(productId);
+    const existing = await this.prisma.productVariantAttribute.findUnique({
+      where: { productId_attributeId: { productId, attributeId } },
+    });
+    if (existing) throw new ConflictException('Attribute already assigned to this product');
+    return this.prisma.productVariantAttribute.create({
+      data: {
+        productId,
+        attributeId,
+        sortOrder,
+        defaultOptionValueId: defaultOptionValueId ?? null,
+      },
+    });
+  }
+
+  async updateProductAttribute(productId: string, attributeId: string, defaultOptionValueId: string | null) {
+    const row = await this.prisma.productVariantAttribute.findUnique({
+      where: { productId_attributeId: { productId, attributeId } },
+    });
+    if (!row) throw new NotFoundException('Attribute not linked to this product');
+    return this.prisma.productVariantAttribute.update({
+      where: { id: row.id },
+      data: { defaultOptionValueId },
+    });
+  }
+
+  async removeProductAttribute(productId: string, attributeId: string): Promise<{ deletedVariants: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const variantIds = (
+        await tx.variantOption.findMany({
+          where: { attributeId, variant: { productId } },
+          select: { variantId: true },
+          distinct: ['variantId'],
+        })
+      ).map((r) => r.variantId);
+
+      if (variantIds.length > 0) {
+        await tx.productVariant.deleteMany({
+          where: { id: { in: variantIds } },
+        });
+      }
+      await tx.productVariantAttribute.deleteMany({
+        where: { productId, attributeId },
+      });
+
+      // When only the original default variant remains (null combinationHash), re-mark it default.
+      const remaining = await tx.productVariant.findMany({
+        where: { productId },
+        select: { id: true, combinationHash: true, isDefault: true },
+      });
+      const original = remaining.find((v) => !v.combinationHash);
+      if (original && remaining.length === 1 && !original.isDefault) {
+        await tx.productVariant.update({
+          where: { id: original.id },
+          data: { isDefault: true },
+        });
+      }
+
+      return { deletedVariants: variantIds.length };
+    });
+  }
+
+  // ── Per-product images for "image" swatch option values ─────────────────
+
+  async getProductOptionImages(productId: string) {
+    const rows = await this.prisma.productOptionValueImage.findMany({
+      where: { productId },
+    });
+    if (!rows.length) return [];
+    const urlMap = await this.assetUrls.resolveBatch(rows.map((r) => r.mediaKey));
+    return rows.map((r) => ({
+      optionValueId: r.optionValueId,
+      mediaKey: r.mediaKey,
+      url: urlMap.get(r.mediaKey) ?? null,
+    }));
+  }
+
+  async setProductOptionImage(productId: string, optionValueId: string, mediaKey: string) {
+    await this.assertExists(productId);
+    const optionValue = await this.prisma.variationOptionValue.findUnique({
+      where: { id: optionValueId },
+    });
+    if (!optionValue) throw new BadRequestException('Option value not found');
+
+    const linked = await this.prisma.productVariantAttribute.findUnique({
+      where: {
+        productId_attributeId: {
+          productId,
+          attributeId: optionValue.attributeId,
+        },
+      },
+    });
+    if (!linked) throw new BadRequestException("This option value's attribute is not linked to this product");
+
+    await this.prisma.productOptionValueImage.upsert({
+      where: { productId_optionValueId: { productId, optionValueId } },
+      create: { productId, optionValueId, mediaKey },
+      update: { mediaKey },
+    });
+
+    const url = await this.assetUrls.resolve(mediaKey);
+    return { optionValueId, mediaKey, url };
+  }
+
+  async removeProductOptionImage(productId: string, optionValueId: string): Promise<void> {
+    await this.prisma.productOptionValueImage.deleteMany({
+      where: { productId, optionValueId },
+    });
+  }
+}

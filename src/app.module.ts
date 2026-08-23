@@ -1,10 +1,159 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { BullModule } from '@nestjs/bullmq';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { LoggerModule } from 'nestjs-pino';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { PrismaModule } from './prisma/prisma.module';
+import { RedisModule } from './redis/redis.module';
+import { AssetUrlModule } from './asset-url/asset-url.module';
+import { MeilisearchModule } from './meilisearch/meilisearch.module';
+import { DlqModule } from './dlq/dlq.module';
+import { ErrorCollectorModule } from './common/error-collector/error-collector.module';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
+import { AuthModule } from './auth/auth.module';
+import { AdminsModule } from './admins/admins.module';
+import { SmsModule } from './sms/sms.module';
+import { GcsModule } from './gcs/gcs.module';
+import { MediaModule } from './media/media.module';
+import { TranslationsModule } from './translations/translations.module';
+import { DocumentsModule } from './documents/documents.module';
+import { PlatformSettingsModule } from './platform-settings/platform-settings.module';
+import { AntiSpamModule } from './common/anti-spam/anti-spam.module';
+import { IntegrationCredentialsModule } from './integration-credentials/integration-credentials.module';
+import { HealthModule } from './health/health.module';
+import { CatalogModule } from './catalog/catalog.module';
+import { CommerceEventsModule } from './commerce-events/commerce-events.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { CartModule } from './cart/cart.module';
+import { OrdersModule } from './orders/orders.module';
+import { CheckoutModule } from './checkout/checkout.module';
+import { PaymentsModule } from './payments/payments.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { CountriesModule } from './countries/countries.module';
+import { CustomersModule } from './customers/customers.module';
+import { ShippingModule } from './shipping/shipping.module';
+import { PromotionsModule } from './promotions/promotions.module';
+import { CampaignsModule } from './campaigns/campaigns.module';
+import { CollectionsModule } from './collections/collections.module';
+import { PriceRulesModule } from './price-rules/price-rules.module';
+import { TaxModule } from './tax/tax.module';
+import { ReturnsModule } from './returns/returns.module';
+import { ReviewsModule } from './reviews/reviews.module';
+import { WishlistModule } from './wishlist/wishlist.module';
+import { PaymentMethodsModule } from './payment-methods/payment-methods.module';
+import { CommerceNotificationsModule } from './commerce-notifications/commerce-notifications.module';
+import { AnalyticsTrackingModule } from './analytics-tracking/analytics-tracking.module';
+import { ReplayModule } from './replay/replay.module';
+import { EmailModule } from './email/email.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { NewsletterModule } from './newsletter/newsletter.module';
+import { ContactsModule } from './contacts/contacts.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
-  imports: [],
+  imports: [
+    PrismaModule,
+    MeilisearchModule,
+    ThrottlerModule.forRoot([
+      { name: 'auth', ttl: 15 * 60 * 1000, limit: 10 },
+      { name: 'contact', ttl: 15 * 60 * 1000, limit: 5 },
+    ]),
+    ScheduleModule.forRoot(),
+    EventEmitterModule.forRoot(),
+    // BullMQ uses its own Redis connection (BULLMQ_REDIS_*), separate from
+    // the cache/idempotency Redis (REDIS_*) — set BULLMQ_REDIS_DB to a
+    // different logical DB, or point it at a dedicated instance with
+    // maxmemory-policy noeviction so queued jobs are never evicted.
+    BullModule.forRootAsync({
+      useFactory: () => ({
+        connection: {
+          host:
+            process.env.BULLMQ_REDIS_HOST ??
+            process.env.REDIS_HOST ??
+            'localhost',
+          port: Number(
+            process.env.BULLMQ_REDIS_PORT ?? process.env.REDIS_PORT ?? 6379,
+          ),
+          password:
+            process.env.BULLMQ_REDIS_PASSWORD ??
+            process.env.REDIS_PASSWORD ??
+            undefined,
+          db: Number(process.env.BULLMQ_REDIS_DB ?? 1),
+        },
+      }),
+    }),
+    RedisModule,
+    AssetUrlModule,
+    DlqModule,
+    ErrorCollectorModule,
+    CommerceEventsModule,
+    SmsModule,
+    AuthModule,
+    AdminsModule,
+    GcsModule,
+    MediaModule,
+    TranslationsModule,
+    DocumentsModule,
+    PlatformSettingsModule,
+    AntiSpamModule,
+    IntegrationCredentialsModule,
+    HealthModule,
+    CatalogModule,
+    InventoryModule,
+    CartModule,
+    OrdersModule,
+    CheckoutModule,
+    PaymentsModule,
+    WebhooksModule,
+    CountriesModule,
+    CustomersModule,
+    ShippingModule,
+    PromotionsModule,
+    CampaignsModule,
+    CollectionsModule,
+    PriceRulesModule,
+    TaxModule,
+    ReturnsModule,
+    ReviewsModule,
+    WishlistModule,
+    PaymentMethodsModule,
+    CommerceNotificationsModule,
+    AnalyticsTrackingModule,
+    ReplayModule,
+    EmailModule,
+    AnalyticsModule,
+    NewsletterModule,
+    ContactsModule,
+    SupportModule,
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level:
+          process.env.LOG_LEVEL ??
+          (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+        transport:
+          process.env.NODE_ENV !== 'production'
+            ? {
+                target: 'pino-pretty',
+                options: {
+                  colorize: true,
+                  translateTime: 'SYS:HH:MM:ss',
+                  ignore: 'pid,hostname',
+                },
+              }
+            : undefined,
+        redact: ['req.headers.authorization', 'req.headers.cookie'],
+        serializers: {
+          req: (req) => ({ method: req.method, url: req.url }),
+          res: (res) => ({ statusCode: res.statusCode }),
+        },
+      },
+    }),
+  ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, { provide: APP_GUARD, useClass: JwtAuthGuard }],
 })
 export class AppModule {}

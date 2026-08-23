@@ -10,6 +10,7 @@ RUN chown -R node:node /usr/local/lib/node_modules \
 USER node:node
 
 COPY package.json ./
+COPY prisma ./prisma
 RUN npm i
 ADD dist/ ./dist
 

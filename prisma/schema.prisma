@@ -1,0 +1,2167 @@
+// Silomis — Prisma schema
+// This file grows domain-by-domain as the shop is built out. This first
+// slice covers generic platform infrastructure: admin auth, media library,
+// translations, billing documents, settings, SMS log, anti-spam, and
+// encrypted integration credentials. Commerce domain models (catalog, cart,
+// orders, payments, shipping, promotions, reviews, ...) are added in later
+// migrations.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+// Prisma 7: the connection URL lives in prisma.config.ts (used by the CLI /
+// migrate) and is passed to PrismaClient at runtime via a driver adapter
+// (see src/prisma/prisma.service.ts) — it is no longer set here.
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Admins & Auth
+// ─────────────────────────────────────────────────────────────────────────
+
+enum AdminRole {
+  admin
+  superadmin
+}
+
+enum MfaMethod {
+  email
+  sms
+}
+
+model Admin {
+  id       String    @id @default(uuid())
+  name     String
+  email    String    @unique
+  phone    String?
+  password String
+  role     AdminRole @default(admin)
+
+  mfaEnabled         Boolean   @default(false)
+  preferredMfaMethod MfaMethod @default(email)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  @@map("admins")
+}
+
+/// Server-side record of an issued refresh token. Enables rotation (each use
+/// replaces the row and revokes the old one) and reuse detection (a revoked
+/// token presented again indicates theft and revokes the whole family).
+model RefreshToken {
+  id                String    @id @default(uuid())
+  adminId           String
+  admin             Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  replacedByTokenId String?
+  createdAt         DateTime  @default(now())
+
+  @@index([adminId])
+  @@map("admin_refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Media library (GCS-backed)
+// ─────────────────────────────────────────────────────────────────────────
+
+model MediaFolder {
+  id       String        @id @default(uuid())
+  name     String
+  parentId String?       @map("parent_id")
+  parent   MediaFolder?  @relation("MediaFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children MediaFolder[] @relation("MediaFolderTree")
+  assets   MediaAsset[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([parentId])
+  @@map("media_folders")
+}
+
+enum TranscodeStatus {
+  pending
+  processing
+  ready
+  failed
+}
+
+model MediaAsset {
+  id String @id @default(uuid())
+
+  /// GCS object path, e.g. "media/2026/01/abc123.jpg"
+  storageKey       String @unique
+  originalFilename String
+  mimeType         String
+  sizeBytes        Int
+
+  width           Int?
+  height          Int?
+  /// Video duration in seconds — extracted on upload for video/* assets
+  durationSeconds Int?
+
+  // Video transcode outputs (video/* assets only; null = not transcoded)
+  hlsKey          String?
+  mp4Key          String?
+  autoPosterKey   String?
+  transcodeStatus TranscodeStatus?
+
+  altText String?
+  title   String?
+  tags    String[] @default([])
+
+  /// SHA-256 hex of the file — enables dedup detection
+  checksum   String?
+  /// Admin id who uploaded (loose reference, no FK — admin may be deleted)
+  uploadedBy String?
+
+  folderId String?      @map("folder_id")
+  folder   MediaFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  usages MediaUsage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([mimeType])
+  @@index([createdAt])
+  @@index([checksum])
+  @@index([folderId])
+  @@map("media_assets")
+}
+
+model MediaUsage {
+  id      String     @id @default(uuid())
+  assetId String
+  asset   MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  /// Loosely typed entity reference — no FK to keep this decoupled from every domain
+  entityType String
+  entityId   String
+  /// Which field on the entity uses this asset, e.g. "featuredImage", "gallery"
+  field      String
+
+  createdAt DateTime @default(now())
+
+  @@index([assetId])
+  @@index([entityType, entityId])
+  @@map("media_usages")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Translations (generic i18n overlay: entityType/entityId/field/lang)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Translation {
+  id         String @id @default(uuid())
+  entityType String
+  entityId   String
+  field      String
+  value      String
+  lang       String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([entityType, entityId, field, lang])
+  @@map("translations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Billing documents (invoices / receipts — shop orders only)
+// ─────────────────────────────────────────────────────────────────────────
+
+enum DocumentType {
+  invoice
+  receipt
+}
+
+enum DocumentStatus {
+  draft
+  issued
+  paid
+  void
+}
+
+model Document {
+  id String @id @default(uuid())
+
+  documentType DocumentType
+  /// Fixed to "shop_order" in this project — kept as a string (rather than
+  /// a single-value enum) so a second document-producing domain can be
+  /// added later without a migration.
+  entityType   String       @default("shop_order")
+  entityId     String
+
+  documentNumber  String?        @unique
+  paymentIntentId String?
+  status          DocumentStatus @default(issued)
+
+  // ── Customer snapshot ──────────────────────────────────────────────────
+  customerEmail       String
+  customerName        String?
+  customerCompanyName String?
+  customerLocale      String  @default("fr")
+
+  // ── Seller snapshot (frozen at generation time) ────────────────────────
+  sellerName      String
+  sellerAddress   Json
+  sellerVatNumber String?
+  sellerSiret     String?
+
+  // ── Delivery / shipping address snapshot ───────────────────────────────
+  deliveryAddress Json?
+
+  // ── Financial (all in euro-cents, integers) ────────────────────────────
+  subtotalCents Int     @default(0)
+  deliveryCents Int     @default(0)
+  discountCents Int     @default(0)
+  taxCents      Int     @default(0)
+  totalCents    Int     @default(0)
+  couponCode    String?
+
+  // ── Tax snapshot ────────────────────────────────────────────────────────
+  taxRatePct Decimal @default(20) @db.Decimal(5, 2)
+  taxLabel   String?
+  taxCountry String  @default("FR")
+
+  /// Admin-display context, e.g. { trackingNumber, carrier } — free-form per order
+  contextSnapshot Json?
+
+  // ── PDF & delivery state ───────────────────────────────────────────────
+  pdfStoragePath String?
+  pdfGeneratedAt DateTime?
+  emailSentAt    DateTime?
+  issuedAt       DateTime?
+
+  lines DocumentLine[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([entityType, entityId])
+  @@map("documents")
+}
+
+model DocumentLine {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  description String
+  sku         String?
+
+  /// decimal(10,4) supports fractional quantities
+  quantity       Decimal @db.Decimal(10, 4)
+  unitPriceCents Int
+  totalCents     Int
+
+  periodStart DateTime? @db.Date
+  periodEnd   DateTime? @db.Date
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("document_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Platform settings (key/value)
+// ─────────────────────────────────────────────────────────────────────────
+
+model PlatformSettings {
+  key       String   @id @db.VarChar(64)
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("platform_settings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// SMS log
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SmsType {
+  outbound
+  inbound
+}
+
+model SmsMessage {
+  id        Int      @id @default(autoincrement())
+  to        String
+  message   String
+  type      SmsType  @default(outbound)
+  consumed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("sms_messages")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Anti-spam
+// ─────────────────────────────────────────────────────────────────────────
+
+model SpamLog {
+  id        String   @id @default(uuid())
+  ip        String?
+  score     Int
+  decision  String
+  /// Comma-separated list of triggered rule names
+  reasons   String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@map("spam_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Integration credentials (encrypted-at-rest secrets for future integrations)
+// ─────────────────────────────────────────────────────────────────────────
+
+model IntegrationCredential {
+  provider   String   @id @db.VarChar(50)
+  iv         String
+  authTag    String
+  ciphertext String
+  keyVersion Int      @default(1)
+  updatedBy  String?
+  updatedAt  DateTime @updatedAt
+
+  @@map("integration_credentials")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// CATALOG domain
+// ═════════════════════════════════════════════════════════════════════════
+
+model ProductCategory {
+  id             String  @id @default(uuid())
+  slug           String  @unique @db.VarChar(200)
+  name           String  @db.VarChar(300)
+  description    String?
+  seoTitle       String? @db.VarChar(300)
+  seoDescription String?
+  imageKey       String? @db.VarChar(1000)
+
+  parentId String?           @map("parentId")
+  parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children ProductCategory[] @relation("CategoryTree")
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  products          Product[]           @relation("PrimaryCategory")
+  categoryProducts  Product[]           @relation("ProductCategoryMap")
+  variantAttributes VariantAttribute[]
+  promotionLinks    PromotionCategory[]
+  taxRates          TaxRate[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_product_categories")
+}
+
+model ProductTag {
+  id   String @id @default(uuid())
+  name String @unique @db.VarChar(200)
+  slug String @unique @db.VarChar(200)
+
+  products Product[] @relation("ProductTagMap")
+
+  @@map("shop_product_tags")
+}
+
+enum VariantDisplayType {
+  swatch
+  button
+  dropdown
+}
+
+/// A variation dimension/axis (Color, Size, Material...). Each attribute owns
+/// a controlled vocabulary of VariationOptionValues.
+model VariantAttribute {
+  id   String @id @default(uuid())
+  name String @db.VarChar(200)
+  slug String @db.VarChar(200)
+
+  /// Internal-only label to tell apart attributes that share the same storefront `name`
+  adminLabel String? @unique @db.VarChar(200)
+
+  /// Optional scope — if set, this variation only applies to this product category
+  categoryId String?
+  category   ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// Frontend widget hint
+  displayType VariantDisplayType @default(button)
+  sortOrder   Int                @default(0)
+  isActive    Boolean            @default(true)
+
+  optionValues      VariationOptionValue[]
+  variantOptions    VariantOption[]
+  productAttributes ProductVariantAttribute[]
+
+  @@index([categoryId])
+  @@index([displayType])
+  @@map("shop_variant_attributes")
+}
+
+enum SwatchType {
+  color
+  image
+}
+
+/// A predefined, reusable option value for a variation dimension (e.g. Color → "Black").
+model VariationOptionValue {
+  id String @id @default(uuid())
+
+  attributeId String
+  attribute   VariantAttribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  /// Machine value — used in URLs, filters, SKU generation
+  value        String  @db.VarChar(200)
+  displayValue String? @db.VarChar(200)
+
+  /// For color swatches: hex color or GCS key
+  swatchValue String?     @db.VarChar(500)
+  swatchType  SwatchType?
+
+  /// Price adjustment in cents applied when this option value is selected (may be negative)
+  priceAdjustmentCents Int?
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  variantOptions           VariantOption[]
+  defaultForAttributes     ProductVariantAttribute[]
+  productOptionValueImages ProductOptionValueImage[]
+
+  @@unique([attributeId, value])
+  @@map("shop_variation_option_values")
+}
+
+model Product {
+  id String @id @default(uuid())
+
+  slug             String  @unique @db.VarChar(300)
+  sku              String? @db.VarChar(200)
+  title            String  @db.VarChar(500)
+  shortDescription String?
+  description      String?
+
+  featuredImageKey String?  @db.VarChar(1000)
+  featuredImageAlt String?  @db.VarChar(500)
+  galleryImageKeys String[] @default([])
+
+  /// Ordered media gallery (images + videos) — ProductMediaItem[], see catalog/types
+  media Json @default("[]")
+
+  brand          String? @db.VarChar(300)
+  specifications Json?
+
+  infoSections    Json @default("[]") // ProductInfoSection[]
+  trustBadges     Json @default("[]") // ProductTrustBadge[]
+  faqs            Json @default("[]") // ProductFaq[]
+  zoomedImages    Json @default("[]") // ProductZoomedImage[]
+  packageContents Json @default("[]") // ProductPackageContentItem[]
+  storyGallery    Json @default("[]") // ProductStoryItem[]
+  socialVideos    Json @default("[]") // ProductSocialVideo[]
+
+  socialVideosTitle   String? @db.VarChar(300)
+  storyNarrativeTitle String? @db.VarChar(300)
+
+  documents    Json @default("[]") // ProductDocument[]
+  privateLinks Json @default("[]") // ProductPrivateLink[] — admin-only, never public
+
+  seoTitle       String? @db.VarChar(500)
+  seoDescription String?
+  canonicalUrl   String? @db.VarChar(2000)
+
+  /// Base price in cents. Effective variant price = basePriceCents + option adjustments
+  /// when the variant has no explicit priceCents override.
+  basePriceCents Int?
+
+  upsellingEnabled Boolean @default(false)
+  upsellTiers      Json    @default("[]") // ProductUpsellTier[]
+
+  featured            Boolean @default(false)
+  isTestProduct       Boolean @default(false)
+  freeShipping        Boolean @default(false)
+  freeShippingDaysMin Int?
+  freeShippingDaysMax Int?
+
+  /// Paid upgrade methods offerable alongside free shipping (e.g. Express as a paid add-on)
+  freeShippingUpgradeMethods ShippingMethod[] @relation("ProductFreeShippingMethods")
+
+  status ProductStatus @default(draft)
+
+  ratingAverage      Decimal @default(0) @db.Decimal(3, 2)
+  reviewCount        Int     @default(0)
+  ratingDistribution Json    @default("{\"1\":0,\"2\":0,\"3\":0,\"4\":0,\"5\":0}")
+
+  vendorId String?
+
+  primaryCategoryId String?
+  primaryCategory   ProductCategory? @relation("PrimaryCategory", fields: [primaryCategoryId], references: [id], onDelete: SetNull)
+
+  publishedAt DateTime?
+
+  categories ProductCategory[] @relation("ProductCategoryMap")
+  tags       ProductTag[]      @relation("ProductTagMap")
+
+  variants          ProductVariant[]
+  variantAttributes ProductVariantAttribute[]
+  optionValueImages ProductOptionValueImage[]
+  promotionLinks    PromotionProduct[]
+  collectionLinks   CollectionProduct[]
+  priceRules        PriceRule[]
+  reviews           ProductReview[]
+  wishlistItems     WishlistItem[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([status])
+  @@index([featured])
+  @@index([isTestProduct])
+  @@index([freeShipping])
+  @@index([primaryCategoryId])
+  @@index([vendorId])
+  @@map("shop_products")
+}
+
+enum ProductStatus {
+  draft
+  active
+  archived
+  out_of_stock
+  hidden
+}
+
+model ProductVariant {
+  id String @id @default(uuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sku   String @unique @db.VarChar(200)
+  title String @db.VarChar(500)
+
+  /// Explicit price override in cents. NULL = computed from product.basePriceCents + option adjustments.
+  priceCents          Int?
+  compareAtPriceCents Int?
+
+  barcode     String? @db.VarChar(200)
+  weightGrams Int?
+  dimensions  Json? // { lengthCm, widthCm, heightCm }
+
+  mediaKeys        String[] @default([])
+  featuredMediaKey String?  @db.VarChar(1000)
+
+  /// Sorted "|"-joined optionValueIds — unique per product, NULL for single-variant products.
+  combinationHash String? @db.VarChar(300)
+  variantSlug     String? @db.VarChar(300)
+
+  isDefault Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  options VariantOption[]
+
+  inventoryItem InventoryItem?
+  priceRules    PriceRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, combinationHash])
+  @@index([productId])
+  @@map("shop_product_variants")
+}
+
+/// Maps a ProductVariant to a specific variation option value (product_configuration).
+model VariantOption {
+  id String @id @default(uuid())
+
+  variantId   String
+  variant     ProductVariant   @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  attributeId String
+  attribute   VariantAttribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  optionValueId String?
+  optionValue   VariationOptionValue? @relation(fields: [optionValueId], references: [id], onDelete: SetNull)
+
+  /// Free-text value — mirrors optionValue.value when optionValueId is set
+  value String @db.VarChar(500)
+
+  @@index([variantId, attributeId])
+  @@map("shop_variant_options")
+}
+
+/// Declares which variation dimensions a specific product uses (the "allowed variations" scoping layer).
+model ProductVariantAttribute {
+  id String @id @default(uuid())
+
+  productId   String
+  product     Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attributeId String
+  attribute   VariantAttribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  sortOrder Int @default(0)
+
+  defaultOptionValueId String?
+  defaultOptionValue   VariationOptionValue? @relation(fields: [defaultOptionValueId], references: [id], onDelete: SetNull)
+
+  @@unique([productId, attributeId])
+  @@map("shop_product_variant_attributes")
+}
+
+/// Per-product image for a global "image" swatch option value (e.g. this product's
+/// photo for the shared "Red" color value — the photo itself is product-specific).
+model ProductOptionValueImage {
+  id String @id @default(uuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  optionValueId String
+  optionValue   VariationOptionValue @relation(fields: [optionValueId], references: [id], onDelete: Cascade)
+
+  mediaKey String @db.VarChar(1000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, optionValueId])
+  @@map("shop_product_option_value_images")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// INVENTORY domain
+// ─────────────────────────────────────────────────────────────────────────
+
+model InventoryItem {
+  id String @id @default(uuid())
+
+  variantId String         @unique
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  productId String
+
+  available Int @default(0)
+
+  /// Held for unpaid orders (awaiting_payment) — released back to `available` after the
+  /// checkout reservation expires or the order is cancelled.
+  reserved Int @default(0)
+
+  /// Held for paid orders not yet shipped — moved here from `reserved` once payment is
+  /// confirmed; deducted permanently on shipment.
+  committed Int @default(0)
+
+  incoming          Int @default(0)
+  lowStockThreshold Int @default(5)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_inventory_items")
+}
+
+enum InventoryMovementType {
+  order_placed
+  order_cancelled
+  order_paid
+  order_refunded
+  order_shipped
+  manual_adjustment
+  refund
+  restock
+}
+
+/// Append-only audit ledger — every InventoryItem mutation writes exactly one
+/// row here, so `available`/`reserved`/`committed` at any past moment can be
+/// reconstructed and every admin adjustment is traceable to who made it.
+model InventoryMovement {
+  id String @id @default(uuid())
+
+  variantId String
+  orderId   String?
+  adminId   String?
+
+  type  InventoryMovementType
+  delta Int
+
+  availableAfter Int
+  reservedAfter  Int
+  committedAfter Int @default(0)
+
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@index([variantId])
+  @@index([orderId])
+  @@map("shop_inventory_movements")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Commerce event bus — cross-domain side effects (emails, payouts, search
+// indexing, analytics) react to these instead of modules calling each other
+// directly. Every emit() is also durably logged here for an admin activity
+// trail and for debugging "why did X happen" after the fact.
+// ─────────────────────────────────────────────────────────────────────────
+
+model CommerceEventLog {
+  id String @id @default(uuid())
+
+  eventName String  @db.VarChar(200)
+  entityId  String?
+  payload   Json?
+  source    String? @db.VarChar(200)
+  status    String  @default("success") @db.VarChar(20)
+  error     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([eventName, createdAt])
+  @@index([entityId])
+  @@map("commerce_event_log")
+}
+
+/// One row per (channel × recipient) send attempt — written by
+/// CommerceNotificationService.notify() only, the single gate that decides
+/// whether an event/channel is enabled before attempting anything. No row is
+/// written when gated out by settings; 'skipped' is reserved for a
+/// configured-but-unavailable channel (e.g. SMTP unset), 'sent'/'failed' come
+/// from the actual send attempt's outcome.
+model CommerceNotificationLog {
+  id String @id @default(uuid())
+
+  event     String @db.VarChar(100)
+  channel   String @db.VarChar(20)
+  recipient String @db.VarChar(300)
+  status    String @db.VarChar(20)
+
+  orderId     String?
+  orderNumber String? @db.VarChar(50)
+
+  error    String?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([event, createdAt])
+  @@map("commerce_notification_logs")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// CART domain
+// ═════════════════════════════════════════════════════════════════════════
+
+enum CartStatus {
+  active
+  completed
+  abandoned
+  merged
+}
+
+model Cart {
+  id String @id @default(uuid())
+
+  token  String     @unique
+  userId String?
+  status CartStatus @default(active)
+
+  expiresAt DateTime?
+
+  items CartItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_carts")
+}
+
+model CartItem {
+  id String @id @default(uuid())
+
+  cartId    String
+  cart      Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  variantId String
+
+  quantity       Int
+  unitPriceCents Int
+
+  titleSnapshot    String  @db.VarChar(500)
+  skuSnapshot      String? @db.VarChar(200)
+  imageKeySnapshot String? @db.VarChar(1000)
+
+  /// Frozen option choices at add-to-cart time: [{attributeId, attributeName, optionValueId, value, displayValue}]
+  optionsSnapshot Json?
+
+  compareAtPriceCentsSnapshot Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, variantId])
+  @@map("shop_cart_items")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// ORDERS domain
+// ═════════════════════════════════════════════════════════════════════════
+
+enum OrderStatus {
+  draft
+  pending
+  awaiting_payment
+  paid
+  processing
+  shipped
+  delivered
+  cancelled
+  refunded
+}
+
+model Order {
+  id String @id @default(uuid())
+
+  orderNumber String      @unique @db.VarChar(50)
+  status      OrderStatus @default(pending)
+
+  /// Contains at least one test product, so checkout must be refused before payment.
+  /// Denormalised at order creation as an audit record; the payment gate re-reads
+  /// live product state rather than trusting this flag.
+  isTestOrder Boolean @default(false)
+
+  userId     String?
+  customerId String?
+
+  customerEmail       String  @db.VarChar(300)
+  customerName        String? @db.VarChar(300)
+  customerCompanyName String? @db.VarChar(300)
+  customerPhone       String? @db.VarChar(50)
+
+  shippingAddressSnapshot Json
+  billingAddressSnapshot  Json?
+
+  subtotalCents         Int @default(0)
+  shippingCents         Int @default(0)
+  categoryDiscountCents Int @default(0)
+  discountCents         Int @default(0)
+  taxCents              Int @default(0)
+  totalCents            Int @default(0)
+
+  /// Full breakdown from the pricing engine at order-creation time (category rules,
+  /// coupon, free-shipping reason, ...) — kept for admin display / dispute audit.
+  pricingSnapshot Json?
+
+  platformFeeBps Int @default(1000)
+
+  couponCode       String?         @db.VarChar(100)
+  shippingMethodId String?
+  shippingMethod   ShippingMethod? @relation(fields: [shippingMethodId], references: [id], onDelete: SetNull)
+  /// Saved payment method used for this order
+  paymentMethodId  String?
+
+  /// ISO 639-1 locale captured at checkout — drives email/receipt language
+  customerLocale String @default("fr") @db.VarChar(10)
+
+  trackingToken        String?   @unique
+  cartToken            String?   @db.VarChar(100)
+  paymentIntentId      String?   @db.VarChar(500)
+  reservationExpiresAt DateTime?
+  notes                String?
+
+  // ── Meta Conversions API / TikTok Events API matching data — captured at
+  // checkout, never displayed. Populated once the marketing-pixel step wires
+  // the checkout form up to send them.
+  clientIpAddress String? @db.VarChar(64)
+  clientUserAgent String?
+  metaClickId     String? @db.VarChar(500)
+  metaBrowserId   String? @db.VarChar(500)
+  tiktokClickId   String? @db.VarChar(500)
+  tiktokBrowserId String? @db.VarChar(500)
+
+  items          OrderItem[]
+  statusHistory  OrderStatusHistory[]
+  returnRequests ReturnRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([customerEmail])
+  @@index([isTestOrder])
+  @@index([paymentIntentId])
+  @@map("shop_orders")
+}
+
+model OrderItem {
+  id String @id @default(uuid())
+
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId String?
+  variantId String?
+  vendorId  String?
+
+  titleSnapshot    String  @db.VarChar(500)
+  skuSnapshot      String? @db.VarChar(200)
+  imageKeySnapshot String? @db.VarChar(1000)
+
+  /// Frozen option choices at order time: [{attributeId, attributeName, optionValueId, value, displayValue}]
+  optionsSnapshot Json?
+
+  /// Frozen compare-at price for order receipt display
+  compareAtPriceCentsSnapshot Int?
+
+  quantity       Int
+  unitPriceCents Int
+  totalCents     Int
+
+  taxRatePct Decimal @default(20) @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now())
+
+  returnRequestLinks ReturnRequestItem[]
+  reviews            ProductReview[]
+
+  @@map("shop_order_items")
+}
+
+enum ReviewStatus {
+  pending
+  approved
+  rejected
+  hidden
+}
+
+/// One row per (order, product) — editing an already-moderated review resets
+/// it to `pending` and clears moderation fields (see ReviewsService.submit).
+/// authorEmail is always taken server-side from Order.customerEmail, never
+/// trusted from client input; isVerifiedPurchase is hardcoded true on every
+/// successful submit since OrdersService.verifyOrderForReview() is a hard
+/// gate before a row can ever be created.
+model ProductReview {
+  id String @id @default(uuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  orderId     String?
+  orderItemId String?
+  orderItem   OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+
+  /// Present but unused by current logic — reviews are matched by order+email/token, not a user account.
+  userId String?
+
+  authorName  String  @db.VarChar(300)
+  authorEmail String  @db.VarChar(300)
+  rating      Int
+  title       String? @db.VarChar(500)
+  body        String?
+
+  /// ReviewMediaItem[] — { key, type: 'image'|'video', altText? }
+  media Json @default("[]")
+
+  status             ReviewStatus @default(pending)
+  isVerifiedPurchase Boolean      @default(false)
+  /// Column exists for parity with the reference schema — no endpoint increments it yet.
+  helpfulVotes       Int          @default(0)
+
+  rejectionReason String?   @db.VarChar(500)
+  moderatedAt     DateTime?
+  moderatedBy     String?   @db.VarChar(300)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One review per order+product. Postgres treats each NULL as distinct, so
+  /// guest/orderless rows (orderId null) never collide — no partial index needed.
+  @@unique([orderId, productId])
+  @@index([productId, status])
+  @@index([orderItemId])
+  @@map("shop_product_reviews")
+}
+
+/// Guest rows carry sessionToken (userId null); authenticated rows carry
+/// userId (sessionToken null) — WishlistService.add() enforces they're never
+/// both set on the same row. Postgres treats each NULL as distinct in a
+/// unique index, so both constraints hold correctly without a partial index.
+model WishlistItem {
+  id String @id @default(uuid())
+
+  sessionToken String? @db.VarChar(100)
+  userId       String?
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId String?
+
+  addedAt DateTime @default(now())
+
+  @@unique([sessionToken, productId])
+  @@unique([userId, productId])
+  @@map("shop_wishlist_items")
+}
+
+enum ReturnStatus {
+  requested
+  approved
+  rejected
+  refunded
+  /// Terminal — refunded AND inventory returned to stock.
+  restocked
+}
+
+/// Admin-initiated (staff creates one after a customer emails/calls in) —
+/// there's no customer self-service portal in scope. Sub-order-level: does
+/// NOT force Order.status to 'refunded' unless the returned+refunded
+/// quantity covers every item on the order (see ReturnsService).
+model ReturnRequest {
+  id String @id @default(uuid())
+
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// Denormalized so the admin list can filter/display without a join.
+  customerEmail String @db.VarChar(300)
+
+  status    ReturnStatus @default(requested)
+  reason    String?
+  adminNote String?
+
+  restockOnComplete Boolean @default(true)
+
+  /// Set once the admin refund action (ShopPaymentService.refundOrder) has
+  /// been triggered and its resulting PaymentTransaction is known — this
+  /// model never calls Stripe itself, only that action does.
+  refundedAmountCents  Int?
+  paymentTransactionId String?
+
+  items ReturnRequestItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([status])
+  @@map("shop_return_requests")
+}
+
+model ReturnRequestItem {
+  id String @id @default(uuid())
+
+  returnRequestId String
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  quantity  Int
+  restocked Boolean @default(false)
+
+  @@map("shop_return_request_items")
+}
+
+model OrderStatusHistory {
+  id String @id @default(uuid())
+
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  fromStatus String? @db.VarChar(30)
+  toStatus   String  @db.VarChar(30)
+  note       String?
+  adminId    String?
+
+  createdAt DateTime @default(now())
+
+  @@map("shop_order_status_history")
+}
+
+/// Reference table for order status codes — controlled vocabulary for admin
+/// display, i18n labels, and transition rules. Order.status itself stays a
+/// plain enum for query simplicity; this table is metadata layered on top.
+model OrderStatusRef {
+  id String @id @default(uuid())
+
+  code        String  @unique @db.VarChar(50)
+  label       String  @db.VarChar(200)
+  description String?
+  color       String? @db.VarChar(50)
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  @@map("shop_order_status_refs")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PROMOTIONS domain
+// ═════════════════════════════════════════════════════════════════════════
+
+enum PromotionTrigger {
+  automatic
+  coupon
+}
+
+enum PromotionScope {
+  site_wide
+  category
+  product
+}
+
+enum PromotionDiscountType {
+  percentage
+  fixed_amount
+  free_shipping
+}
+
+/// Unified promotion model.
+///
+/// trigger=automatic → applied without customer input (date-based, category sale, etc.)
+/// trigger=coupon    → requires customer to enter `code` at checkout
+///
+/// scope=site_wide → applies to all products
+/// scope=category  → applies to products in linked categories (PromotionCategory junction)
+/// scope=product   → applies to specific linked products (PromotionProduct junction)
+model ShopPromotion {
+  id String @id @default(uuid())
+
+  name        String  @db.VarChar(300)
+  description String?
+
+  /// Storefront-facing promo banner copy — distinct from the admin-only `description`.
+  marketingLabel String? @db.VarChar(300)
+  bannerText     String?
+
+  trigger PromotionTrigger @default(automatic)
+  code    String?          @unique @db.VarChar(100)
+
+  discountType  PromotionDiscountType
+  discountValue Int                   @default(0)
+
+  scope PromotionScope @default(site_wide)
+
+  minOrderCents Int?
+  maxUsesTotal  Int?
+  usesCount     Int  @default(0)
+
+  /// Higher priority wins when multiple automatic promotions match the same line.
+  priority Int @default(0)
+
+  isActive  Boolean   @default(true)
+  startsAt  DateTime?
+  expiresAt DateTime?
+
+  categoryLinks PromotionCategory[]
+  productLinks  PromotionProduct[]
+
+  /// Optional grouping under a Campaign — purely organizational, never read by the pricing engine.
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([trigger, isActive])
+  @@index([scope])
+  @@index([campaignId])
+  @@map("shop_promotions")
+}
+
+model PromotionCategory {
+  id String @id @default(uuid())
+
+  promotionId String
+  promotion   ShopPromotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  categoryId String
+  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, categoryId])
+  @@map("shop_promotion_categories")
+}
+
+model PromotionProduct {
+  id String @id @default(uuid())
+
+  promotionId String
+  promotion   ShopPromotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, productId])
+  @@map("shop_promotion_products")
+}
+
+/// Lightweight grouping + reporting layer over ShopPromotion — never itself
+/// evaluated for pricing, only its linked promotions are (see ShopPromotion.campaignId).
+model Campaign {
+  id String @id @default(uuid())
+
+  name           String  @db.VarChar(300)
+  description    String?
+  bannerImageKey String? @db.VarChar(1000)
+
+  startsAt  DateTime?
+  expiresAt DateTime?
+  isActive  Boolean   @default(true)
+
+  promotions ShopPromotion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_campaigns")
+}
+
+/// Curated, manually-ordered product groupings — serves both homepage
+/// merchandising (isFeatured + sortOrder) and SEO landing pages (seo*/hero*
+/// fields), rather than two overlapping models for the same product-set concept.
+model Collection {
+  id   String @id @default(uuid())
+  slug String @unique @db.VarChar(200)
+
+  name        String  @db.VarChar(500)
+  description String?
+  imageKey    String? @db.VarChar(1000)
+
+  seoTitle       String? @db.VarChar(500)
+  seoDescription String?
+  metaKeywords   String? @db.VarChar(500)
+
+  heroTitle    String? @db.VarChar(255)
+  heroSubtitle String?
+  heroCopy     String?
+  bodyHtml     String?
+
+  isActive    Boolean   @default(true)
+  isFeatured  Boolean   @default(false)
+  sortOrder   Int       @default(0)
+  publishedAt DateTime?
+
+  productLinks CollectionProduct[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, isFeatured])
+  @@map("shop_collections")
+}
+
+model CollectionProduct {
+  id String @id @default(uuid())
+
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sortOrder Int @default(0)
+
+  @@unique([collectionId, productId])
+  @@map("shop_collection_products")
+}
+
+enum PriceRuleType {
+  percentage_off
+  fixed_off
+  /// Sets the line's unit price to `value` cents outright, rather than
+  /// discounting off the resolved price — see PriceRulesService.resolveDiscountsForLines.
+  override
+}
+
+enum PriceRuleScope {
+  variant
+  product
+  global
+}
+
+/// Admin-configurable discount, separate from ShopPromotion, gated by a
+/// minimum quantity ("buy N+, get X% off"). Applied inside
+/// PricingEngineService.compute() as an ADDITIONAL discount alongside
+/// ShopPromotion's — it never touches unit-price resolution
+/// (Product.upsellTiers / resolveUnitPriceForQuantity stay the sole
+/// authority for what a line's base unitPriceCents is; see
+/// src/pricing/variant-price.util.ts).
+model PriceRule {
+  id String @id @default(uuid())
+
+  name String @db.VarChar(300)
+
+  type  PriceRuleType
+  /// Percentage points (0-100) for percentage_off, cents for fixed_off, target unit price in cents for override.
+  value Int
+
+  scope PriceRuleScope @default(product)
+
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Rule only applies when the line's quantity is at or above this threshold.
+  minQty Int @default(1)
+
+  /// Higher priority wins when multiple price rules match the same line.
+  priority Int @default(0)
+
+  isActive  Boolean   @default(true)
+  startsAt  DateTime?
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, scope])
+  @@index([productId])
+  @@index([variantId])
+  @@map("shop_price_rules")
+}
+
+/// Config-only — replaces the hardcoded 20%/FR rate the receipt/invoice PDF
+/// used to show. Does NOT feed checkout math: Order.taxCents stays 0 and
+/// prices stay tax-inclusive-by-convention, same as before this model
+/// existed (see TaxService.resolveRate() callers). Exactly one row with
+/// countryCode=null AND categoryId=null acts as the store default.
+model TaxRate {
+  id String @id @default(uuid())
+
+  countryCode String? @db.Char(2)
+
+  categoryId String?
+  category   ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  ratePct Decimal @db.Decimal(5, 2)
+  label   String  @default("VAT") @db.VarChar(100)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([countryCode, categoryId])
+  @@map("shop_tax_rates")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// CHECKOUT domain
+// ═════════════════════════════════════════════════════════════════════════
+
+enum CheckoutStep {
+  address
+  shipping
+  payment
+  complete
+}
+
+/// Multi-step checkout form-state, keyed by cart token. Lets the customer
+/// resume checkout (email deep link via resumeToken) or reload the page
+/// mid-flow without losing their address entry.
+model CheckoutSession {
+  id String @id @default(uuid())
+
+  cartToken String       @unique @db.VarChar(36)
+  orderId   String?
+  step      CheckoutStep @default(address)
+
+  /// Address form data — does NOT include payment info
+  formSnapshot Json?
+
+  locale String @default("fr") @db.VarChar(10)
+
+  /// Unguessable token for email resume links
+  resumeToken String @unique
+
+  expiresAt DateTime
+
+  /// Set when payment is confirmed
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([expiresAt])
+  @@map("checkout_sessions")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PAYMENTS domain
+// ═════════════════════════════════════════════════════════════════════════
+
+enum PaymentTransactionType {
+  charge
+  refund
+  partial_refund
+}
+
+enum PaymentTransactionStatus {
+  pending
+  succeeded
+  failed
+  cancelled
+}
+
+/// Audit ledger of every Stripe charge/refund event applied to an order —
+/// written once per webhook delivery (deduped on webhookEventId) so replayed
+/// or out-of-order webhook deliveries can never double-apply an effect.
+model PaymentTransaction {
+  id String @id @default(uuid())
+
+  orderId  String
+  provider String @default("stripe") @db.VarChar(50)
+
+  providerTransactionId String  @db.VarChar(500)
+  /// Stripe event id — unique so a redelivered webhook is a no-op, not a duplicate charge record.
+  webhookEventId        String? @unique @db.VarChar(500)
+
+  type   PaymentTransactionType
+  status PaymentTransactionStatus
+
+  amountCents Int
+  currency    String @default("EUR") @db.VarChar(10)
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@map("shop_payment_transactions")
+}
+
+/// Reference table for payment method types offered at checkout — seeded/
+/// managed by admin. code maps to Stripe's payment_method.type.
+model PaymentType {
+  id String @id @default(uuid())
+
+  code String @unique @db.VarChar(50)
+  name String @db.VarChar(200)
+
+  /// GCS key for the payment type logo/icon
+  iconKey String? @db.VarChar(500)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  userPaymentMethods UserPaymentMethod[]
+
+  @@map("shop_payment_types")
+}
+
+enum PaymentMethodStatus {
+  active
+  expired
+  detached
+}
+
+/// Faithful port of the reference schema's shape — the reference project has
+/// no actual Stripe SetupIntent/attach/detach flow behind this either (entity
+/// + admin browse/delete only, no save-card UI, nothing ever populates a real
+/// row). Kept as the same read-only admin shell here; a real "save a card"
+/// flow is separate, greenfield scope if ever wanted.
+model UserPaymentMethod {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   ShopCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  paymentTypeId String?
+  paymentType   PaymentType? @relation(fields: [paymentTypeId], references: [id], onDelete: SetNull)
+
+  /// Stripe pm_xxx
+  providerMethodId String @unique @db.VarChar(300)
+  provider         String @default("stripe") @db.VarChar(50)
+
+  cardBrand    String? @db.VarChar(50)
+  cardLast4    String? @db.Char(4)
+  cardExpMonth Int?
+  cardExpYear  Int?
+
+  billingAddressId String?
+  billingAddress   Address? @relation(fields: [billingAddressId], references: [id], onDelete: SetNull)
+
+  isDefault Boolean             @default(false)
+  status    PaymentMethodStatus @default(active)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@map("shop_user_payment_methods")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// CUSTOMERS domain
+// ═════════════════════════════════════════════════════════════════════════
+
+/// ISO 3166-1 alpha-2 country reference table. PK is the 2-letter ISO code —
+/// no surrogate key needed. Seeded once; shipping zones, addresses, and tax
+/// rules all reference this.
+model Country {
+  /// ISO 3166-1 alpha-2 — FR, GB, MA, US …
+  isoCode String @id @db.Char(2)
+
+  name String @db.VarChar(200)
+
+  /// +33, +212 … (without leading zeros)
+  phonePrefix   String? @db.VarChar(10)
+  /// ISO 4217 currency code: EUR, GBP, MAD …
+  currencyCode  String? @db.Char(3)
+  /// ISO 3166-1 alpha-3 for analytics/exports
+  isoCode3      String? @db.Char(3)
+  /// Continent code: EU, AF, AS, NA, SA, OC, AN
+  continentCode String? @db.VarChar(2)
+
+  /// Controls whether the country is shown in checkout address forms
+  isActive          Boolean @default(true)
+  /// Whether the platform ships to this country
+  isShippingEnabled Boolean @default(false)
+  /// EU VAT zone member — drives tax rule selection
+  isEuVat           Boolean @default(false)
+
+  addresses Address[]
+
+  @@index([isActive])
+  @@map("shop_countries")
+}
+
+/// Generic, reusable address record. ShopCustomerAddress may reference one via
+/// addressId (new rows); Order still snapshots addresses into JSON at purchase
+/// time for immutability. An address is never mutated once referenced by an
+/// order — updates create a new row and repoint the FK.
+model Address {
+  id String @id @default(uuid())
+
+  /// Full name (individual) or company contact name
+  fullName String? @db.VarChar(300)
+  company  String? @db.VarChar(500)
+
+  /// Apartment / suite / unit number
+  unitNumber   String? @db.VarChar(50)
+  /// Street / building number
+  streetNumber String? @db.VarChar(50)
+
+  line1 String  @db.VarChar(500)
+  line2 String? @db.VarChar(500)
+  city  String  @db.VarChar(200)
+
+  /// State / province / region — required in US, CA, AU; optional elsewhere
+  state String? @db.VarChar(200)
+
+  postalCode String @db.VarChar(20)
+
+  /// ISO 3166-1 alpha-2
+  countryCode String   @db.Char(2)
+  country     Country? @relation(fields: [countryCode], references: [isoCode], onDelete: SetNull)
+
+  phone String? @db.VarChar(50)
+
+  /// Immutable once referenced by an order. Set by the service layer.
+  isLocked Boolean @default(false)
+
+  customerAddresses  ShopCustomerAddress[]
+  userPaymentMethods UserPaymentMethod[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([countryCode])
+  @@map("shop_addresses")
+}
+
+model ShopCustomer {
+  id String @id @default(uuid())
+
+  email     String  @unique @db.VarChar(300)
+  firstName String? @db.VarChar(300)
+  lastName  String? @db.VarChar(300)
+  phone     String? @db.VarChar(50)
+
+  /// Link to a platform user account — nullable, guest customers don't have one
+  userId String?
+
+  marketingOptIn Boolean @default(true)
+
+  totalOrders     Int @default(0)
+  totalSpentCents Int @default(0)
+
+  addresses      ShopCustomerAddress[]
+  paymentMethods UserPaymentMethod[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_customers")
+}
+
+/// An entry in a customer's saved address book. Backward-compatible dual
+/// mode: legacy rows carry only the inline fields (addressId null); new rows
+/// may additionally point at a normalized Address via addressId.
+model ShopCustomerAddress {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   ShopCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  /// Normalized address reference — null for legacy/inline-only rows
+  addressId String?
+  address   Address? @relation(fields: [addressId], references: [id], onDelete: SetNull)
+
+  // ── Inline fields — source of truth when addressId is null ────────────
+  name  String  @db.VarChar(300)
+  line1 String  @db.VarChar(500)
+  line2 String? @db.VarChar(500)
+  city  String  @db.VarChar(200)
+  zip   String  @db.VarChar(20)
+
+  /// ISO 3166-1 alpha-2
+  country String @db.VarChar(10)
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([customerId])
+  @@index([addressId])
+  @@map("shop_customer_addresses")
+}
+
+model ShopCustomerGroup {
+  id String @id @default(uuid())
+
+  name        String  @db.VarChar(200)
+  description String?
+  /// Free-form segmentation rule, e.g. { minTotalSpentCents: 50000 } — evaluated by admin tooling, not enforced here
+  criteria    Json?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_customer_groups")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// SHIPPING domain
+// ═════════════════════════════════════════════════════════════════════════
+
+/// A geographic pricing region. countryCodes is an empty array for the
+/// "worldwide" fallback zone — resolveZoneForCountry() matches an explicit
+/// country first, falling back to the empty-array zone if none matches.
+model ShippingZone {
+  id String @id @default(uuid())
+
+  name String @db.VarChar(200)
+
+  /// ISO 3166-1 alpha-2 codes covered by this zone. Empty = worldwide fallback.
+  countryCodes String[] @default([])
+
+  isActive Boolean @default(true)
+
+  /// Added to every method's priceCents when quoted in this zone
+  surchargeCents Int @default(0)
+
+  /// Zone-wide free-shipping threshold — any method is free once cart subtotal reaches this
+  freeShippingThresholdCents Int?
+
+  /// Free-form display string, e.g. "3-7 business days"
+  estimatedDeliveryDays String? @db.VarChar(100)
+
+  methods ShippingMethod[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_shipping_zones")
+}
+
+model ShippingMethod {
+  id String @id @default(uuid())
+
+  zoneId String
+  zone   ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  name        String  @db.VarChar(200)
+  description String?
+  carrier     String? @db.VarChar(200)
+
+  priceCents Int
+
+  /// Method-level free-shipping threshold — independent of the zone's
+  freeAboveCents Int?
+
+  estimatedDaysMin Int @default(2)
+  estimatedDaysMax Int @default(5)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  /// Excluded from ordinary quoting; only offered as a paid upgrade alongside
+  /// a free-shipping order (see Product.freeShippingUpgradeMethods)
+  availableForFreeShipping Boolean @default(false)
+
+  freeShippingProducts Product[] @relation("ProductFreeShippingMethods")
+  orders               Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([zoneId])
+  @@map("shop_shipping_methods")
+}
+
+enum ShipmentStatus {
+  pending
+  label_created
+  in_transit
+  delivered
+  failed
+}
+
+/// Not 1:1 with Order — a single order may have multiple Shipment rows
+/// (reshipment/replacement). Consumers read the latest by createdAt.
+/// orderId/methodId are plain columns, not FK relations (matches vitecamio —
+/// a shipment must survive its order/method being altered independently).
+model Shipment {
+  id String @id @default(uuid())
+
+  orderId  String
+  methodId String?
+
+  status ShipmentStatus @default(pending)
+
+  carrier        String? @db.VarChar(200)
+  trackingNumber String? @db.VarChar(300)
+  trackingUrl    String? @db.VarChar(2000)
+
+  shippedAt           DateTime?
+  deliveredAt         DateTime?
+  estimatedDeliveryAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@map("shop_shipments")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// ANALYTICS domain — behavioral events + session replay
+// ═════════════════════════════════════════════════════════════════════════
+
+enum BehaviorEventType {
+  product_view
+  search
+  add_to_cart
+  update_cart_item
+  remove_from_cart
+  checkout_started
+  test_checkout_blocked
+}
+
+/// Written only through BehaviorTrackingService.record(), which is the single
+/// gate consulting PlatformSettingsService.isAnalyticsExcluded/isBotUserAgent
+/// before any row is written — no relation objects (plain uuid columns),
+/// matching the reference schema (this table is written at high volume and
+/// never joined in a way that needs FK integrity).
+model ShopBehaviorEvent {
+  id String @id @default(uuid())
+
+  eventType BehaviorEventType
+
+  cartToken      String? @db.VarChar(100)
+  shopCustomerId String?
+  productId      String?
+  quantity       Int?
+
+  searchQuery String?
+  resultCount Int?
+
+  /// sha256(salt + ip) — never the raw IP.
+  visitorHash String? @db.VarChar(64)
+  countryCode String? @db.Char(2)
+  clientIp    String? @db.VarChar(64)
+  device      String? @db.VarChar(20)
+  source      String? @db.VarChar(100)
+
+  createdAt DateTime @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([productId])
+  @@index([cartToken])
+  @@index([shopCustomerId])
+  @@index([countryCode])
+  @@map("shop_behavior_events")
+}
+
+enum ReplaySessionStatus {
+  active
+  ended
+  /// Declared for parity with the reference schema — nothing sets this today;
+  /// sessions only ever go active -> ended (or stay active until the
+  /// retention cron reaps them by age).
+  error
+}
+
+/// Session-level metadata for an rrweb recording. Chunks hold the actual
+/// recorded payload (in GCS); events hold lightweight click/scroll/nav
+/// markers for the admin timeline UI, separate from rrweb's own event stream.
+model ReplaySession {
+  id String @id @default(uuid())
+
+  productId String?
+  cartToken String?
+
+  visitorHash String? @db.VarChar(64)
+  clientIp    String? @db.VarChar(64)
+  countryCode String? @db.Char(2)
+  device      String? @db.VarChar(20)
+  source      String? @db.VarChar(100)
+
+  viewportWidth  Int?
+  viewportHeight Int?
+  pageUrl        String? @db.VarChar(2000)
+  pageTitle      String? @db.VarChar(500)
+
+  eventCount   Int @default(0)
+  chunkCount   Int @default(0)
+  clickCount   Int @default(0)
+  maxScrollPct Int @default(0)
+
+  status ReplaySessionStatus @default(active)
+
+  startedAt   DateTime @default(now())
+  /// Always set at creation (equal to startedAt) — the retention cron reaps
+  /// sessions whose lastEventAt has gone stale, so it must never be null.
+  lastEventAt DateTime @default(now())
+  endedAt     DateTime?
+  durationMs  Int?
+  /// Set when an admin opens this session in the replay player.
+  viewedAt    DateTime?
+
+  events ReplayEvent[]
+  chunks ReplaySessionChunk[]
+
+  @@index([status])
+  @@index([productId])
+  @@index([startedAt])
+  @@map("shop_replay_sessions")
+}
+
+enum ReplayEventType {
+  session_start
+  session_end
+  click
+  scroll
+  navigation
+}
+
+/// Lightweight timeline markers (NOT the rrweb recording itself — see
+/// ReplaySessionChunk) that back the admin player's seekable event list.
+model ReplayEvent {
+  id String @id @default(uuid())
+
+  sessionId String
+  session   ReplaySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  type        ReplayEventType
+  timestampMs Int
+  label       String?
+  meta        Json?
+
+  @@index([sessionId, timestampMs])
+  @@map("shop_replay_events")
+}
+
+/// One row per uploaded batch of raw rrweb events — the JSON payload itself
+/// lives in GCS at `replay-sessions/{sessionId}/{sequence}.json`, never in
+/// Postgres.
+model ReplaySessionChunk {
+  id String @id @default(uuid())
+
+  sessionId String
+  session   ReplaySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  sequence     Int
+  gcsObjectKey String @db.VarChar(500)
+  sizeBytes    Int
+  eventCount   Int
+
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, sequence])
+  @@map("shop_replay_session_chunks")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Newsletter
+// ─────────────────────────────────────────────────────────────────────────
+
+enum NewsletterSubscriberStatus {
+  subscribed
+  unsubscribed
+  bounced
+}
+
+model NewsletterSubscriber {
+  id     String                     @id @default(uuid())
+  email  String                     @unique
+  locale String?
+  status NewsletterSubscriberStatus @default(subscribed)
+  /// Where the signup happened, e.g. "footer-form".
+  source String?
+  tags   String[]                   @default([])
+
+  lastActivityAt   DateTime?
+  unsubscribedAt   DateTime?
+  unsubscribeToken String?   @unique
+
+  createdAt DateTime @default(now())
+
+  recipientRows NewsletterCampaignRecipient[]
+
+  @@index([status])
+  @@map("newsletter_subscribers")
+}
+
+enum NewsletterCampaignStatus {
+  draft
+  scheduled
+  sending
+  sent
+  cancelled
+}
+
+enum NewsletterCampaignType {
+  newsletter
+  promotion
+  new_arrivals
+  flash_sale
+  category
+  abandoned_cart
+  product_launch
+  announcement
+}
+
+/// Free-form audience selector evaluated by NewsletterSegmentationService,
+/// e.g. { segment: "tags", tags: ["vip"] } — see AudienceDefinition on the frontend.
+model NewsletterCampaign {
+  id String @id @default(uuid())
+
+  title       String @db.VarChar(200)
+  subject     String @db.VarChar(250)
+  previewText String? @db.VarChar(250)
+  htmlContent String  @default("")
+
+  audience Json                     @default("{\"segment\": \"all\"}")
+  status   NewsletterCampaignStatus @default(draft)
+  type     NewsletterCampaignType   @default(newsletter)
+  tags     String[]                 @default([])
+
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  bullJobId   String?   @db.VarChar(100)
+
+  recipients NewsletterCampaignRecipient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("newsletter_campaigns")
+}
+
+enum NewsletterRecipientStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+model NewsletterCampaignRecipient {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   NewsletterCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  subscriberId String?
+  subscriber   NewsletterSubscriber? @relation(fields: [subscriberId], references: [id], onDelete: SetNull)
+
+  email  String                    @db.VarChar(300)
+  status NewsletterRecipientStatus @default(pending)
+
+  trackingToken String @unique @db.VarChar(64)
+
+  sentAt         DateTime?
+  openedAt       DateTime?
+  clickedAt      DateTime?
+  unsubscribedAt DateTime?
+  error          String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([campaignId, email])
+  @@map("newsletter_campaign_recipients")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Contacts (public contact form submissions)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Contact {
+  id String @id @default(uuid())
+
+  name    String @db.VarChar(200)
+  contact String @db.VarChar(200)
+  subject String @db.VarChar(300)
+  message String
+
+  read Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@map("contacts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Support (live chat)
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SupportConversationStatus {
+  open
+  waiting_admin
+  waiting_guest
+  closed
+  archived
+}
+
+enum SupportSenderType {
+  guest
+  admin
+  system
+}
+
+model SupportConversation {
+  id String @id @default(uuid())
+
+  guestToken String  @unique
+  guestName  String?
+  pageUrl    String?
+
+  /// Product(s) the guest had in their cart when the conversation was opened from
+  /// the checkout page — captured once at conversation creation, same as pageUrl.
+  checkoutProducts Json?
+
+  assignedAdminId String?
+  status          SupportConversationStatus @default(waiting_admin)
+
+  lastMessageAt DateTime?
+
+  unreadAdminCount Int @default(0)
+  unreadGuestCount Int @default(0)
+
+  /// SMS debounce
+  lastNotifiedAt DateTime?
+
+  /// Analytics: time from conversation open to first admin reply
+  firstResponseAt DateTime?
+  /// Analytics: when the conversation was closed/resolved
+  resolvedAt      DateTime?
+  /// Soft-archive, not deleted
+  archivedAt      DateTime?
+
+  messages SupportMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, lastMessageAt])
+  @@index([unreadAdminCount, lastMessageAt])
+  @@map("support_conversations")
+}
+
+model SupportMessage {
+  id String @id @default(uuid())
+
+  conversationId String
+  conversation   SupportConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  senderType SupportSenderType
+  senderId   String?
+  content    String
+
+  /// Null = unread; populated = seen by the OTHER party
+  readAt DateTime?
+
+  /// Architecture-ready for future attachment support
+  attachments Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, readAt])
+  @@map("support_messages")
+}
+
+model SupportNotificationLog {
+  id String @id @default(uuid())
+
+  conversationId String
+
+  /// 'sms'
+  notificationType String
+  /// 'sent' | 'failed' | 'skipped'
+  status           String
+  retries          Int    @default(0)
+
+  providerResponse String?
+  metadata         Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@map("support_notification_logs")
+}
+
+model SupportAuditLog {
+  id String @id @default(uuid())
+
+  conversationId String
+  adminId        String?
+
+  /// 'conversation_deleted' | 'conversation_archived' | 'status_changed' | 'assigned' | 'auto_closed'
+  action AuditAction
+
+  previousValue Json?
+  newValue      Json?
+  note          String?
+
+  createdAt DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("support_audit_logs")
+}
+
+enum AuditAction {
+  conversation_deleted
+  conversation_archived
+  status_changed
+  assigned
+  auto_closed
+}

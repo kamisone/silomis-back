@@ -1,0 +1,238 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { FreeTranslateService } from './free-translate.service';
+
+/**
+ * The shop's 6 non-English display languages — everything a product needs
+ * translated once an admin has written a section in English, the shop's
+ * base/source language and the sole input language for every "Generate"
+ * button on the product-edit page.
+ */
+export type SectionTranslationLang = 'fr' | 'es' | 'it' | 'de' | 'nl' | 'pl';
+
+const SECTION_TARGET_LANGS: SectionTranslationLang[] = [
+  'fr',
+  'es',
+  'it',
+  'de',
+  'nl',
+  'pl',
+];
+
+/**
+ * Result of translating one section/item into all 6 languages. `errors` is
+ * only populated for languages that failed — the admin needs to actually see
+ * *why* a language came back empty instead of it silently looking like the
+ * button just didn't do anything. A failed language's `result` entry is
+ * still present (set to `emptyValue`) so callers can always safely read
+ * `result[lang]` without an undefined-access crash.
+ */
+export interface SectionTranslationOutcome<T> {
+  result: Record<SectionTranslationLang, T>;
+  errors: Partial<Record<SectionTranslationLang, string>>;
+}
+
+/**
+ * Powers every "Generate" button across the shop admin (product title,
+ * short description, description, specifications, FAQs, story gallery,
+ * trust badges, social videos): the admin writes the English source, clicks
+ * Generate, and gets all 6 overlay languages back — via free Google
+ * Translate (see FreeTranslateService).
+ */
+@Injectable()
+export class TranslationService {
+  private readonly logger = new Logger(TranslationService.name);
+
+  constructor(private readonly freeTranslate: FreeTranslateService) {}
+
+  async translateTitle(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'title',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  async translateShortDescription(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'short_description',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** The heading shown above the Story Gallery's Narrative section. */
+  async translateStoryNarrativeTitle(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'story_narrative_title',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** The heading shown above the Social Videos carousel. */
+  async translateSocialVideosTitle(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'social_videos_title',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  async translateDescription(
+    html: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'description',
+      (lang) => this.freeTranslate.translateHtml(html, lang),
+      '',
+    );
+  }
+
+  /** One card, one click: translates a single specification entry (label + value). */
+  async translateInfoSection(item: {
+    label: string;
+    value: string;
+  }): Promise<SectionTranslationOutcome<{ label: string; value: string }>> {
+    return this.translateSection(
+      'info_section',
+      async (lang) => ({
+        label: await this.freeTranslate.translateText(item.label, lang),
+        value: await this.freeTranslate.translateText(item.value, lang),
+      }),
+      { label: '', value: '' },
+    );
+  }
+
+  /** One card, one click: translates a single FAQ entry (question + answer). */
+  async translateFaq(item: {
+    question: string;
+    answer: string;
+  }): Promise<SectionTranslationOutcome<{ question: string; answer: string }>> {
+    return this.translateSection(
+      'faq',
+      async (lang) => ({
+        question: await this.freeTranslate.translateText(item.question, lang),
+        answer: await this.freeTranslate.translateText(item.answer, lang),
+      }),
+      { question: '', answer: '' },
+    );
+  }
+
+  /** One card, one click: translates a single story-gallery block (title + description). */
+  async translateStoryItem(item: {
+    title: string;
+    description: string;
+  }): Promise<
+    SectionTranslationOutcome<{ title: string; description: string }>
+  > {
+    return this.translateSection(
+      'story_item',
+      async (lang) => ({
+        title: await this.freeTranslate.translateText(item.title, lang),
+        description: await this.freeTranslate.translateText(
+          item.description,
+          lang,
+        ),
+      }),
+      { title: '', description: '' },
+    );
+  }
+
+  /** One card, one click: translates a single trust badge (title + optional subtitle). */
+  async translateTrustBadge(item: {
+    title: string;
+    subtitle: string;
+  }): Promise<SectionTranslationOutcome<{ title: string; subtitle: string }>> {
+    return this.translateSection(
+      'trust_badge',
+      async (lang) => ({
+        title: await this.freeTranslate.translateText(item.title, lang),
+        subtitle: item.subtitle.trim()
+          ? await this.freeTranslate.translateText(item.subtitle, lang)
+          : '',
+      }),
+      { title: '', subtitle: '' },
+    );
+  }
+
+  /** One card, one click: translates a single social video's title/badge. */
+  async translateSocialVideo(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'social_video',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** Variant attribute name (e.g. "Color", "Size"). */
+  async translateAttributeName(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'variant_attribute_name',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** Option value display label (e.g. "Black", "Extra Large"). */
+  async translateOptionDisplayValue(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'option_display_value',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** Country display name (e.g. "France", "Morocco"). */
+  async translateCountryName(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'country_name',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /**
+   * Shared per-language loop: one call per target language, run
+   * sequentially (not in parallel) so this doesn't burst 6 simultaneous
+   * requests at Google Translate's free, unofficial, rate-limit-sensitive
+   * endpoint. A single language failing doesn't take the other five down
+   * with it — it gets `emptyValue` (the caller/UI treats empty as "admin
+   * fills it in manually") *and* a human-readable reason in `errors`.
+   */
+  private async translateSection<T>(
+    name: string,
+    translateOne: (lang: SectionTranslationLang) => Promise<T>,
+    emptyValue: T,
+  ): Promise<SectionTranslationOutcome<T>> {
+    const result = {} as Record<SectionTranslationLang, T>;
+    const errors: Partial<Record<SectionTranslationLang, string>> = {};
+
+    for (const lang of SECTION_TARGET_LANGS) {
+      try {
+        result[lang] = await translateOne(lang);
+      } catch (err) {
+        this.logger.warn(`${name}_${lang} failed: ${(err as Error).message}`);
+        result[lang] = emptyValue;
+        errors[lang] = 'Translation failed — try again.';
+      }
+    }
+
+    return { result, errors };
+  }
+}
