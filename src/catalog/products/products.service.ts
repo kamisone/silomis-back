@@ -353,9 +353,6 @@ export class ProductsService {
           featuredImageKey: legacy ? legacy.featuredImageKey : (dto.featuredImageKey ?? null),
           galleryImageKeys: legacy ? legacy.galleryImageKeys : (dto.galleryImageKeys ?? []),
           media: media as unknown as Prisma.InputJsonValue,
-          seoTitle: dto.seoTitle ?? null,
-          seoDescription: dto.seoDescription ?? null,
-          canonicalUrl: dto.canonicalUrl ?? null,
           featured: dto.featured ?? false,
           isTestProduct: dto.isTestProduct ?? false,
           freeShipping: dto.freeShipping ?? false,
@@ -444,9 +441,6 @@ export class ProductsService {
         featuredImageKey: legacy ? legacy.featuredImageKey : dto.featuredImageKey !== undefined ? (dto.featuredImageKey ?? null) : undefined,
         galleryImageKeys: legacy ? legacy.galleryImageKeys : dto.galleryImageKeys,
         media: dto.media !== undefined ? (media as unknown as Prisma.InputJsonValue) : undefined,
-        seoTitle: dto.seoTitle !== undefined ? (dto.seoTitle ?? null) : undefined,
-        seoDescription: dto.seoDescription !== undefined ? (dto.seoDescription ?? null) : undefined,
-        canonicalUrl: dto.canonicalUrl !== undefined ? (dto.canonicalUrl ?? null) : undefined,
         featured: dto.featured,
         isTestProduct: dto.isTestProduct,
         freeShipping: dto.freeShipping,
@@ -881,15 +875,16 @@ export class ProductsService {
       combinations.push({ title, sku, isNew: true, combinationHash: hash });
     }
 
+    // `combinationHash: { not: defaultHash }` would silently exclude the original
+    // null-combinationHash placeholder variant (SQL `<>` never matches NULL), leaving
+    // it stuck on isDefault: true alongside the real default — a CASE/ELSE covers
+    // every row, NULL included.
     if (defaultHash !== null) {
-      await this.prisma.productVariant.updateMany({
-        where: { productId, combinationHash: defaultHash },
-        data: { isDefault: true },
-      });
-      await this.prisma.productVariant.updateMany({
-        where: { productId, combinationHash: { not: defaultHash } },
-        data: { isDefault: false },
-      });
+      await this.prisma.$executeRaw`
+        UPDATE shop_product_variants
+        SET "isDefault" = CASE WHEN "combinationHash" = ${defaultHash} THEN true ELSE false END
+        WHERE "productId" = ${productId}
+      `;
     }
 
     // Delete stale variants — those whose hash is no longer in the current valid set.

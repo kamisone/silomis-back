@@ -481,10 +481,6 @@ model Product {
   documents    Json @default("[]") // ProductDocument[]
   privateLinks Json @default("[]") // ProductPrivateLink[] — admin-only, never public
 
-  seoTitle       String? @db.VarChar(500)
-  seoDescription String?
-  canonicalUrl   String? @db.VarChar(2000)
-
   /// Base price in cents. Effective variant price = basePriceCents + option adjustments
   /// when the variant has no explicit priceCents override.
   basePriceCents Int?

@@ -121,9 +121,6 @@ export const CreateProductSchema = z.object({
   featuredImageKey: z.string().max(1000).nullish(),
   galleryImageKeys: z.array(z.string().max(1000)).optional(),
   media: z.array(ProductMediaItemSchema).optional(),
-  seoTitle: z.string().max(500).nullish(),
-  seoDescription: z.string().nullish(),
-  canonicalUrl: z.string().max(2000).nullish(),
   featured: z.boolean().optional(),
   /** Demand-validation product: browsable and addable to cart, checkout refused. */
   isTestProduct: z.boolean().optional(),
