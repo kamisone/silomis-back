@@ -11,8 +11,11 @@ import { Prisma, Product, ProductVariant } from '../../../generated/prisma/clien
 import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
 import { ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
 import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
+import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 const ET_SHOP_PRODUCT = 'shop_product';
+const ET_SHOP_VARIANT_ATTR = 'shop_variant_attribute';
+const ET_SHOP_VARIATION_OPTION = 'shop_variation_option_value';
 
 @Injectable()
 export class ProductsService {
@@ -1029,5 +1032,226 @@ export class ProductsService {
     await this.prisma.productOptionValueImage.deleteMany({
       where: { productId, optionValueId },
     });
+  }
+
+  // ── Variant resolution (PDP option picker → specific SKU) ───────────────
+
+  async resolveVariant(
+    productId: string,
+    optionValueIds: string[],
+    lang?: string,
+  ): Promise<{
+    status: 'available' | 'out_of_stock' | 'unavailable';
+    variant: {
+      id: string; sku: string; title: string;
+      priceCents: number; compareAtPriceCents: number | null;
+      variantSlug: string | null; featuredMediaUrl: string | null;
+      available: number; optionValueIds: string[];
+    } | null;
+  }> {
+    if (!optionValueIds.length) return { status: 'unavailable', variant: null };
+
+    const hash = buildCombinationHash(optionValueIds);
+    if (!hash) return { status: 'unavailable', variant: null };
+
+    const [variant, product] = await Promise.all([
+      this.prisma.productVariant.findFirst({
+        where: { productId, combinationHash: hash },
+        include: { options: { include: { optionValue: true } }, inventoryItem: true },
+      }),
+      this.prisma.product.findUnique({ where: { id: productId } }),
+    ]);
+    if (!variant) return { status: 'unavailable', variant: null };
+
+    // variant.title (e.g. "Noir / S") is baked once, in the base language,
+    // at variant-creation time (see buildVariantTitle) — reconstruct it from
+    // the (translation-overlaid) option values for any non-default lang,
+    // same as getVariantAvailabilityMatrix does, so this endpoint's title
+    // never overrides an already-translated matrix title with a stale
+    // French one (resolveVariant's result takes priority on the PDP).
+    let title = variant.title;
+    if (lang) {
+      const sortedOptions = [...variant.options].filter((o) => o.optionValueId);
+      if (sortedOptions.length) {
+        const productAttrs = await this.prisma.productVariantAttribute.findMany({ where: { productId } });
+        const attrSortOrder = new Map(productAttrs.map((pa) => [pa.attributeId, pa.sortOrder]));
+        sortedOptions.sort((a, b) => (attrSortOrder.get(a.attributeId) ?? 0) - (attrSortOrder.get(b.attributeId) ?? 0));
+        const translatedOptions = await this.translations.applyToEntities(
+          sortedOptions.map((o) => ({ id: o.optionValueId as string, value: o.value })),
+          ET_SHOP_VARIATION_OPTION,
+          lang,
+        );
+        title = translatedOptions.map((ov) => (ov as { displayValue?: string; value: string }).displayValue ?? ov.value).join(' / ');
+      }
+    }
+
+    const hasInventory = !!variant.inventoryItem;
+    const available = hasInventory ? (variant.inventoryItem!.available ?? 0) : -1;
+
+    const featuredMediaUrl = variant.featuredMediaKey ? ((await this.assetUrls.resolveBatch([variant.featuredMediaKey])).get(variant.featuredMediaKey) ?? null) : null;
+
+    const effectivePriceCents = resolveVariantPrice({
+      variantPriceCents: variant.priceCents,
+      basePriceCents: product?.basePriceCents ?? null,
+      optionAdjustmentCents: sumOptionAdjustments(variant.options),
+    });
+
+    return {
+      status: !hasInventory || available > 0 ? 'available' : 'out_of_stock',
+      variant: {
+        id: variant.id,
+        sku: variant.sku,
+        title,
+        priceCents: effectivePriceCents,
+        compareAtPriceCents: variant.compareAtPriceCents ?? null,
+        variantSlug: variant.variantSlug ?? null,
+        featuredMediaUrl,
+        available,
+        optionValueIds: variant.options.map((o) => o.optionValueId).filter(Boolean) as string[],
+      },
+    };
+  }
+
+  async getVariantStock(variantId: string): Promise<{ available: number; inStock: boolean }> {
+    const inventory = await this.prisma.inventoryItem.findUnique({ where: { variantId } });
+    if (!inventory) return { available: -1, inStock: true };
+    return { available: inventory.available, inStock: inventory.available > 0 };
+  }
+
+  /**
+   * Returns all variants with their option combinations and stock levels.
+   * The frontend uses this to disable unavailable option choices and
+   * resolve which variant is selected given current option picks.
+   */
+  async getVariantAvailabilityMatrix(productId: string, lang?: string): Promise<{
+    attributes: Array<{
+      id: string; name: string; slug: string;
+      displayType: string; sortOrder: number;
+      defaultOptionValueId: string | null;
+      optionValues: Array<{
+        id: string; value: string; displayValue: string | null;
+        swatchValue: string | null; swatchUrl: string | null; swatchType: string | null; sortOrder: number;
+      }>;
+    }>;
+    variants: Array<{
+      id: string; sku: string; title: string;
+      priceCents: number; compareAtPriceCents: number | null;
+      variantSlug: string | null; featuredMediaUrl: string | null;
+      optionValueIds: string[];
+      available: number; inStock: boolean;
+    }>;
+  }> {
+    const product = await this.prisma.product.findUnique({ where: { id: productId } });
+    if (!product) throw new NotFoundException('Product not found');
+
+    // Source attributes from the product's linked variations (not from existing variants)
+    const productAttrs = await this.prisma.productVariantAttribute.findMany({
+      where: { productId },
+      include: { attribute: { include: { optionValues: true } } },
+      orderBy: { sortOrder: 'asc' },
+    });
+
+    let variants = await this.prisma.productVariant.findMany({
+      where: { productId },
+      include: { options: { include: { optionValue: true } }, inventoryItem: true },
+    });
+
+    // Exclude the preserved original default variant (null combinationHash)
+    // when variation attributes exist — it shouldn't appear in the option picker.
+    if (productAttrs.length > 0) {
+      variants = variants.filter((v) => v.combinationHash !== null);
+    }
+
+    const hasInventory = variants.some((v) => !!v.inventoryItem);
+
+    const mediaKeys = variants.map((v) => v.featuredMediaKey).filter(Boolean) as string[];
+    // Image swatches are per-product (Product A's "Red" photo isn't Product B's),
+    // so resolve them from this product's option-value image overrides.
+    const optionImages = await this.prisma.productOptionValueImage.findMany({ where: { productId } });
+    const optionImageMap = new Map(optionImages.map((oi) => [oi.optionValueId, oi.mediaKey]));
+    const swatchKeys = [...optionImageMap.values()];
+    const urlMap = await this.assetUrls.resolveBatch([...mediaKeys, ...swatchKeys]);
+
+    let attributes: Array<Record<string, unknown>> = productAttrs.map((pa) => ({
+      id: pa.attribute.id,
+      name: pa.attribute.name,
+      slug: pa.attribute.slug,
+      displayType: pa.attribute.displayType,
+      sortOrder: pa.sortOrder,
+      defaultOptionValueId: pa.defaultOptionValueId,
+      optionValues: [...pa.attribute.optionValues]
+        .filter((ov) => ov.isActive)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((ov) => ({
+          id: ov.id,
+          value: ov.value,
+          displayValue: ov.displayValue,
+          // Color swatches are a global hex value; image swatches are per-product
+          // (see optionImageMap) so the global swatchValue is not exposed here.
+          swatchValue: ov.swatchType === 'color' ? ov.swatchValue : null,
+          swatchUrl: ov.swatchType === 'image' ? (urlMap.get(optionImageMap.get(ov.id) ?? '') ?? null) : null,
+          swatchType: ov.swatchType,
+          sortOrder: ov.sortOrder,
+        })),
+    }));
+
+    attributes = await this.translations.maybeApply(attributes, ET_SHOP_VARIANT_ATTR, lang);
+    for (const attr of attributes) {
+      const optionValues = attr.optionValues as Array<Record<string, unknown>>;
+      if (optionValues?.length) {
+        attr.optionValues = await this.translations.maybeApply(optionValues, ET_SHOP_VARIATION_OPTION, lang);
+      }
+    }
+
+    // v.title (e.g. "Noir / S") is baked once, in the base language, at
+    // variant-creation time (see buildVariantTitle) — it never picks up
+    // option-value translations on its own. Reconstruct it from the
+    // option values above (now translation-overlaid) for any non-default
+    // lang, same join/sort rule buildVariantTitle uses, so the storefront
+    // never shows a French title next to an already-translated attribute
+    // picker.
+    const attrSortOrder = new Map(productAttrs.map((pa) => [pa.attributeId, pa.sortOrder]));
+    const translatedDisplayValue = new Map<string, string>();
+    for (const attr of attributes) {
+      for (const ov of (attr.optionValues as Array<{ id: string; displayValue: string | null; value: string }>) ?? []) {
+        translatedDisplayValue.set(ov.id, ov.displayValue ?? ov.value);
+      }
+    }
+
+    return {
+      attributes: attributes as never,
+      variants: variants.map((v) => {
+        const sortedOptions = [...v.options]
+          .filter((o) => o.optionValueId)
+          .sort((a, b) => (attrSortOrder.get(a.attributeId) ?? 0) - (attrSortOrder.get(b.attributeId) ?? 0));
+        const title = lang && sortedOptions.length ? sortedOptions.map((o) => translatedDisplayValue.get(o.optionValueId!) ?? o.value).join(' / ') : v.title;
+        return {
+          id: v.id,
+          sku: v.sku,
+          title,
+          priceCents: resolveVariantPrice({
+            variantPriceCents: v.priceCents,
+            basePriceCents: product.basePriceCents,
+            optionAdjustmentCents: sumOptionAdjustments(v.options),
+          }),
+          compareAtPriceCents: v.compareAtPriceCents,
+          variantSlug: v.variantSlug,
+          featuredMediaUrl: v.featuredMediaKey ? (urlMap.get(v.featuredMediaKey) ?? null) : null,
+          optionValueIds: v.options.map((o) => o.optionValueId).filter(Boolean) as string[],
+          available: hasInventory ? (v.inventoryItem?.available ?? 0) : 1,
+          inStock: !hasInventory || (v.inventoryItem?.available ?? 0) > 0,
+        };
+      }),
+    };
+  }
+
+  /** Finds a variant by its URL slug within a product. */
+  async getVariantBySlug(productId: string, variantSlug: string) {
+    const variant = await this.prisma.productVariant.findFirst({
+      where: { productId, variantSlug },
+      include: { options: { include: { optionValue: true, attribute: true } }, inventoryItem: true },
+    });
+    if (!variant) throw new NotFoundException('Variant not found');
+    return variant;
   }
 }

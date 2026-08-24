@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { Public } from '../../auth/public.decorator';
 import { ProductsService } from './products.service';
 import { RecommendationService } from '../recommendation.service';
@@ -50,5 +50,30 @@ export class ProductPublicController {
   @Get(':slug')
   getBySlug(@Param('slug') slug: string, @Query('lang') lang?: string) {
     return this.products.findBySlug(slug, lang);
+  }
+
+  /** Resolve a set of selected option value IDs to a specific SKU/variant. */
+  @Post(':slug/variants/resolve')
+  @HttpCode(200)
+  async resolveVariant(@Param('slug') slug: string, @Body() dto: { optionValueIds: string[]; lang?: string }) {
+    const product = await this.products.findBySlug(slug);
+    return this.products.resolveVariant(product.id as string, dto.optionValueIds ?? [], dto.lang);
+  }
+
+  /**
+   * Returns all variants with stock levels and option combinations.
+   * Used by the PDP option picker to disable unavailable choices.
+   */
+  @Get(':slug/variants/availability')
+  async getAvailabilityMatrix(@Param('slug') slug: string, @Query('lang') lang?: string) {
+    const product = await this.products.findBySlug(slug);
+    return this.products.getVariantAvailabilityMatrix(product.id as string, lang);
+  }
+
+  /** Fetch a specific variant by its URL slug (e.g. /products/tshirt/variants/black-m). */
+  @Get(':slug/variants/:variantSlug')
+  async getVariantBySlug(@Param('slug') slug: string, @Param('variantSlug') variantSlug: string) {
+    const product = await this.products.findBySlug(slug);
+    return this.products.getVariantBySlug(product.id as string, variantSlug);
   }
 }

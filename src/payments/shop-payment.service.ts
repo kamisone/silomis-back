@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import Stripe = require('stripe');
 import { STRIPE_CLIENT } from './stripe.provider';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,7 +7,9 @@ import { OrdersService } from '../orders/orders.service';
 import { TestCheckoutGuard } from '../orders/test-checkout-guard.service';
 import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service';
 import { COMMERCE_EVENTS } from '../commerce-events/commerce-events.constants';
-import { OrderStatus, PaymentTransaction, Prisma } from '../../generated/prisma/client';
+import { MetaCapiService } from '../marketing/meta-capi/meta-capi.service';
+import { TikTokEventsService } from '../marketing/tiktok-events/tiktok-events.service';
+import { Order, OrderStatus, PaymentTransaction, Prisma } from '../../generated/prisma/client';
 
 const REFUNDABLE_STATUSES: OrderStatus[] = ['paid', 'processing', 'shipped', 'delivered'];
 
@@ -27,11 +30,82 @@ export class ShopPaymentService {
     private readonly ordersService: OrdersService,
     private readonly testCheckoutGuard: TestCheckoutGuard,
     private readonly eventBus: CommerceEventBus,
+    private readonly metaCapi: MetaCapiService,
+    private readonly tiktokEvents: TikTokEventsService,
   ) {}
+
+  // ── AddPaymentInfo tracking — fired once the customer reaches the payment
+  // step (a PaymentIntent now exists for their order). Mirrors the
+  // InitiateCheckout/Purchase pattern used by the marketing order listeners,
+  // but this moment has no natural domain event to hook into, so it's called
+  // directly from createPaymentIntent below. Best-effort: tracking failures
+  // must never block payment.
+  private async trackAddPaymentInfo(order: Order): Promise<{ metaEventId?: string; tiktokEventId?: string }> {
+    try {
+      const items = await this.prisma.orderItem.findMany({ where: { orderId: order.id } });
+      const metaEventId = randomUUID();
+      const tiktokEventId = randomUUID();
+      const eventSourceUrl = `${process.env.APP_URL ?? ''}/${order.customerLocale ?? 'fr'}/shop/checkout`;
+
+      await this.metaCapi.sendEvent({
+        eventName: 'AddPaymentInfo',
+        eventId: metaEventId,
+        eventSourceUrl,
+        customData: {
+          value: order.totalCents / 100,
+          currency: 'EUR',
+          content_type: 'product',
+          content_ids: items.map((i) => i.variantId ?? i.productId ?? i.id),
+          contents: items.map((i) => ({
+            id: i.variantId ?? i.productId ?? i.id,
+            quantity: i.quantity,
+            item_price: i.unitPriceCents / 100,
+          })),
+        },
+        email: order.customerEmail,
+        clientIpAddress: order.clientIpAddress,
+        clientUserAgent: order.clientUserAgent,
+        fbc: order.metaClickId,
+        fbp: order.metaBrowserId,
+      });
+
+      await this.tiktokEvents.sendEvent({
+        eventName: 'AddPaymentInfo',
+        eventId: tiktokEventId,
+        eventSourceUrl,
+        properties: {
+          contents: items.map((i) => ({
+            content_id: i.variantId ?? i.productId ?? i.id,
+            content_type: 'product',
+            content_name: i.titleSnapshot,
+            quantity: i.quantity,
+            price: i.unitPriceCents / 100,
+          })),
+          value: order.totalCents / 100,
+          currency: 'EUR',
+        },
+        email: order.customerEmail,
+        clientIpAddress: order.clientIpAddress,
+        clientUserAgent: order.clientUserAgent,
+        ttclid: order.tiktokClickId,
+        ttp: order.tiktokBrowserId,
+      });
+
+      return { metaEventId, tiktokEventId };
+    } catch (err) {
+      this.logger.error(`Failed to send AddPaymentInfo events for order ${order.orderNumber}: ${(err as Error).message}`);
+      return {};
+    }
+  }
 
   // ── Create payment intent for a shop order ──────────────────────────────
 
-  async createPaymentIntent(orderId: string): Promise<{ clientSecret: string; paymentIntentId: string }> {
+  async createPaymentIntent(orderId: string): Promise<{
+    clientSecret: string;
+    paymentIntentId: string;
+    metaAddPaymentInfoEventId?: string;
+    tiktokAddPaymentInfoEventId?: string;
+  }> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -63,14 +137,20 @@ export class ShopPaymentService {
             amount: order.totalCents,
           });
           this.logger.log(`Re-synced PaymentIntent ${existing.id} for order ${order.orderNumber}: ${existing.amount} -> ${order.totalCents} cents`);
+          const tracked1 = await this.trackAddPaymentInfo(order);
           return {
             clientSecret: updated.client_secret!,
             paymentIntentId: updated.id,
+            metaAddPaymentInfoEventId: tracked1.metaEventId,
+            tiktokAddPaymentInfoEventId: tracked1.tiktokEventId,
           };
         }
+        const tracked2 = await this.trackAddPaymentInfo(order);
         return {
           clientSecret: existing.client_secret!,
           paymentIntentId: existing.id,
+          metaAddPaymentInfoEventId: tracked2.metaEventId,
+          tiktokAddPaymentInfoEventId: tracked2.tiktokEventId,
         };
       }
     }
@@ -93,7 +173,13 @@ export class ShopPaymentService {
       data: { paymentIntentId: intent.id },
     });
 
-    return { clientSecret: intent.client_secret!, paymentIntentId: intent.id };
+    const tracked3 = await this.trackAddPaymentInfo(order);
+    return {
+      clientSecret: intent.client_secret!,
+      paymentIntentId: intent.id,
+      metaAddPaymentInfoEventId: tracked3.metaEventId,
+      tiktokAddPaymentInfoEventId: tracked3.tiktokEventId,
+    };
   }
 
   // ── Admin-initiated refund ──────────────────────────────────────────────

@@ -15,6 +15,7 @@ import { VariantAttributePublicController } from './variant-attributes/variant-a
 import { ProductsService } from './products/products.service';
 import { ProductAdminController } from './products/product-admin.controller';
 import { ProductPublicController } from './products/product-public.controller';
+import { VariantStockController } from './products/variant-stock.controller';
 import { RecommendationService } from './recommendation.service';
 import { RecommendationListener } from './recommendation.listener';
 import { ProductSearchService } from './products/product-search.service';
@@ -24,7 +25,7 @@ import { ReviewsModule } from '../reviews/reviews.module';
 
 @Module({
   imports: [GcsModule, AssetUrlModule, MediaModule, TranslationsModule, ReviewsModule, AiModule],
-  controllers: [CategoryAdminController, CategoryPublicController, TagAdminController, VariantAttributeAdminController, VariantAttributePublicController, ProductAdminController, ProductPublicController, ProductSearchPublicController, ProductSearchAdminController],
+  controllers: [CategoryAdminController, CategoryPublicController, TagAdminController, VariantAttributeAdminController, VariantAttributePublicController, ProductAdminController, ProductPublicController, VariantStockController, ProductSearchPublicController, ProductSearchAdminController],
   providers: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, RecommendationListener, ProductSearchService, SearchIndexListener],
   exports: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, ProductSearchService],
 })
