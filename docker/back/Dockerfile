@@ -11,9 +11,11 @@ USER node:node
 
 COPY package.json ./
 COPY prisma ./prisma
+COPY prisma.config.ts ./
+COPY src/prisma/database-url.ts ./src/prisma/database-url.ts
 RUN npm i
 ADD dist/ ./dist
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start:prod"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
