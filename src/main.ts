@@ -61,7 +61,7 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
   app.useGlobalFilters(new AllExceptionsFilter(app.get(ErrorCollectorService)));
-  const port = process.env.BACK_PORT || 3000;
+  const port = process.env.BACK_PORT || 3000; 
   await app.listen(port);
   console.log(`[boot] listening on ${port}`);
 }
