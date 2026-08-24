@@ -7,8 +7,14 @@ import { DlqService } from '../dlq/dlq.service';
 import { ShopEmailService } from '../email/shop-email.service';
 import { CheckoutSessionService } from '../checkout/checkout-session.service';
 import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service';
-import { COMMERCE_EVENTS, CartAbandonedEvent } from '../commerce-events/commerce-events.constants';
-import { CART_ABANDONMENT_QUEUE, CartAbandonmentJobData } from './cart-abandonment.constants';
+import {
+  COMMERCE_EVENTS,
+  CartAbandonedEvent,
+} from '../commerce-events/commerce-events.constants';
+import {
+  CART_ABANDONMENT_QUEUE,
+  CartAbandonmentJobData,
+} from './cart-abandonment.constants';
 
 @Processor(CART_ABANDONMENT_QUEUE)
 export class CartAbandonmentProcessor extends DlqAwareWorker {
@@ -34,7 +40,9 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     });
 
     if (!cart || cart.items.length === 0) {
-      this.logger.log(`Cart ${cartToken} is no longer active or has no items — skipping abandonment email`);
+      this.logger.log(
+        `Cart ${cartToken} is no longer active or has no items — skipping abandonment email`,
+      );
       return;
     }
 
@@ -45,11 +53,16 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
       data: { status: 'abandoned' },
     });
     if (count === 0) {
-      this.logger.log(`Cart ${cartToken} was no longer active when abandonment fired — skipping`);
+      this.logger.log(
+        `Cart ${cartToken} was no longer active when abandonment fired — skipping`,
+      );
       return;
     }
 
-    const appUrl = (process.env.APP_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+    const appUrl = (process.env.APP_URL ?? 'http://localhost:3000').replace(
+      /\/$/,
+      '',
+    );
 
     // Resolve customer email + destination URL: prefer an in-progress
     // checkout session (has the freshest email + a proper resume link),
@@ -57,6 +70,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     let email: string | null = null;
     let name: string | null = null;
     let destinationUrl: string | null = null;
+    let locale: string | null = null;
 
     try {
       const session = await this.sessionService.findByCartToken(cartToken);
@@ -64,6 +78,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
       if (session && !session.completedAt && formSnapshot?.email) {
         email = formSnapshot.email;
         destinationUrl = `${appUrl}/shop/checkout/resume/${session.resumeToken}`;
+        locale = session.locale;
       }
     } catch {
       // Never block the email on session lookup failure — fall through to the order lookup.
@@ -78,6 +93,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
         email = order.customerEmail;
         name = order.customerName;
         destinationUrl = `${appUrl}/shop/cart/resume/${cartToken}`;
+        locale = order.customerLocale;
       }
     }
 
@@ -92,7 +108,9 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     );
 
     if (!email) {
-      this.logger.log(`Cart ${cartToken} has no resolvable customer email — skipping`);
+      this.logger.log(
+        `Cart ${cartToken} has no resolvable customer email — skipping`,
+      );
       return;
     }
 
@@ -104,6 +122,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
         quantity: i.quantity,
         unitPriceCents: i.unitPriceCents,
       })),
+      locale,
     });
 
     this.logger.log(`Abandoned cart email sent for cart ${cartToken}`);

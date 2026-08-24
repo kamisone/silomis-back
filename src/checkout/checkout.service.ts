@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -9,10 +14,22 @@ import { COMMERCE_EVENTS } from '../commerce-events/commerce-events.constants';
 import { TestCheckoutGuard } from '../orders/test-checkout-guard.service';
 import { OrdersService } from '../orders/orders.service';
 import { CustomerService } from '../customers/customer.service';
-import { FREE_SHIPPING_METHOD_ID, QuotedMethod, ShippingService } from '../shipping/shipping.service';
-import { PricingEngineService, LineItemInput, PricingResult } from '../promotions/pricing-engine.service';
+import {
+  FREE_SHIPPING_METHOD_ID,
+  QuotedMethod,
+  ShippingService,
+} from '../shipping/shipping.service';
+import {
+  PricingEngineService,
+  LineItemInput,
+  PricingResult,
+} from '../promotions/pricing-engine.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
-import { CHECKOUT_RESERVATION_QUEUE, RESERVATION_TTL_MS, ReservationExpiryJobData } from './checkout-reservation.constants';
+import {
+  CHECKOUT_RESERVATION_QUEUE,
+  RESERVATION_TTL_MS,
+  ReservationExpiryJobData,
+} from './checkout-reservation.constants';
 import { InitiateCheckoutDto } from './dto/checkout.dto';
 import { UpdateShippingDto } from '../shipping/dto/shipping.dto';
 import { CartItem, Order, Prisma } from '../../generated/prisma/client';
@@ -58,7 +75,8 @@ export class CheckoutService {
     private readonly customerService: CustomerService,
     private readonly shipping: ShippingService,
     private readonly pricingEngine: PricingEngineService,
-    @InjectQueue(CHECKOUT_RESERVATION_QUEUE) private readonly reservationQueue: Queue,
+    @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
+    private readonly reservationQueue: Queue,
   ) {}
 
   // ── Initiate checkout ──────────────────────────────────────────────────
@@ -66,8 +84,14 @@ export class CheckoutService {
   // reservation. Idempotent: returns the existing draft order for the same
   // cart token if one is already in progress.
 
-  async initiate(dto: InitiateCheckoutDto): Promise<CheckoutSnapshot> {
-    const cart = await this.prisma.cart.findFirst({ where: { token: dto.cartToken, status: 'active' }, include: { items: true } });
+  async initiate(
+    dto: InitiateCheckoutDto,
+    requestMeta?: { ip: string | null; userAgent: string | null },
+  ): Promise<CheckoutSnapshot> {
+    const cart = await this.prisma.cart.findFirst({
+      where: { token: dto.cartToken, status: 'active' },
+      include: { items: true },
+    });
     if (!cart) throw new NotFoundException('Active cart not found');
     if (!cart.items.length) throw new BadRequestException('Cart is empty');
 
@@ -76,28 +100,52 @@ export class CheckoutService {
     // Idempotency: the cart stays "active" (and its items visible) until
     // payment is confirmed, so a page refresh during checkout must resume
     // this order rather than creating a duplicate (and double-reserving stock).
-    const existing = await this.prisma.order.findFirst({ where: { cartToken: dto.cartToken, status: { in: ['draft', 'awaiting_payment'] } } });
+    const existing = await this.prisma.order.findFirst({
+      where: {
+        cartToken: dto.cartToken,
+        status: { in: ['draft', 'awaiting_payment'] },
+      },
+    });
     if (existing) {
       const productIds = [...new Set(items.map((i) => i.productId))];
-      const subtotalCents = items.reduce((sum, i) => sum + i.unitPriceCents * i.quantity, 0);
+      const subtotalCents = items.reduce(
+        (sum, i) => sum + i.unitPriceCents * i.quantity,
+        0,
+      );
       const pricing = await this.computePricing(items, dto.couponCode);
-      const totalCents = subtotalCents - pricing.categoryDiscountCents - pricing.priceRuleDiscountCents - pricing.couponDiscountCents;
+      const totalCents =
+        subtotalCents -
+        pricing.categoryDiscountCents -
+        pricing.priceRuleDiscountCents -
+        pricing.couponDiscountCents;
 
       const updated = await this.prisma.order.update({
         where: { id: existing.id },
         data: {
           customerEmail: dto.email,
-          customerName: `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() || dto.companyName?.trim() || null,
+          customerName:
+            `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+            dto.companyName?.trim() ||
+            null,
           customerCompanyName: dto.companyName?.trim() || null,
           customerPhone: dto.phone ?? null,
           customerLocale: dto.locale ?? 'fr',
-          shippingAddressSnapshot: this.buildAddressSnapshot(dto) as Prisma.InputJsonValue,
+          clientIpAddress: requestMeta?.ip ?? existing.clientIpAddress,
+          clientUserAgent: requestMeta?.userAgent ?? existing.clientUserAgent,
+          metaClickId: dto.fbc ?? existing.metaClickId,
+          metaBrowserId: dto.fbp ?? existing.metaBrowserId,
+          tiktokClickId: dto.ttclid ?? existing.tiktokClickId,
+          tiktokBrowserId: dto.ttp ?? existing.tiktokBrowserId,
+          shippingAddressSnapshot: this.buildAddressSnapshot(
+            dto,
+          ) as Prisma.InputJsonValue,
           subtotalCents,
           // Re-quoting requires a fresh shipping-method pick since the
           // address/cart may have changed since the last quote.
           shippingMethodId: null,
           shippingCents: 0,
-          categoryDiscountCents: pricing.categoryDiscountCents + pricing.priceRuleDiscountCents,
+          categoryDiscountCents:
+            pricing.categoryDiscountCents + pricing.priceRuleDiscountCents,
           discountCents: pricing.couponDiscountCents,
           couponCode: pricing.couponCode,
           totalCents,
@@ -114,12 +162,21 @@ export class CheckoutService {
 
     const productIds = [...new Set(items.map((i) => i.productId))];
     const isTestOrder = await containsTestProduct(this.prisma, productIds);
-    const subtotalCents = items.reduce((sum, i) => sum + i.unitPriceCents * i.quantity, 0);
+    const subtotalCents = items.reduce(
+      (sum, i) => sum + i.unitPriceCents * i.quantity,
+      0,
+    );
     const pricing = await this.computePricing(items, dto.couponCode);
-    const totalCents = subtotalCents - pricing.categoryDiscountCents - pricing.priceRuleDiscountCents - pricing.couponDiscountCents;
+    const totalCents =
+      subtotalCents -
+      pricing.categoryDiscountCents -
+      pricing.priceRuleDiscountCents -
+      pricing.couponDiscountCents;
 
     const order = await this.prisma.$transaction(async (tx) => {
-      const [{ n }] = await tx.$queryRaw<{ n: bigint }[]>`SELECT nextval('shop_order_number_seq') AS n`;
+      const [{ n }] = await tx.$queryRaw<
+        { n: bigint }[]
+      >`SELECT nextval('shop_order_number_seq') AS n`;
       const orderNumber = `ORD-${String(n).padStart(6, '0')}`;
       const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS);
 
@@ -130,14 +187,26 @@ export class CheckoutService {
           isTestOrder,
           cartToken: dto.cartToken,
           customerEmail: dto.email,
-          customerName: `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() || dto.companyName?.trim() || null,
+          customerName:
+            `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+            dto.companyName?.trim() ||
+            null,
           customerCompanyName: dto.companyName?.trim() || null,
           customerPhone: dto.phone ?? null,
           customerLocale: dto.locale ?? 'fr',
-          shippingAddressSnapshot: this.buildAddressSnapshot(dto) as Prisma.InputJsonValue,
+          clientIpAddress: requestMeta?.ip ?? null,
+          clientUserAgent: requestMeta?.userAgent ?? null,
+          metaClickId: dto.fbc ?? null,
+          metaBrowserId: dto.fbp ?? null,
+          tiktokClickId: dto.ttclid ?? null,
+          tiktokBrowserId: dto.ttp ?? null,
+          shippingAddressSnapshot: this.buildAddressSnapshot(
+            dto,
+          ) as Prisma.InputJsonValue,
           subtotalCents,
           shippingCents: 0,
-          categoryDiscountCents: pricing.categoryDiscountCents + pricing.priceRuleDiscountCents,
+          categoryDiscountCents:
+            pricing.categoryDiscountCents + pricing.priceRuleDiscountCents,
           discountCents: pricing.couponDiscountCents,
           couponCode: pricing.couponCode,
           taxCents: 0,
@@ -149,7 +218,12 @@ export class CheckoutService {
       });
 
       for (const item of items) {
-        await this.inventory.reserveForOrder(item.variantId, item.quantity, created.id, tx);
+        await this.inventory.reserveForOrder(
+          item.variantId,
+          item.quantity,
+          created.id,
+          tx,
+        );
       }
 
       await tx.orderItem.createMany({
@@ -168,14 +242,34 @@ export class CheckoutService {
         })),
       });
 
-      await tx.orderStatusHistory.create({ data: { orderId: created.id, fromStatus: null, toStatus: 'draft', note: 'Checkout initiated' } });
+      await tx.orderStatusHistory.create({
+        data: {
+          orderId: created.id,
+          fromStatus: null,
+          toStatus: 'draft',
+          note: 'Checkout initiated',
+        },
+      });
 
       return created;
     });
 
-    await this.reservationQueue.add('expire-reservation', { orderId: order.id } satisfies ReservationExpiryJobData, { jobId: `expire-${order.id}`, delay: RESERVATION_TTL_MS, attempts: 3, backoff: { type: 'exponential', delay: 5000 } });
+    await this.reservationQueue.add(
+      'expire-reservation',
+      { orderId: order.id } satisfies ReservationExpiryJobData,
+      {
+        jobId: `expire-${order.id}`,
+        delay: RESERVATION_TTL_MS,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      },
+    );
 
-    this.eventBus.emit(COMMERCE_EVENTS.ORDER_CREATED, { orderId: order.id, orderNumber: order.orderNumber }, { entityId: order.id, source: 'CheckoutService.initiate' });
+    this.eventBus.emit(
+      COMMERCE_EVENTS.ORDER_CREATED,
+      { orderId: order.id, orderNumber: order.orderNumber },
+      { entityId: order.id, source: 'CheckoutService.initiate' },
+    );
 
     return this.toSnapshot(order);
   }
@@ -185,29 +279,56 @@ export class CheckoutService {
   // quote server-side and trusts its already-computed priceCents rather than
   // whatever the client sends, so free/upgrade pricing can't be spoofed.
 
-  async updateShipping(orderId: string, dto: UpdateShippingDto): Promise<CheckoutSnapshot> {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+  async updateShipping(
+    orderId: string,
+    dto: UpdateShippingDto,
+  ): Promise<CheckoutSnapshot> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
     if (!order) throw new NotFoundException('Order not found');
     if (order.status !== 'draft' && order.status !== 'awaiting_payment') {
-      throw new BadRequestException('Shipping method can only be changed before payment');
+      throw new BadRequestException(
+        'Shipping method can only be changed before payment',
+      );
     }
 
-    const address = order.shippingAddressSnapshot as { country?: string } | null;
+    const address = order.shippingAddressSnapshot as {
+      country?: string;
+    } | null;
     const country = address?.country;
-    if (!country) throw new BadRequestException('Order has no shipping address');
+    if (!country)
+      throw new BadRequestException('Order has no shipping address');
 
-    const ctx = await this.resolveShippingContext(await this.orderProductIds(orderId), order.pricingSnapshot);
-    const quote = await this.shipping.getMethodsForCountry(country, order.subtotalCents, order.customerLocale, {
-      forceFree: ctx.freeShipping,
-      upgradeMethodIds: ctx.upgradeMethodIds,
-      freeDaysMin: ctx.freeDaysMin,
-      freeDaysMax: ctx.freeDaysMax,
-    });
+    const ctx = await this.resolveShippingContext(
+      await this.orderProductIds(orderId),
+      order.pricingSnapshot,
+    );
+    const quote = await this.shipping.getMethodsForCountry(
+      country,
+      order.subtotalCents,
+      order.customerLocale,
+      {
+        forceFree: ctx.freeShipping,
+        upgradeMethodIds: ctx.upgradeMethodIds,
+        freeDaysMin: ctx.freeDaysMin,
+        freeDaysMax: ctx.freeDaysMax,
+      },
+    );
     const method = quote.methods.find((m) => m.id === dto.shippingMethodId);
-    if (!method) throw new BadRequestException('Selected shipping method is not available for this order');
+    if (!method)
+      throw new BadRequestException(
+        'Selected shipping method is not available for this order',
+      );
 
-    const shippingMethodId = method.id === FREE_SHIPPING_METHOD_ID ? null : method.id;
-    const totalCents = order.subtotalCents - order.discountCents - order.categoryDiscountCents + order.taxCents + method.priceCents;
+    const shippingMethodId =
+      method.id === FREE_SHIPPING_METHOD_ID ? null : method.id;
+    const totalCents =
+      order.subtotalCents -
+      order.discountCents -
+      order.categoryDiscountCents +
+      order.taxCents +
+      method.priceCents;
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
@@ -219,8 +340,12 @@ export class CheckoutService {
 
   // ── Transition draft → awaiting_payment ───────────────────────────────
 
-  async readyForPayment(orderId: string): Promise<{ orderId: string; orderNumber: string; totalCents: number }> {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+  async readyForPayment(
+    orderId: string,
+  ): Promise<{ orderId: string; orderNumber: string; totalCents: number }> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
     if (!order) throw new NotFoundException('Order not found');
 
     // Test products are refused here — before the status transition and
@@ -231,32 +356,64 @@ export class CheckoutService {
     // Idempotent resume: a page refresh re-runs the checkout flow against
     // the same draft/awaiting_payment order (see initiate()'s idempotency check).
     if (order.status === 'awaiting_payment') {
-      return { orderId: order.id, orderNumber: order.orderNumber, totalCents: order.totalCents };
+      return {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        totalCents: order.totalCents,
+      };
     }
-    if (order.status !== 'draft') throw new BadRequestException('Order is not in draft state');
+    if (order.status !== 'draft')
+      throw new BadRequestException('Order is not in draft state');
 
     if (!order.shippingMethodId) {
-      const ctx = await this.resolveShippingContext(await this.orderProductIds(orderId), order.pricingSnapshot);
-      if (!ctx.freeShipping) throw new BadRequestException('Please select a shipping method before payment');
+      const ctx = await this.resolveShippingContext(
+        await this.orderProductIds(orderId),
+        order.pricingSnapshot,
+      );
+      if (!ctx.freeShipping)
+        throw new BadRequestException(
+          'Please select a shipping method before payment',
+        );
     }
 
-    await this.prisma.order.update({ where: { id: orderId }, data: { status: 'awaiting_payment' } });
-    await this.prisma.orderStatusHistory.create({ data: { orderId, fromStatus: 'draft', toStatus: 'awaiting_payment', note: 'Customer proceeded to payment' } });
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'awaiting_payment' },
+    });
+    await this.prisma.orderStatusHistory.create({
+      data: {
+        orderId,
+        fromStatus: 'draft',
+        toStatus: 'awaiting_payment',
+        note: 'Customer proceeded to payment',
+      },
+    });
 
     // NOTE: the cart is intentionally left "active" here — it's only marked
     // "completed" once payment is confirmed (OrdersService.confirmPayment).
     // This keeps the customer's cart items intact if payment fails, is
     // abandoned, or the page is refreshed mid-payment.
 
-    await this.customerService.upsertFromOrder(order.customerEmail, order.customerName ?? null, order.customerPhone ?? null, order.userId ?? null);
+    await this.customerService.upsertFromOrder(
+      order.customerEmail,
+      order.customerName ?? null,
+      order.customerPhone ?? null,
+      order.userId ?? null,
+    );
 
-    return { orderId: order.id, orderNumber: order.orderNumber, totalCents: order.totalCents };
+    return {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      totalCents: order.totalCents,
+    };
   }
 
   // ── Get snapshot for an existing order ─────────────────────────────────
 
   async getSnapshot(orderId: string): Promise<CheckoutSnapshot> {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
     if (!order) throw new NotFoundException('Order not found');
     return this.toSnapshot(order);
   }
@@ -264,7 +421,10 @@ export class CheckoutService {
   // ── Coupon preview (checkout address step) ─────────────────────────────
 
   async validateCoupon(code: string, cartToken: string) {
-    const cart = await this.prisma.cart.findFirst({ where: { token: cartToken, status: 'active' }, include: { items: true } });
+    const cart = await this.prisma.cart.findFirst({
+      where: { token: cartToken, status: 'active' },
+      include: { items: true },
+    });
     if (!cart) throw new NotFoundException('Active cart not found');
     const lines = await this.buildLineItems(cart.items);
     return this.pricingEngine.validateCoupon(code, lines);
@@ -272,10 +432,22 @@ export class CheckoutService {
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
-  private async buildLineItems(items: Pick<CartItem, 'productId' | 'variantId' | 'quantity' | 'unitPriceCents'>[]): Promise<LineItemInput[]> {
+  private async buildLineItems(
+    items: Pick<
+      CartItem,
+      'productId' | 'variantId' | 'quantity' | 'unitPriceCents'
+    >[],
+  ): Promise<LineItemInput[]> {
     const productIds = [...new Set(items.map((i) => i.productId))];
-    const products = productIds.length ? await this.prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, categories: { select: { id: true } } } }) : [];
-    const categoryIdsByProduct = new Map(products.map((p) => [p.id, p.categories.map((c) => c.id)]));
+    const products = productIds.length
+      ? await this.prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, categories: { select: { id: true } } },
+        })
+      : [];
+    const categoryIdsByProduct = new Map(
+      products.map((p) => [p.id, p.categories.map((c) => c.id)]),
+    );
 
     return items.map((item) => ({
       productId: item.productId,
@@ -286,14 +458,23 @@ export class CheckoutService {
     }));
   }
 
-  private async computePricing(items: Pick<CartItem, 'productId' | 'variantId' | 'quantity' | 'unitPriceCents'>[], couponCode: string | null | undefined): Promise<PricingResult> {
+  private async computePricing(
+    items: Pick<
+      CartItem,
+      'productId' | 'variantId' | 'quantity' | 'unitPriceCents'
+    >[],
+    couponCode: string | null | undefined,
+  ): Promise<PricingResult> {
     const lines = await this.buildLineItems(items);
     return this.pricingEngine.compute(lines, couponCode ?? null);
   }
 
   private buildAddressSnapshot(dto: InitiateCheckoutDto) {
     return {
-      name: `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() || dto.companyName?.trim() || '',
+      name:
+        `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+        dto.companyName?.trim() ||
+        '',
       line1: dto.line1,
       line2: dto.line2 ?? '',
       city: dto.city,
@@ -303,8 +484,13 @@ export class CheckoutService {
   }
 
   private async orderProductIds(orderId: string): Promise<string[]> {
-    const items = await this.prisma.orderItem.findMany({ where: { orderId }, select: { productId: true } });
-    return [...new Set(items.map((i) => i.productId).filter(Boolean) as string[])];
+    const items = await this.prisma.orderItem.findMany({
+      where: { orderId },
+      select: { productId: true },
+    });
+    return [
+      ...new Set(items.map((i) => i.productId).filter(Boolean) as string[]),
+    ];
   }
 
   /**
@@ -317,8 +503,12 @@ export class CheckoutService {
    * promotions carry no upgrade-method configuration — see
    * PricingResult.freeShippingUpgradeMethodIds).
    */
-  private async resolveShippingContext(productIds: string[], pricingSnapshot?: Prisma.JsonValue | null): Promise<ShippingContext> {
-    const promo = pricingSnapshot as unknown as PricingResult | null | undefined;
+  private async resolveShippingContext(
+    productIds: string[],
+    pricingSnapshot?: Prisma.JsonValue | null,
+  ): Promise<ShippingContext> {
+    const promo = pricingSnapshot as unknown as
+      PricingResult | null | undefined;
     const promoFreeShipping = promo?.freeShipping === true;
     const promoUpgradeIds = promo?.freeShippingUpgradeMethodIds ?? [];
 
@@ -330,41 +520,74 @@ export class CheckoutService {
     if (productIds.length) {
       const products = await this.prisma.product.findMany({
         where: { id: { in: productIds } },
-        select: { freeShipping: true, freeShippingDaysMin: true, freeShippingDaysMax: true, freeShippingUpgradeMethods: { select: { id: true } } },
+        select: {
+          freeShipping: true,
+          freeShippingDaysMin: true,
+          freeShippingDaysMax: true,
+          freeShippingUpgradeMethods: { select: { id: true } },
+        },
       });
       if (products.length && products.every((p) => p.freeShipping)) {
         productFreeShipping = true;
-        productUpgradeIds = [...new Set(products.flatMap((p) => p.freeShippingUpgradeMethods.map((m) => m.id)))];
-        const mins = products.map((p) => p.freeShippingDaysMin).filter((v): v is number => v !== null);
-        const maxs = products.map((p) => p.freeShippingDaysMax).filter((v): v is number => v !== null);
+        productUpgradeIds = [
+          ...new Set(
+            products.flatMap((p) =>
+              p.freeShippingUpgradeMethods.map((m) => m.id),
+            ),
+          ),
+        ];
+        const mins = products
+          .map((p) => p.freeShippingDaysMin)
+          .filter((v): v is number => v !== null);
+        const maxs = products
+          .map((p) => p.freeShippingDaysMax)
+          .filter((v): v is number => v !== null);
         freeDaysMin = mins.length ? Math.min(...mins) : null;
         freeDaysMax = maxs.length ? Math.max(...maxs) : null;
       }
     }
 
     const freeShipping = productFreeShipping || promoFreeShipping;
-    if (!freeShipping) return { freeShipping: false, upgradeMethodIds: [], freeDaysMin: null, freeDaysMax: null };
+    if (!freeShipping)
+      return {
+        freeShipping: false,
+        upgradeMethodIds: [],
+        freeDaysMin: null,
+        freeDaysMax: null,
+      };
 
     return {
       freeShipping: true,
-      upgradeMethodIds: [...new Set([...productUpgradeIds, ...promoUpgradeIds])],
+      upgradeMethodIds: [
+        ...new Set([...productUpgradeIds, ...promoUpgradeIds]),
+      ],
       freeDaysMin,
       freeDaysMax,
     };
   }
 
   private async toSnapshot(order: Order): Promise<CheckoutSnapshot> {
-    const address = order.shippingAddressSnapshot as { country?: string } | null;
+    const address = order.shippingAddressSnapshot as {
+      country?: string;
+    } | null;
     const country = address?.country;
 
-    const ctx = await this.resolveShippingContext(await this.orderProductIds(order.id), order.pricingSnapshot);
+    const ctx = await this.resolveShippingContext(
+      await this.orderProductIds(order.id),
+      order.pricingSnapshot,
+    );
     const quote = country
-      ? await this.shipping.getMethodsForCountry(country, order.subtotalCents, order.customerLocale, {
-          forceFree: ctx.freeShipping,
-          upgradeMethodIds: ctx.upgradeMethodIds,
-          freeDaysMin: ctx.freeDaysMin,
-          freeDaysMax: ctx.freeDaysMax,
-        })
+      ? await this.shipping.getMethodsForCountry(
+          country,
+          order.subtotalCents,
+          order.customerLocale,
+          {
+            forceFree: ctx.freeShipping,
+            upgradeMethodIds: ctx.upgradeMethodIds,
+            freeDaysMin: ctx.freeDaysMin,
+            freeDaysMax: ctx.freeDaysMax,
+          },
+        )
       : { zone: null, methods: [] };
 
     return {

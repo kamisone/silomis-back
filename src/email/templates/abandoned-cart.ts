@@ -1,13 +1,19 @@
 import { baseLayout, ctaButton, mutedText, esc, fmtCents } from './layout';
+import { COPY, resolveLang } from './copy';
 
 export interface AbandonedCartEmailData {
   customerName: string;
   items: Array<{ title: string; quantity: number; unitPriceCents: number }>;
   resumeUrl: string;
+  locale?: string | null;
 }
 
-export function renderAbandonedCart(data: AbandonedCartEmailData): { subject: string; html: string } {
-  const subject = 'You left something in your cart';
+export function renderAbandonedCart(data: AbandonedCartEmailData): {
+  subject: string;
+  html: string;
+} {
+  const c = COPY[resolveLang(data.locale)].abandonedCart;
+  const subject = c.subject;
 
   const itemList = data.items
     .map(
@@ -17,11 +23,11 @@ export function renderAbandonedCart(data: AbandonedCartEmailData): { subject: st
     .join('');
 
   const body = `
-    <p style="margin:0 0 6px;font-size:15px;">Hello ${esc(data.customerName)},</p>
-    <p style="margin:0 0 16px;font-size:15px;">You still have items waiting in your cart. Complete your order before they sell out.</p>
+    <p style="margin:0 0 6px;font-size:15px;">${c.greeting(esc(data.customerName))}</p>
+    <p style="margin:0 0 16px;font-size:15px;">${c.intro}</p>
     <ul style="margin:0 0 8px;padding-left:20px;">${itemList}</ul>
-    ${ctaButton('Complete my order', data.resumeUrl)}
-    ${mutedText("If you've already completed your purchase, you can safely ignore this email.")}
+    ${ctaButton(c.cta, data.resumeUrl)}
+    ${mutedText(c.note)}
   `;
 
   return {

@@ -7,7 +7,9 @@ export const UpsertCheckoutSessionSchema = z.object({
   orderId: z.string().uuid().nullish(),
   formSnapshot: z.record(z.string(), z.string()).nullish(),
 });
-export type UpsertCheckoutSessionDto = z.infer<typeof UpsertCheckoutSessionSchema>;
+export type UpsertCheckoutSessionDto = z.infer<
+  typeof UpsertCheckoutSessionSchema
+>;
 
 export const InitiateCheckoutSchema = z
   .object({
@@ -25,12 +27,22 @@ export const InitiateCheckoutSchema = z
     /** Accepts whatever locale the storefront sends — falls back to 'fr' rather than rejecting an unrecognized one. */
     locale: z.string().max(10).optional().default('fr'),
     couponCode: z.string().max(100).nullish(),
+    /** Meta Click ID / Browser ID cookies (_fbc / _fbp), read client-side — for Conversions API match quality only. */
+    fbc: z.string().max(500).nullish(),
+    fbp: z.string().max(500).nullish(),
+    /** TikTok Click ID / Browser ID (ttclid / _ttp), read client-side — for Events API match quality only. */
+    ttclid: z.string().max(500).nullish(),
+    ttp: z.string().max(500).nullish(),
   })
   .superRefine((d, ctx) => {
     const hasName = d.firstName?.trim() && d.lastName?.trim();
     const hasCompany = d.companyName?.trim();
     if (!hasName && !hasCompany) {
-      ctx.addIssue({ code: 'custom', path: ['firstName'], message: 'Provide first & last name or a company name' });
+      ctx.addIssue({
+        code: 'custom',
+        path: ['firstName'],
+        message: 'Provide first & last name or a company name',
+      });
     }
   });
 export type InitiateCheckoutDto = z.infer<typeof InitiateCheckoutSchema>;

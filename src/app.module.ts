@@ -53,6 +53,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { SupportModule } from './support/support.module';
+import { MetaCapiModule } from './marketing/meta-capi/meta-capi.module';
+import { TikTokEventsModule } from './marketing/tiktok-events/tiktok-events.module';
 
 @Module({
   imports: [
@@ -129,6 +131,8 @@ import { SupportModule } from './support/support.module';
     NewsletterModule,
     ContactsModule,
     SupportModule,
+    MetaCapiModule,
+    TikTokEventsModule,
     LoggerModule.forRoot({
       pinoHttp: {
         level:

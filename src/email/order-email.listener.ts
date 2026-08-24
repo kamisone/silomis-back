@@ -5,12 +5,14 @@ import { ShopEmailService } from './shop-email.service';
 import {
   COMMERCE_EVENTS,
   PaymentSucceededEvent,
+  PaymentFailedEvent,
   OrderStatusChangedEvent,
 } from '../commerce-events/commerce-events.constants';
 import { OrderStatusKind } from './templates/order-status';
 import { OrderStatus } from '../../generated/prisma/client';
 
 const STATUS_TO_EMAIL_KIND: Partial<Record<OrderStatus, OrderStatusKind>> = {
+  processing: 'preparing',
   shipped: 'shipped',
   delivered: 'delivered',
   cancelled: 'cancelled',
@@ -52,10 +54,46 @@ export class OrderEmailListener {
         couponCode: order.couponCode,
         totalCents: order.totalCents,
         trackingUrl,
+        locale: order.customerLocale,
       });
     } catch (err) {
       this.logger.error(
         `Order confirmation email failed for order ${event.orderId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  @OnEvent(COMMERCE_EVENTS.PAYMENT_FAILED)
+  async onPaymentFailed(event: PaymentFailedEvent): Promise<void> {
+    try {
+      const order = await this.prisma.order.findUnique({
+        where: { id: event.orderId },
+      });
+      if (!order) return;
+
+      // Prefer sending the customer straight back into their in-progress
+      // checkout (cart + address still intact) over a bare shop link — the
+      // session isn't marked complete on a failed payment, so its resume
+      // token is still valid.
+      const session = order.cartToken
+        ? await this.prisma.checkoutSession.findUnique({
+            where: { cartToken: order.cartToken },
+          })
+        : null;
+      const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
+      const retryUrl = session
+        ? `${appUrl}/shop/checkout/resume/${session.resumeToken}`
+        : `${appUrl}/shop`;
+
+      await this.email.sendPaymentFailed(order.customerEmail, {
+        orderNumber: order.orderNumber,
+        customerName: order.customerName ?? order.customerEmail,
+        retryUrl,
+        locale: order.customerLocale,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Payment failed email failed for order ${event.orderId}: ${(err as Error).message}`,
       );
     }
   }
@@ -77,6 +115,7 @@ export class OrderEmailListener {
             orderNumber: order.orderNumber,
             customerName: order.customerName ?? order.customerEmail,
             trackingUrl,
+            locale: order.customerLocale,
           });
         }
       } catch (err) {
@@ -116,6 +155,7 @@ export class OrderEmailListener {
         orderNumber: order.orderNumber,
         productTitle: first.titleSnapshot,
         reviewUrl: `${appUrl}/shop/${product.slug}`,
+        locale: order.customerLocale,
       });
     } catch (err) {
       this.logger.error(

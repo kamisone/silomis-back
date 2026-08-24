@@ -8,14 +8,19 @@ export function esc(s: string): string {
 }
 
 export function fmtCents(cents: number): string {
-  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR' }).format(cents / 100);
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(cents / 100);
 }
 
-// Silomis brand palette (front/src/app/globals.css)
-const BRAND_DARK = '#1b4965'; // --brand-900, deep navy
-const BRAND_PRIMARY = '#1b4965'; // --brand-900
-const BRAND_MID = '#5fa8d3'; // --brand-600, mid blue
-const BRAND_ACCENT = '#62b6cb'; // --brand-500, teal-blue
+// Silomis brand palette (front/src/app/globals.css) — teal primary, charcoal
+// secondary, blush pink accent. Kept in sync manually since emails can't read
+// CSS custom properties.
+const BRAND_DARK = '#363a40'; // --color-secondary, neutral charcoal
+const BRAND_PRIMARY = '#129c98'; // --color-primary, soft teal
+const BRAND_MID = '#129c98'; // --color-primary, soft teal
+const BRAND_ACCENT = '#d9548c'; // --color-accent, blush pink
 
 export function baseLayout(title: string, body: string): string {
   const year = new Date().getFullYear();
@@ -72,9 +77,13 @@ export function baseLayout(title: string, body: string): string {
                 <td style="font-size:12px;color:#94a3b8;line-height:1.5;">
                   ${footer}
                 </td>
-                ${appUrl ? `<td style="text-align:right;vertical-align:middle;">
+                ${
+                  appUrl
+                    ? `<td style="text-align:right;vertical-align:middle;">
                   <a href="${appUrl}" style="color:${BRAND_MID};font-size:12px;font-weight:600;text-decoration:none;">${seller}</a>
-                </td>` : ''}
+                </td>`
+                    : ''
+                }
               </tr>
             </table>
           </td>
@@ -88,7 +97,11 @@ export function baseLayout(title: string, body: string): string {
 </html>`;
 }
 
-export function ctaButton(label: string, href: string, color = BRAND_PRIMARY): string {
+export function ctaButton(
+  label: string,
+  href: string,
+  color = BRAND_PRIMARY,
+): string {
   return `
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
       <tr>

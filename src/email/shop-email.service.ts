@@ -29,6 +29,10 @@ import {
   renderReviewRequest,
   ReviewRequestEmailData,
 } from './templates/review-request';
+import {
+  renderPaymentFailed,
+  PaymentFailedEmailData,
+} from './templates/payment-failed';
 
 @Injectable()
 export class ShopEmailService {
@@ -76,6 +80,17 @@ export class ShopEmailService {
     await this.transport.send(to, subject, html);
     this.logger.log(
       `Order ${kind} email sent to ${to} for ${data.orderNumber}`,
+    );
+  }
+
+  async sendPaymentFailed(
+    to: string,
+    data: PaymentFailedEmailData,
+  ): Promise<void> {
+    const { subject, html } = renderPaymentFailed(data);
+    await this.transport.send(to, subject, html);
+    this.logger.log(
+      `Payment failed email sent to ${to} for ${data.orderNumber}`,
     );
   }
 

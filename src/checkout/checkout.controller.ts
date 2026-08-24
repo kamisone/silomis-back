@@ -1,10 +1,33 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Req,
+} from '@nestjs/common';
+import { Request } from 'express';
 import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { extractIp } from '../common/utils/client-ip.util';
 import { CheckoutService } from './checkout.service';
 import { CheckoutSessionService } from './checkout-session.service';
-import { InitiateCheckoutDto, InitiateCheckoutSchema, UpsertCheckoutSessionDto, UpsertCheckoutSessionSchema } from './dto/checkout.dto';
-import { UpdateShippingDto, UpdateShippingSchema } from '../shipping/dto/shipping.dto';
+import {
+  InitiateCheckoutDto,
+  InitiateCheckoutSchema,
+  UpsertCheckoutSessionDto,
+  UpsertCheckoutSessionSchema,
+} from './dto/checkout.dto';
+import {
+  UpdateShippingDto,
+  UpdateShippingSchema,
+} from '../shipping/dto/shipping.dto';
 
 @Public()
 @Controller('shop/checkout')
@@ -17,14 +40,20 @@ export class CheckoutController {
   // ── Checkout session (persistent form state + resume support) ─────────
 
   @Get('session')
-  getSession(@Query('cartToken') cartToken: string, @Query('locale') locale: string) {
+  getSession(
+    @Query('cartToken') cartToken: string,
+    @Query('locale') locale: string,
+  ) {
     if (!cartToken) throw new BadRequestException('cartToken is required');
     return this.sessionService.findOrCreate(cartToken, locale || 'fr');
   }
 
   @Put('session')
   @HttpCode(200)
-  upsertSession(@Body(new ZodValidationPipe(UpsertCheckoutSessionSchema)) dto: UpsertCheckoutSessionDto) {
+  upsertSession(
+    @Body(new ZodValidationPipe(UpsertCheckoutSessionSchema))
+    dto: UpsertCheckoutSessionDto,
+  ) {
     return this.sessionService.upsert(dto);
   }
 
@@ -38,8 +67,17 @@ export class CheckoutController {
   /** Validates the cart, computes server-side totals, creates a draft order, reserves inventory. */
   @Post()
   @HttpCode(201)
-  initiate(@Body(new ZodValidationPipe(InitiateCheckoutSchema)) dto: InitiateCheckoutDto) {
-    return this.checkoutService.initiate(dto);
+  initiate(
+    @Body(new ZodValidationPipe(InitiateCheckoutSchema))
+    dto: InitiateCheckoutDto,
+    @Req() req: Request,
+  ) {
+    // Stored on the order as clientIpAddress/clientUserAgent — geolocates
+    // checkout events and feeds Meta CAPI / TikTok Events API match quality.
+    return this.checkoutService.initiate(dto, {
+      ip: extractIp(req),
+      userAgent: req.headers['user-agent'] ?? null,
+    });
   }
 
   /**
@@ -48,8 +86,12 @@ export class CheckoutController {
    * order, so this static path must come first or it would never be reached.
    */
   @Get('validate-coupon')
-  validateCoupon(@Query('code') code: string, @Query('cartToken') cartToken: string) {
-    if (!code || !cartToken) throw new BadRequestException('code and cartToken are required');
+  validateCoupon(
+    @Query('code') code: string,
+    @Query('cartToken') cartToken: string,
+  ) {
+    if (!code || !cartToken)
+      throw new BadRequestException('code and cartToken are required');
     return this.checkoutService.validateCoupon(code, cartToken);
   }
 
@@ -62,7 +104,10 @@ export class CheckoutController {
   /** Selects a shipping method for the order — editable while draft or awaiting_payment. */
   @Patch(':orderId/shipping')
   @HttpCode(200)
-  updateShipping(@Param('orderId', ParseUUIDPipe) orderId: string, @Body(new ZodValidationPipe(UpdateShippingSchema)) dto: UpdateShippingDto) {
+  updateShipping(
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body(new ZodValidationPipe(UpdateShippingSchema)) dto: UpdateShippingDto,
+  ) {
     return this.checkoutService.updateShipping(orderId, dto);
   }
 

@@ -1,17 +1,23 @@
 import { baseLayout, ctaButton, esc } from './layout';
+import { COPY, resolveLang } from './copy';
 
 export interface BackInStockEmailData {
   productTitle: string;
   productUrl: string;
+  locale?: string | null;
 }
 
-export function renderBackInStock(data: BackInStockEmailData): { subject: string; html: string } {
-  const subject = `Back in stock – ${data.productTitle}`;
+export function renderBackInStock(data: BackInStockEmailData): {
+  subject: string;
+  html: string;
+} {
+  const c = COPY[resolveLang(data.locale)].backInStock;
+  const subject = c.subject(data.productTitle);
 
   const body = `
-    <p style="margin:0 0 6px;font-size:15px;">Good news!</p>
-    <p style="margin:0 0 20px;font-size:15px;"><strong>${esc(data.productTitle)}</strong>, which you added to your wishlist, is back in stock.</p>
-    ${ctaButton('View product', data.productUrl)}
+    <p style="margin:0 0 6px;font-size:15px;">${c.intro}</p>
+    <p style="margin:0 0 20px;font-size:15px;">${c.body(esc(data.productTitle))}</p>
+    ${ctaButton(c.cta, data.productUrl)}
   `;
 
   return {
