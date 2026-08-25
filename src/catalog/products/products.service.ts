@@ -9,7 +9,7 @@ import { ProductSearchService } from './product-search.service';
 import { slugify } from '../../common/utils/slug.util';
 import { Prisma, Product, ProductVariant } from '../../../generated/prisma/client';
 import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
-import { ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
+import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
 import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
@@ -55,7 +55,40 @@ export class ProductsService {
     const social = ((product.socialVideos as ProductSocialVideo[]) ?? []).filter((v) => v.isActive !== false);
     const zoomed = (product.zoomedImages as ProductZoomedImage[]) ?? [];
     const packageContents = (product.packageContents as ProductPackageContentItem[]) ?? [];
+    const documents = (product.documents as ProductDocument[]) ?? [];
     const variants = product.variants as Array<{ mediaKeys?: string[]; mediaUrls?: string[] }> | undefined;
+
+    // Video transcode metadata (HLS/optimized-mp4 renditions, duration, auto-generated
+    // poster) lives on MediaAsset, not on the jsonb ProductMediaItem/ProductSocialVideo —
+    // look it up for every video-type item across both the gallery and social videos.
+    const videoKeys = [
+      ...media.filter((m) => m.type === 'video').map((m) => m.key),
+      ...social.map((v) => v.key),
+    ];
+    const videoAssets = videoKeys.length
+      ? await this.prisma.mediaAsset.findMany({
+          where: { storageKey: { in: videoKeys } },
+          select: {
+            storageKey: true,
+            hlsKey: true,
+            mp4Key: true,
+            autoPosterKey: true,
+            durationSeconds: true,
+            transcodeStatus: true,
+            mimeType: true,
+          },
+        })
+      : [];
+    const videoAssetByKey = new Map(videoAssets.map((a) => [a.storageKey, a]));
+    // Transcode renditions (hlsKey/mp4Key/autoPosterKey) aren't safe to serve until the
+    // transcode job actually finished — until then they may be stale, partial, or absent.
+    const addTranscodeKeys = (keys: Set<string>, sourceKey: string) => {
+      const asset = videoAssetByKey.get(sourceKey);
+      if (asset?.transcodeStatus !== 'ready') return;
+      if (asset.hlsKey) keys.add(asset.hlsKey);
+      if (asset.mp4Key) keys.add(asset.mp4Key);
+      if (asset.autoPosterKey) keys.add(asset.autoPosterKey);
+    };
 
     const allKeys = new Set<string>();
     if (product.featuredImageKey) allKeys.add(product.featuredImageKey as string);
@@ -63,11 +96,16 @@ export class ProductsService {
     for (const m of media) {
       allKeys.add(m.key);
       if (m.posterKey) allKeys.add(m.posterKey);
+      addTranscodeKeys(allKeys, m.key);
     }
     for (const s of story) allKeys.add(s.key);
     for (const z of zoomed) allKeys.add(z.key);
     for (const p of packageContents) allKeys.add(p.key);
-    for (const v of social) allKeys.add(v.key);
+    for (const v of social) {
+      allKeys.add(v.key);
+      addTranscodeKeys(allKeys, v.key);
+    }
+    for (const d of documents) allKeys.add(d.storageKey);
     if (variants) for (const v of variants) for (const k of v.mediaKeys ?? []) allKeys.add(k);
 
     const urlMap = await this.assetUrls.resolveBatch([...allKeys]);
@@ -80,18 +118,51 @@ export class ProductsService {
       ...product,
       featuredImageUrl: product.featuredImageKey ? (urlMap.get(product.featuredImageKey as string) ?? null) : null,
       galleryImageUrls: ((product.galleryImageKeys as string[]) ?? []).map((k) => urlMap.get(k)).filter(Boolean),
-      media: media.map((m) => ({
-        ...m,
-        url: urlMap.get(m.key) ?? '',
-        posterUrl: m.posterKey ? (urlMap.get(m.posterKey) ?? null) : null,
-      })),
+      media: media.map((m) => {
+        const asset = videoAssetByKey.get(m.key);
+        const ready = asset?.transcodeStatus === 'ready';
+        // Prefer the optimized MP4 rendition over the raw upload once transcoded.
+        const mp4Url = ready && asset?.mp4Key ? urlMap.get(asset.mp4Key) : undefined;
+        return {
+          ...m,
+          url: mp4Url ?? urlMap.get(m.key) ?? '',
+          posterUrl:
+            (m.posterKey ? urlMap.get(m.posterKey) : null) ??
+            (ready && asset?.autoPosterKey
+              ? urlMap.get(asset.autoPosterKey)
+              : null) ??
+            null,
+          hlsUrl: ready && asset?.hlsKey ? (urlMap.get(asset.hlsKey) ?? null) : null,
+          durationSeconds: asset?.durationSeconds ?? null,
+          mimeType: asset?.mimeType ?? null,
+        };
+      }),
       storyGallery: story.map((s) => ({ ...s, url: urlMap.get(s.key) ?? '' })),
-      socialVideos: social.map((v) => ({ ...v, url: urlMap.get(v.key) ?? '' })).filter((v) => v.url),
+      socialVideos: social
+        .map((v) => {
+          const asset = videoAssetByKey.get(v.key);
+          const ready = asset?.transcodeStatus === 'ready';
+          const mp4Url = ready && asset?.mp4Key ? urlMap.get(asset.mp4Key) : undefined;
+          return {
+            ...v,
+            url: mp4Url ?? urlMap.get(v.key) ?? '',
+            hlsUrl: ready && asset?.hlsKey ? (urlMap.get(asset.hlsKey) ?? null) : null,
+            posterUrl: ready && asset?.autoPosterKey ? (urlMap.get(asset.autoPosterKey) ?? null) : null,
+            durationSeconds: asset?.durationSeconds ?? null,
+          };
+        })
+        .filter((v) => v.url),
       zoomedImages: zoomed.map((z) => ({ ...z, url: urlMap.get(z.key) ?? '' })),
       packageContents: packageContents.map((p) => ({
         ...p,
         url: urlMap.get(p.key) ?? '',
       })),
+      documents: documents.map((d) => ({ ...d, url: urlMap.get(d.storageKey) ?? '' })),
+      // Public consumers only ever need active tiers in purchase order — mirrors
+      // the socialVideos isActive filter above.
+      upsellTiers: ((product.upsellTiers as unknown as { id: string; quantity: number; unitPriceCents: number; active?: boolean; sortOrder: number }[]) ?? [])
+        .filter((tier) => tier.active !== false)
+        .sort((a, b) => a.quantity - b.quantity),
     };
   }
 
@@ -302,6 +373,7 @@ export class ProductsService {
         categories: true,
         tags: true,
         primaryCategory: true,
+        freeShippingUpgradeMethods: true,
         variants: {
           include: {
             options: { include: { optionValue: true, attribute: true } },

@@ -19,6 +19,12 @@ export interface ProductMediaItem {
 export interface ResolvedProductMediaItem extends ProductMediaItem {
   url: string;
   posterUrl: string | null;
+  /** HLS master playlist URL — set only once the asset has a transcoded rendition. */
+  hlsUrl: string | null;
+  /** Video duration in seconds, extracted on upload. Images: always null. */
+  durationSeconds: number | null;
+  /** Source MediaAsset mime type (e.g. "video/mp4"). Null if the key never resolved to an asset. */
+  mimeType: string | null;
 }
 
 /** A structured, translatable text block shown on the product page (Composition, Care, ...). */
@@ -106,6 +112,17 @@ export interface ProductSocialVideo {
   title?: string | null;
   sortOrder: number;
   isActive: boolean;
+}
+
+/** ProductSocialVideo with resolved playback URLs, returned by the API. */
+export interface ResolvedProductSocialVideo extends ProductSocialVideo {
+  /** Progressive mp4 URL (optimized rendition when transcoded, else the original). */
+  url: string;
+  /** HLS master playlist URL — null until the asset's transcode is ready. */
+  hlsUrl: string | null;
+  /** Poster frame URL — the transcode's auto-poster when available. */
+  posterUrl: string | null;
+  durationSeconds: number | null;
 }
 
 /**
