@@ -20,24 +20,30 @@ export class CollectionsService {
 
   // ── Image URL resolution ────────────────────────────────────────────────
 
-  private async withImageUrl<T extends { imageKey: string | null }>(
+  /** A collection carries two images: `imageKey` is the card shown in the
+   * storefront listing, `bannerImageKey` the wide hero on its own page. Both
+   * resolve to URLs here; the banner is optional and the page falls back to
+   * the card image when it is unset. */
+  private async withImageUrl<T extends { imageKey: string | null; bannerImageKey?: string | null }>(
     item: T,
-  ): Promise<T & { imageUrl: string | null }> {
-    const imageUrl = item.imageKey
-      ? await this.assetUrls.resolve(item.imageKey)
-      : null;
-    return { ...item, imageUrl };
+  ): Promise<T & { imageUrl: string | null; bannerImageUrl: string | null }> {
+    const [imageUrl, bannerImageUrl] = await Promise.all([
+      item.imageKey ? this.assetUrls.resolve(item.imageKey) : null,
+      item.bannerImageKey ? this.assetUrls.resolve(item.bannerImageKey) : null,
+    ]);
+    return { ...item, imageUrl, bannerImageUrl };
   }
 
-  private async withImageUrls<T extends { imageKey: string | null }>(
+  private async withImageUrls<T extends { imageKey: string | null; bannerImageKey?: string | null }>(
     items: T[],
-  ): Promise<Array<T & { imageUrl: string | null }>> {
+  ): Promise<Array<T & { imageUrl: string | null; bannerImageUrl: string | null }>> {
     if (!items.length) return [];
-    const keys = items.map((i) => i.imageKey).filter((k): k is string => !!k);
+    const keys = items.flatMap((i) => [i.imageKey, i.bannerImageKey]).filter((k): k is string => !!k);
     const urlMap = await this.assetUrls.resolveBatch(keys);
     return items.map((i) => ({
       ...i,
       imageUrl: i.imageKey ? (urlMap.get(i.imageKey) ?? null) : null,
+      bannerImageUrl: i.bannerImageKey ? (urlMap.get(i.bannerImageKey) ?? null) : null,
     }));
   }
 
@@ -62,10 +68,21 @@ export class CollectionsService {
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
         take: limit,
         skip: offset,
+        // Counts every linked product, including drafts/soft-deleted ones —
+        // this is the admin's own membership figure, not the storefront's.
+        // publicList() counts only what a shopper can actually see.
+        include: { _count: { select: { productLinks: true } } },
       }),
       this.prisma.collection.count({ where }),
     ]);
-    return { items: await this.withImageUrls(raw), total };
+    const withUrls = await this.withImageUrls(raw);
+    return {
+      items: withUrls.map(({ _count, ...c }) => ({
+        ...c,
+        productCount: _count.productLinks,
+      })),
+      total,
+    };
   }
 
   async findById(id: string) {
@@ -201,12 +218,26 @@ export class CollectionsService {
         slug: true,
         name: true,
         description: true,
+        // Card image only — the listing never renders the wide banner.
         imageKey: true,
         isFeatured: true,
+        // Only products a shopper can actually reach, so the count on a
+        // collection card matches what the collection page will render.
+        _count: {
+          select: {
+            productLinks: {
+              where: { product: { status: 'active', deletedAt: null } },
+            },
+          },
+        },
       },
     });
     const withUrls = await this.withImageUrls(raw);
-    return this.translations.maybeApply(withUrls, ET_SHOP_COLLECTION, lang);
+    const withCounts = withUrls.map(({ _count, ...c }) => ({
+      ...c,
+      productCount: _count.productLinks,
+    }));
+    return this.translations.maybeApply(withCounts, ET_SHOP_COLLECTION, lang);
   }
 
   async featuredList(lang?: string) {

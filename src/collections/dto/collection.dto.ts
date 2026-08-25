@@ -8,7 +8,10 @@ export const CreateCollectionSchema = z.object({
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Slug must be lowercase, alphanumeric, hyphen-separated'),
   name: z.string().min(1).max(500),
   description: z.string().nullish(),
+  /** Card image for the storefront collections listing. */
   imageKey: z.string().max(1000).nullish(),
+  /** Wide hero for the collection's own page; falls back to imageKey. */
+  bannerImageKey: z.string().max(1000).nullish(),
   seoTitle: z.string().max(500).nullish(),
   seoDescription: z.string().nullish(),
   metaKeywords: z.string().max(500).nullish(),

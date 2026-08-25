@@ -179,14 +179,23 @@ export type CreateVariantDto = z.infer<typeof CreateVariantSchema>;
 export const UpdateVariantSchema = CreateVariantSchema.omit({ initialStock: true }).partial();
 export type UpdateVariantDto = z.infer<typeof UpdateVariantSchema>;
 
+/** Storefront sort options. `curated` is the collection's own admin-defined
+ * product order (CollectionProduct.sortOrder) and is only meaningful when a
+ * `collection` filter is set — elsewhere it falls back to the default order. */
+export const PRODUCT_SORTS = ['curated', 'newest', 'price_asc', 'price_desc', 'name_asc'] as const;
+export type ProductSort = (typeof PRODUCT_SORTS)[number];
+
 export interface ProductListFilter {
   status?: string;
   categoryId?: string;
   tagId?: string;
+  /** Collection *slug* — products linked to it via CollectionProduct. */
+  collection?: string;
   search?: string;
   featured?: boolean;
   isTestProduct?: boolean;
   ids?: string[];
+  sort?: ProductSort;
   limit?: number;
   offset?: number;
 }

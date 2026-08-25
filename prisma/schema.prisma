@@ -1233,7 +1233,10 @@ model Collection {
 
   name        String  @db.VarChar(500)
   description String?
+  /// Card/thumbnail image — the collection as it appears in the storefront listing.
   imageKey    String? @db.VarChar(1000)
+  /// Wide hero image for the collection's own page. Falls back to imageKey when unset.
+  bannerImageKey String? @db.VarChar(1000)
 
   seoTitle       String? @db.VarChar(500)
   seoDescription String?

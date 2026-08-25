@@ -3,6 +3,7 @@ import { Public } from '../../auth/public.decorator';
 import { ProductsService } from './products.service';
 import { RecommendationService } from '../recommendation.service';
 import { ReviewsService } from '../../reviews/reviews.service';
+import { PRODUCT_SORTS, type ProductSort } from './dto/product.dto';
 
 @Public()
 @Controller('shop/products')
@@ -14,13 +15,28 @@ export class ProductPublicController {
   ) {}
 
   @Get()
-  list(@Query('categoryId') categoryId?: string, @Query('tagId') tagId?: string, @Query('search') search?: string, @Query('featured') featured?: string, @Query('ids') ids?: string, @Query('limit') limit?: string, @Query('offset') offset?: string, @Query('lang') lang?: string) {
+  list(
+    @Query('categoryId') categoryId?: string,
+    @Query('tagId') tagId?: string,
+    @Query('collection') collection?: string,
+    @Query('search') search?: string,
+    @Query('featured') featured?: string,
+    @Query('ids') ids?: string,
+    @Query('sort') sort?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('lang') lang?: string,
+  ) {
     return this.products.publicList({
       categoryId,
       tagId,
+      collection,
       search,
       featured: featured === 'true' ? true : featured === 'false' ? false : undefined,
       ids: ids ? ids.split(',').filter(Boolean) : undefined,
+      // Unrecognized values fall through as undefined rather than 400 — a
+      // stale bookmark with ?sort=whatever should still render the listing.
+      sort: (PRODUCT_SORTS as readonly string[]).includes(sort ?? '') ? (sort as ProductSort) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
       lang,
