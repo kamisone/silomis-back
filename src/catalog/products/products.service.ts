@@ -23,6 +23,16 @@ const ET_SHOP_VARIATION_OPTION = 'shop_variation_option_value';
  * bounded. */
 const IN_MEMORY_SORT_CAP: number = 500;
 
+/** The swatch-bearing shape of a VariationOptionValue row as the storefront
+ * product payload carries it — `swatchUrl` is added by
+ * ProductsService.resolveOptionSwatchUrlsInPlace, not stored. */
+interface OptionValueSwatch {
+  id: string;
+  swatchType: string | null;
+  swatchValue: string | null;
+  swatchUrl?: string | null;
+}
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -441,9 +451,44 @@ export class ProductsService {
     if (!product) throw new NotFoundException('Product not found');
     const resolved = await this.resolveProductUrls(product);
     this.resolveVariantPricesInPlace(resolved as never);
+    await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
     return translated;
+  }
+
+  /**
+   * Fills in `swatchUrl` on every variant option value of a storefront product.
+   *
+   * Colour swatches are a global hex kept on the VariationOptionValue row, but
+   * image swatches are per-product — Product A's "Red" photo isn't Product B's —
+   * so the image lives in ProductOptionValueImage and only resolves to a URL in
+   * the context of one product. The global `swatchValue` holds a raw storage key
+   * for image-type options, which is useless (and misleading) to the storefront,
+   * so it is nulled out there exactly like the availability matrix does.
+   */
+  private async resolveOptionSwatchUrlsInPlace(
+    productId: string,
+    product: { variants?: Array<{ options?: Array<{ optionValue?: OptionValueSwatch | null }> }> },
+  ): Promise<void> {
+    const optionValues = (product.variants ?? [])
+      .flatMap((v) => v.options ?? [])
+      .map((o) => o.optionValue)
+      .filter((ov): ov is OptionValueSwatch => !!ov);
+    if (!optionValues.length) return;
+
+    const optionImages = await this.prisma.productOptionValueImage.findMany({ where: { productId } });
+    const optionImageMap = new Map(optionImages.map((oi) => [oi.optionValueId, oi.mediaKey]));
+    const urlMap = await this.assetUrls.resolveBatch([...optionImageMap.values()]);
+
+    for (const ov of optionValues) {
+      if (ov.swatchType === 'image') {
+        ov.swatchUrl = urlMap.get(optionImageMap.get(ov.id) ?? '') ?? null;
+        ov.swatchValue = null;
+      } else {
+        ov.swatchUrl = null;
+      }
+    }
   }
 
   // ── Create ────────────────────────────────────────────────────────────
