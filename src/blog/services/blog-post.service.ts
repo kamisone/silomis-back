@@ -21,6 +21,34 @@ type PostWithRelations = Prisma.BlogPostGetPayload<{
   include: typeof POST_INCLUDE;
 }>;
 
+/// Detail views additionally pull the featured-product links. Kept separate
+/// from POST_INCLUDE so list endpoints don't drag a product+variant join per
+/// row for cards that only ever render on a single post's page.
+const POST_DETAIL_INCLUDE = {
+  categories: true,
+  tags: true,
+  productRefs: {
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    include: {
+      product: {
+        include: {
+          variants: {
+            select: {
+              id: true,
+              priceCents: true,
+              compareAtPriceCents: true,
+              isDefault: true,
+            },
+          },
+        },
+      },
+    },
+  },
+} satisfies Prisma.BlogPostInclude;
+type PostWithDetail = Prisma.BlogPostGetPayload<{
+  include: typeof POST_DETAIL_INCLUDE;
+}>;
+
 export interface AdminListFilter {
   status?: BlogPostStatus;
   categoryId?: string;
@@ -76,6 +104,84 @@ export class BlogPostService {
         ? (urlMap.get(p.featuredImageKey) ?? null)
         : null,
     }));
+  }
+
+  // ── Featured-product links ────────────────────────────────────────────────
+
+  /**
+   * Shapes `productRefs` into the flat card payload the storefront's shared
+   * ProductCard already consumes, with image URLs resolved in one batch.
+   *
+   * `publicOnly` drops links whose product has since been unpublished or
+   * soft-deleted — a published article must never surface a dead product
+   * card. Admin reads keep those rows so the editor can see and fix the
+   * broken link rather than having it silently vanish.
+   */
+  private async resolveProductRefs(
+    refs: PostWithDetail['productRefs'],
+    publicOnly: boolean,
+  ): Promise<unknown[]> {
+    const visible = publicOnly
+      ? refs.filter(
+          (r) => r.product.status === 'active' && !r.product.deletedAt,
+        )
+      : refs;
+    if (!visible.length) return [];
+
+    const keys = visible
+      .map((r) => r.product.featuredImageKey)
+      .filter((k): k is string => !!k);
+    const urlMap = keys.length
+      ? await this.assetUrl.resolveBatch(keys)
+      : new Map<string, string>();
+
+    return visible.map((ref) => {
+      const p = ref.product;
+      // Variant rows may leave priceCents null and inherit the product's base
+      // price — mirror ProductsService so cards never render "€0.00".
+      const variants = p.variants.map((v) => ({
+        ...v,
+        priceCents: v.priceCents ?? p.basePriceCents ?? 0,
+      }));
+      return {
+        referenceId: ref.id,
+        label: ref.label,
+        sortOrder: ref.sortOrder,
+        product: {
+          id: p.id,
+          slug: p.slug,
+          title: p.title,
+          brand: p.brand,
+          status: p.status,
+          basePriceCents: p.basePriceCents,
+          freeShipping: p.freeShipping,
+          featuredImageUrl: p.featuredImageKey
+            ? (urlMap.get(p.featuredImageKey) ?? null)
+            : null,
+          variants,
+        },
+      };
+    });
+  }
+
+  /** Replace-all semantics, matching how categoryIds/tagIds behave. */
+  private productRefsWrite(
+    refs: CreateBlogPostDto['productRefs'],
+  ): Prisma.BlogProductReferenceCreateWithoutPostInput[] {
+    // De-dupe defensively: the (postId, productId) unique constraint would
+    // otherwise reject the whole write if a client sent the same product twice.
+    const seen = new Set<string>();
+    const out: Prisma.BlogProductReferenceCreateWithoutPostInput[] = [];
+    for (const ref of refs ?? []) {
+      if (seen.has(ref.productId)) continue;
+      seen.add(ref.productId);
+      out.push({
+        product: { connect: { id: ref.productId } },
+        label: ref.label?.trim() || null,
+        sortOrder: out.length,
+      });
+    }
+    return out;
   }
 
   // ── Slug ──────────────────────────────────────────────────────────────────
@@ -153,10 +259,22 @@ export class BlogPostService {
   async adminFindOne(id: string): Promise<unknown> {
     const post = await this.prisma.blogPost.findUnique({
       where: { id },
-      include: POST_INCLUDE,
+      include: POST_DETAIL_INCLUDE,
     });
     if (!post) throw new NotFoundException(`Post ${id} not found`);
-    return this.enrichOne(post);
+    return this.withProductRefs(post, false);
+  }
+
+  /** Detail-response shaper: image URL + resolved featured-product cards. */
+  private async withProductRefs(
+    post: PostWithDetail,
+    publicOnly: boolean,
+  ): Promise<Record<string, unknown>> {
+    const [enriched, productRefs] = await Promise.all([
+      this.enrichOne(post),
+      this.resolveProductRefs(post.productRefs, publicOnly),
+    ]);
+    return { ...enriched, productRefs };
   }
 
   async create(dto: CreateBlogPostDto): Promise<unknown> {
@@ -188,11 +306,14 @@ export class BlogPostService {
         tags: dto.tagIds?.length
           ? { connect: dto.tagIds.map((id) => ({ id })) }
           : undefined,
+        productRefs: dto.productRefs?.length
+          ? { create: this.productRefsWrite(dto.productRefs) }
+          : undefined,
       },
-      include: POST_INCLUDE,
+      include: POST_DETAIL_INCLUDE,
     });
 
-    return this.enrichOne(post);
+    return this.withProductRefs(post, false);
   }
 
   async update(id: string, dto: UpdateBlogPostDto): Promise<unknown> {
@@ -245,11 +366,20 @@ export class BlogPostService {
           dto.tagIds !== undefined
             ? { set: dto.tagIds.map((tid) => ({ id: tid })) }
             : undefined,
+        // Replace-all, mirroring `set` above: an omitted key leaves the
+        // existing links untouched, an empty array clears them.
+        productRefs:
+          dto.productRefs !== undefined
+            ? {
+                deleteMany: {},
+                create: this.productRefsWrite(dto.productRefs),
+              }
+            : undefined,
       },
-      include: POST_INCLUDE,
+      include: POST_DETAIL_INCLUDE,
     });
 
-    return this.enrichOne(post);
+    return this.withProductRefs(post, false);
   }
 
   async publish(id: string): Promise<unknown> {
@@ -318,15 +448,11 @@ export class BlogPostService {
   async publicFindBySlug(slug: string, lang?: string): Promise<unknown> {
     const post = await this.prisma.blogPost.findFirst({
       where: { slug, status: 'published' },
-      include: POST_INCLUDE,
+      include: POST_DETAIL_INCLUDE,
     });
     if (!post) throw new NotFoundException(`Post "${slug}" not found`);
-    const enriched = await this.enrichOne(post);
-    return this.translations.maybeApplyOne(
-      enriched as unknown as Record<string, unknown>,
-      ET_BLOG_POST,
-      lang,
-    );
+    const enriched = await this.withProductRefs(post, true);
+    return this.translations.maybeApplyOne(enriched, ET_BLOG_POST, lang);
   }
 
   async publicRelated(postId: string, limit = 3): Promise<unknown[]> {

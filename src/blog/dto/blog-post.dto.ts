@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+/// One "product featured in this article" link. `sortOrder` is optional
+/// because the array's own order is authoritative — the service assigns
+/// indexes on write, so the client never has to keep the two in sync.
+export const BlogProductRefSchema = z.object({
+  productId: z.string().uuid(),
+  label: z.string().max(300).nullable().optional(),
+});
+export type BlogProductRefDto = z.infer<typeof BlogProductRefSchema>;
+
 export const CreateBlogPostSchema = z.object({
   title: z.string().min(1, 'Title is required').max(500),
   slug: z.string().min(1).max(500).optional(),
@@ -16,6 +25,7 @@ export const CreateBlogPostSchema = z.object({
   authorName: z.string().max(200).nullable().optional(),
   categoryIds: z.array(z.string().uuid()).optional(),
   tagIds: z.array(z.string().uuid()).optional(),
+  productRefs: z.array(BlogProductRefSchema).max(24).optional(),
 });
 export type CreateBlogPostDto = z.infer<typeof CreateBlogPostSchema>;
 

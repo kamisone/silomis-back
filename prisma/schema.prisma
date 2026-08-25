@@ -521,6 +521,7 @@ model Product {
   priceRules        PriceRule[]
   reviews           ProductReview[]
   wishlistItems     WishlistItem[]
+  blogRefs          BlogProductReference[]
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -2232,6 +2233,8 @@ model BlogPost {
   categories BlogCategory[] @relation("BlogPostCategoryMap")
   tags       BlogTag[]      @relation("BlogPostTagMap")
 
+  productRefs BlogProductReference[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2239,6 +2242,31 @@ model BlogPost {
   @@index([featured])
   @@index([publishedAt])
   @@map("blog_posts")
+}
+
+/// Editorial link between an article and a shop product — powers the
+/// "products featured in this article" cards on the post page. Deliberately
+/// a join *model* rather than an implicit m-n relation: each link carries its
+/// own editorial `label` and ordering, which an implicit table can't hold.
+model BlogProductReference {
+  id String @id @default(uuid())
+
+  postId String
+  post   BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Optional editorial teaser shown under the product card in the post
+  label String? @db.VarChar(300)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([postId, productId])
+  @@index([postId])
+  @@map("blog_product_references")
 }
 
 model PageContent {
