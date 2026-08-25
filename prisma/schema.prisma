@@ -2161,3 +2161,94 @@ enum AuditAction {
   assigned
   auto_closed
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Blog (Content → Articles / Categories / Tags) + static page content
+// (Content → Policies). English lives directly on the entity; the other 6
+// storefront locales are overlaid via the generic Translation table, same
+// as ProductCategory/Product.
+// ─────────────────────────────────────────────────────────────────────────
+
+model BlogCategory {
+  id          String  @id @default(uuid())
+  slug        String  @unique @db.VarChar(300)
+  name        String  @db.VarChar(300)
+  color       String? @db.VarChar(7)
+  description String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  posts BlogPost[] @relation("BlogPostCategoryMap")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("blog_categories")
+}
+
+model BlogTag {
+  id   String @id @default(uuid())
+  slug String @unique @db.VarChar(300)
+  name String @db.VarChar(300)
+
+  posts BlogPost[] @relation("BlogPostTagMap")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("blog_tags")
+}
+
+enum BlogPostStatus {
+  draft
+  scheduled
+  published
+  archived
+}
+
+model BlogPost {
+  id     String         @id @default(uuid())
+  slug   String         @unique @db.VarChar(500)
+  status BlogPostStatus @default(draft)
+
+  title            String  @db.VarChar(500)
+  excerpt          String?
+  content          String?
+  featuredImageKey String? @db.VarChar(1000)
+  featuredImageAlt String? @db.VarChar(300)
+  seoTitle         String? @db.VarChar(500)
+  seoDescription   String? @db.VarChar(500)
+  canonicalUrl     String? @db.VarChar(500)
+
+  readingTimeMinutes Int @default(0)
+
+  publishedAt        DateTime?
+  scheduledPublishAt DateTime?
+
+  featured   Boolean @default(false)
+  authorId   String?
+  authorName String? @db.VarChar(200)
+
+  categories BlogCategory[] @relation("BlogPostCategoryMap")
+  tags       BlogTag[]      @relation("BlogPostTagMap")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([featured])
+  @@index([publishedAt])
+  @@map("blog_posts")
+}
+
+model PageContent {
+  id     String @id @default(uuid())
+  slug   String @db.VarChar(100)
+  locale String @db.VarChar(10)
+  data   Json   @default("{}")
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([slug, locale])
+  @@map("page_contents")
+}
