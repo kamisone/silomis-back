@@ -8,6 +8,11 @@ export const HOME_SECTION_TYPES = [
   'product_rail',
   'promo_banner',
   'blog_posts',
+  // Editorial blocks: no catalogue query behind them, they render the copy the
+  // admin typed into `config`.
+  'section_heading',
+  'separator',
+  'seo_text',
 ] as const;
 
 export const HomeSectionTypeSchema = z.enum(HOME_SECTION_TYPES);
@@ -17,6 +22,13 @@ export type HomeSectionTypeDto = z.infer<typeof HomeSectionTypeSchema>;
  * Per-type settings. Kept permissive on purpose — the storefront registry owns
  * the real shape of each type's config, and a section that gains an option
  * should not need a backend deploy to accept it. Unknown keys are preserved.
+ *
+ * That includes the editorial blocks' copy, which is stored as a
+ * `{ en: '…', fr: '…' }` map per field rather than going through
+ * EntityTranslation: these sections have no other columns to translate, so a
+ * row in the translations table would exist purely to hold a JSON field's
+ * sibling. The storefront falls back to English, then to any locale that has
+ * text, so a half-translated block still renders.
  */
 export const HomeSectionConfigSchema = z
   .object({

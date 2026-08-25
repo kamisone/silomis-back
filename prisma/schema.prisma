@@ -1316,6 +1316,10 @@ model HomeHeroSlide {
 }
 
 /// Each value maps to one React section component in components/home.
+///
+/// The lower group is editorial rather than commerce: they render nothing but
+/// what the admin typed into `config`, which is what makes the home page read
+/// as a magazine instead of a stack of product rails.
 enum HomeSectionType {
   hero
   trust_bar
@@ -1324,6 +1328,10 @@ enum HomeSectionType {
   product_rail
   promo_banner
   blog_posts
+
+  section_heading
+  separator
+  seo_text
 }
 
 model CollectionProduct {
