@@ -39,6 +39,7 @@ import { ShippingModule } from './shipping/shipping.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { CollectionsModule } from './collections/collections.module';
+import { HomeSectionsModule } from './home-sections/home-sections.module';
 import { PriceRulesModule } from './price-rules/price-rules.module';
 import { TaxModule } from './tax/tax.module';
 import { ReturnsModule } from './returns/returns.module';
@@ -119,6 +120,7 @@ import { PageContentModule } from './page-content/page-content.module';
     PromotionsModule,
     CampaignsModule,
     CollectionsModule,
+    HomeSectionsModule,
     PriceRulesModule,
     TaxModule,
     ReturnsModule,

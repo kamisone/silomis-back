@@ -1261,6 +1261,71 @@ model Collection {
   @@map("shop_collections")
 }
 
+/// Storefront home page layout. One row per *section instance* — not a key/value
+/// setting — so an admin can reorder blocks, hide one without a deploy, and use
+/// the same type twice with different settings (e.g. two product rails).
+/// When the table is empty the storefront falls back to its built-in default
+/// layout, so a fresh install has a working home page before anyone configures
+/// anything.
+model HomeSection {
+  id        String          @id @default(uuid())
+  type      HomeSectionType
+  sortOrder Int             @default(0)
+  isActive  Boolean         @default(true)
+  /// Settings for this section type — see HOME_SECTION_TYPES in the frontend
+  /// registry for the shape each type reads. `{}` for types with no options.
+  config    Json            @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("shop_home_sections")
+}
+
+/// One slide of the home page hero carousel. A slide with no `imageKey` renders
+/// the gradient treatment instead of a photo, so a text-and-buttons slide and a
+/// banner slide are the same row type rather than two models.
+/// Copy fields are translated through EntityTranslation ('shop_home_hero_slide'),
+/// the same way collection and product copy is.
+model HomeHeroSlide {
+  id        String  @id @default(uuid())
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  /// Background image. Null => gradient slide.
+  imageKey String? @db.VarChar(1000)
+  imageAlt String? @db.VarChar(300)
+
+  eyebrow  String? @db.VarChar(120)
+  title    String  @db.VarChar(255)
+  subtitle String?
+
+  /// Hrefs are locale-less storefront paths ("/shop", "/collections/summer") —
+  /// the carousel prefixes the active locale. Absolute URLs are passed through.
+  ctaLabel          String? @db.VarChar(80)
+  ctaHref           String? @db.VarChar(500)
+  ctaSecondaryLabel String? @db.VarChar(80)
+  ctaSecondaryHref  String? @db.VarChar(500)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("shop_home_hero_slides")
+}
+
+/// Each value maps to one React section component in components/home.
+enum HomeSectionType {
+  hero
+  trust_bar
+  categories
+  featured_collections
+  product_rail
+  promo_banner
+  blog_posts
+}
+
 model CollectionProduct {
   id String @id @default(uuid())
 

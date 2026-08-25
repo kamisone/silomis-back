@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AssetUrlService } from '../../asset-url/asset-url.service';
 import { slugify } from '../../common/utils/slug.util';
 import { ProductCategory } from '../../../generated/prisma/client';
 import { TranslationsService } from '../../translations/translations.service';
@@ -11,6 +12,7 @@ const ET_SHOP_PRODUCT_CATEGORY = 'shop_product_category';
 export class CategoriesService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly assetUrls: AssetUrlService,
     private readonly translations: TranslationsService,
   ) {}
 
@@ -18,11 +20,22 @@ export class CategoriesService {
     return this.prisma.productCategory.findMany({ orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] });
   }
 
-  findActive(): Promise<ProductCategory[]> {
-    return this.prisma.productCategory.findMany({
+  /**
+   * Storefront category list. `imageKey` is a raw storage key, so it is resolved
+   * to a URL here the way collections already do — the homepage category tiles
+   * and any other picture-bearing surface can't do it themselves.
+   */
+  async findActive(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+    const categories = await this.prisma.productCategory.findMany({
       where: { isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
+    const keys = categories.map((c) => c.imageKey).filter((k): k is string => !!k);
+    const urlMap = keys.length ? await this.assetUrls.resolveBatch(keys) : new Map<string, string>();
+    return categories.map((c) => ({
+      ...c,
+      imageUrl: c.imageKey ? (urlMap.get(c.imageKey) ?? null) : null,
+    }));
   }
 
   async findOne(id: string): Promise<ProductCategory> {
