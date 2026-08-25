@@ -182,7 +182,7 @@ export type UpdateVariantDto = z.infer<typeof UpdateVariantSchema>;
 /** Storefront sort options. `curated` is the collection's own admin-defined
  * product order (CollectionProduct.sortOrder) and is only meaningful when a
  * `collection` filter is set — elsewhere it falls back to the default order. */
-export const PRODUCT_SORTS = ['curated', 'newest', 'price_asc', 'price_desc', 'name_asc'] as const;
+export const PRODUCT_SORTS = ['curated', 'newest', 'price_asc', 'price_desc', 'name_asc', 'rating_desc'] as const;
 export type ProductSort = (typeof PRODUCT_SORTS)[number];
 
 export interface ProductListFilter {
@@ -195,6 +195,13 @@ export interface ProductListFilter {
   featured?: boolean;
   isTestProduct?: boolean;
   ids?: string[];
+  /** Only products carrying an active automatic promotion — the /sale listing.
+   * See ProductsService.onSalePromotionWhere for what "on sale" resolves to. */
+  onSale?: boolean;
+  /** Bounds on the price the card actually renders (default variant's own
+   * price, falling back to basePriceCents) — inclusive, in cents. */
+  minPriceCents?: number;
+  maxPriceCents?: number;
   sort?: ProductSort;
   limit?: number;
   offset?: number;

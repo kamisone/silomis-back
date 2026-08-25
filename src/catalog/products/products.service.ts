@@ -225,6 +225,44 @@ export class ProductsService {
     return def?.priceCents ?? product.basePriceCents ?? 0;
   }
 
+  /**
+   * The `where` fragment that means "this product is on sale".
+   *
+   * There is no flag on Product to read — a product is on sale when an active
+   * automatic promotion reaches it, which is the same three-scope match the
+   * storefront card already does when it decides whether to draw a promo
+   * badge. `site_wide` is deliberately NOT one of the scopes here: a site-wide
+   * promo reaches the entire catalogue, so honouring it would turn the sale
+   * listing into the shop listing. Only promotions an admin pointed at
+   * specific categories or products mark a product as discounted.
+   *
+   * Returns a clause matching nothing when no such promotion is running —
+   * an empty sale page is the honest answer, not the whole catalogue.
+   */
+  private async onSalePromotionWhere(): Promise<Prisma.ProductWhereInput> {
+    const now = new Date();
+    const promos = await this.prisma.shopPromotion.findMany({
+      where: {
+        isActive: true,
+        trigger: 'automatic',
+        scope: { in: ['category', 'product'] },
+        AND: [{ OR: [{ startsAt: null }, { startsAt: { lte: now } }] }, { OR: [{ expiresAt: null }, { expiresAt: { gte: now } }] }],
+      },
+      select: { categoryLinks: { select: { categoryId: true } }, productLinks: { select: { productId: true } } },
+    });
+
+    const categoryIds = [...new Set(promos.flatMap((p) => p.categoryLinks.map((l) => l.categoryId)))];
+    const productIds = [...new Set(promos.flatMap((p) => p.productLinks.map((l) => l.productId)))];
+    if (categoryIds.length === 0 && productIds.length === 0) return { id: { in: [] } };
+
+    return {
+      OR: [
+        ...(categoryIds.length ? [{ categories: { some: { id: { in: categoryIds } } } }] : []),
+        ...(productIds.length ? [{ id: { in: productIds } }] : []),
+      ],
+    };
+  }
+
   /** Product ids for a collection in the admin's curated order. */
   private async collectionOrderedIds(slug: string): Promise<string[]> {
     const links = await this.prisma.collectionProduct.findMany({
@@ -291,7 +329,7 @@ export class ProductsService {
   // ── Public list ───────────────────────────────────────────────────────
 
   async publicList(filter: ProductListFilter & { lang?: string } = {}) {
-    const { categoryId, tagId, collection, search, featured, ids, sort, lang, limit = 24, offset = 0 } = filter;
+    const { categoryId, tagId, collection, search, featured, ids, onSale, minPriceCents, maxPriceCents, sort, lang, limit = 24, offset = 0 } = filter;
 
     // Ranked by Postgres full-text search (falls back to a prefix match so
     // short/partial terms still hit) rather than a plain ILIKE substring —
@@ -307,6 +345,8 @@ export class ProductsService {
     const curatedIds =
       collection && (sort ?? 'curated') === 'curated' ? await this.collectionOrderedIds(collection) : null;
 
+    const saleWhere = onSale ? await this.onSalePromotionWhere() : null;
+
     const where: Prisma.ProductWhereInput = {
       status: 'active',
       deletedAt: null,
@@ -316,13 +356,18 @@ export class ProductsService {
       ...(featured !== undefined ? { featured } : {}),
       ...(ids?.length ? { id: { in: ids } } : {}),
       ...(rankedIds ? { id: { in: rankedIds } } : {}),
+      ...(saleWhere ?? {}),
     };
 
     // Price sorting must match the price the card actually shows — the
     // default variant's own priceCents, falling back to basePriceCents — and
     // that COALESCE lives across two tables, so it is resolved in memory
-    // below rather than as a SQL orderBy.
+    // below rather than as a SQL orderBy. A min/max price *filter* has to
+    // read the same resolved number, or the listing would hide products whose
+    // displayed price is inside the range.
+    const filtersPriceInMemory = minPriceCents !== undefined || maxPriceCents !== undefined;
     const sortsInMemory = !!rankedIds || !!curatedIds || sort === 'price_asc' || sort === 'price_desc';
+    const resolvesInMemory = sortsInMemory || filtersPriceInMemory;
 
     const orderBy: Prisma.ProductOrderByWithRelationInput[] | undefined = sortsInMemory
       ? undefined
@@ -330,7 +375,12 @@ export class ProductsService {
         ? [{ createdAt: 'desc' }]
         : sort === 'name_asc'
           ? [{ title: 'asc' }]
-          : [{ featured: 'desc' }, { createdAt: 'desc' }];
+          : // Rating is denormalised onto the product, so "best rated" is a plain
+            // SQL sort; reviewCount breaks the tie so one 5-star review does not
+            // outrank fifty 4.9-star ones.
+            sort === 'rating_desc'
+            ? [{ ratingAverage: 'desc' }, { reviewCount: 'desc' }]
+            : [{ featured: 'desc' }, { createdAt: 'desc' }];
 
     // Pagination must happen after re-sorting below, so an in-memory sort
     // fetches the whole match set. Capped so a public `sort=price_asc` on an
@@ -344,7 +394,7 @@ export class ProductsService {
           variants: { include: { inventoryItem: true } },
         },
         orderBy,
-        ...(sortsInMemory ? { take: IN_MEMORY_SORT_CAP } : { take: limit, skip: offset }),
+        ...(resolvesInMemory ? { take: IN_MEMORY_SORT_CAP } : { take: limit, skip: offset }),
       }),
       this.prisma.product.count({ where }),
     ]);
@@ -357,7 +407,20 @@ export class ProductsService {
       const dir = sort === 'price_asc' ? 1 : -1;
       raw.sort((a, b) => (this.displayPriceCents(a) - this.displayPriceCents(b)) * dir);
     }
-    const page = sortsInMemory ? raw.slice(offset, offset + limit) : raw;
+
+    // Filtering after the SQL count means the count is no longer the answer,
+    // so the filtered length replaces it. Only reachable when the whole match
+    // set was materialised above, capped at IN_MEMORY_SORT_CAP.
+    const matched = filtersPriceInMemory
+      ? raw.filter((p) => {
+          const price = this.displayPriceCents(p);
+          if (minPriceCents !== undefined && price < minPriceCents) return false;
+          if (maxPriceCents !== undefined && price > maxPriceCents) return false;
+          return true;
+        })
+      : raw;
+    const matchedTotal = filtersPriceInMemory ? matched.length : total;
+    const page = resolvesInMemory ? matched.slice(offset, offset + limit) : matched;
 
     const withUrls = await this.resolveProductsUrls(page);
     for (const p of withUrls as unknown as Array<{
@@ -384,7 +447,7 @@ export class ProductsService {
     const items = await this.translations.maybeApply(withUrls, ET_SHOP_PRODUCT, lang);
     // Admin-only reference links must never reach a public response.
     for (const p of items as unknown as Array<Record<string, unknown>>) delete p.privateLinks;
-    return { items, total };
+    return { items, total: matchedTotal };
   }
 
   /** Best-match-first product ids for a search term: Postgres full-text match, or a prefix-match fallback for short/partial terms. Capped so downstream filtering stays cheap. */

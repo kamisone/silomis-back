@@ -22,6 +22,9 @@ export class ProductPublicController {
     @Query('search') search?: string,
     @Query('featured') featured?: string,
     @Query('ids') ids?: string,
+    @Query('onSale') onSale?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
     @Query('sort') sort?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
@@ -34,6 +37,12 @@ export class ProductPublicController {
       search,
       featured: featured === 'true' ? true : featured === 'false' ? false : undefined,
       ids: ids ? ids.split(',').filter(Boolean) : undefined,
+      onSale: onSale === 'true' ? true : undefined,
+      // Prices arrive in cents, matching every other price on the wire.
+      // Garbage parses to NaN, which is dropped rather than 400'd — same
+      // tolerance the sort below applies to a stale bookmark.
+      minPriceCents: this.parsePrice(minPrice),
+      maxPriceCents: this.parsePrice(maxPrice),
       // Unrecognized values fall through as undefined rather than 400 — a
       // stale bookmark with ?sort=whatever should still render the listing.
       sort: (PRODUCT_SORTS as readonly string[]).includes(sort ?? '') ? (sort as ProductSort) : undefined,
@@ -41,6 +50,12 @@ export class ProductPublicController {
       offset: offset ? parseInt(offset, 10) : undefined,
       lang,
     });
+  }
+
+  private parsePrice(raw?: string): number | undefined {
+    if (raw === undefined || raw.trim() === '') return undefined;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
   }
 
   @Get(':slug/recommendations')
