@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { TranslationsService } from '../translations/translations.service';
 import { CreatePromotionDto, UpdatePromotionDto } from './dto/promotion.dto';
 import { Prisma, PromotionDiscountType, PromotionScope, PromotionTrigger } from '../../generated/prisma/client';
 
@@ -14,9 +15,15 @@ export interface ActivePromotionPublicDto {
   linkedProductIds: string[];
 }
 
+/** Entity type under which promotion name/description overlays are stored. */
+const ET_SHOP_PROMOTION = 'shop_promotion';
+
 @Injectable()
 export class ShopPromotionService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly translations: TranslationsService,
+  ) {}
 
   // ── Promotion CRUD ────────────────────────────────────────────────────────
 
@@ -202,7 +209,10 @@ export class ShopPromotionService {
 
   // ── Public listing ───────────────────────────────────────────────────────
 
-  async listActiveAutoForPublic(): Promise<ActivePromotionPublicDto[]> {
+  /** `lang` applies the admin's saved name/description overlays — the badge
+   * on the storefront renders `name`, so without this the shopper always sees
+   * the base-language text no matter what was translated in admin. */
+  async listActiveAutoForPublic(lang?: string): Promise<ActivePromotionPublicDto[]> {
     const now = new Date();
     const promos = await this.prisma.shopPromotion.findMany({
       where: {
@@ -214,7 +224,9 @@ export class ShopPromotionService {
       include: { categoryLinks: true, productLinks: true },
     });
 
-    return promos.map((p) => ({
+    const translated = await this.translations.maybeApply(promos, ET_SHOP_PROMOTION, lang);
+
+    return translated.map((p) => ({
       id: p.id,
       name: p.name,
       description: p.description,

@@ -207,6 +207,28 @@ export class TranslationService {
     );
   }
 
+  /** Promotion name — shown to shoppers on the storefront promotion badge. */
+  async translatePromotionName(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'promotion_name',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** Promotion description. */
+  async translatePromotionDescription(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'promotion_description',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
   /**
    * Shared per-language loop: one call per target language, run
    * sequentially (not in parallel) so this doesn't burst 6 simultaneous

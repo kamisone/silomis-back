@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { z } from 'zod';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { TranslationService } from '../ai/translation.service';
 import { ShopPromotionService } from './shop-promotion.service';
 import {
   AddCategoryLinkDto,
@@ -13,9 +15,32 @@ import {
 } from './dto/promotion.dto';
 import { PromotionScope, PromotionTrigger } from '../../generated/prisma/client';
 
+const TranslateTextSchema = z.object({ text: z.string().min(1).max(500) });
+
 @Controller('admin/shop/promotions')
 export class PromotionAdminController {
-  constructor(private readonly promotions: ShopPromotionService) {}
+  constructor(
+    private readonly promotions: ShopPromotionService,
+    private readonly translation: TranslationService,
+  ) {}
+
+  // ── AI translation ─────────────────────────────────────────────────────
+  // The admin writes the base copy, then clicks "Generate" to fill every
+  // other language in one shot. Mirrors the products/countries endpoints.
+
+  @Post('sections/name/translate')
+  translateNameSection(
+    @Body(new ZodValidationPipe(TranslateTextSchema)) dto: z.infer<typeof TranslateTextSchema>,
+  ) {
+    return this.translation.translatePromotionName(dto.text);
+  }
+
+  @Post('sections/description/translate')
+  translateDescriptionSection(
+    @Body(new ZodValidationPipe(TranslateTextSchema)) dto: z.infer<typeof TranslateTextSchema>,
+  ) {
+    return this.translation.translatePromotionDescription(dto.text);
+  }
 
   @Get()
   list(

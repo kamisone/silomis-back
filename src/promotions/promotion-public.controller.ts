@@ -12,8 +12,8 @@ export class PromotionPublicController {
   ) {}
 
   @Get('active')
-  listActive() {
-    return this.promotions.listActiveAutoForPublic();
+  listActive(@Query('lang') lang?: string) {
+    return this.promotions.listActiveAutoForPublic(lang);
   }
 
   @Get('for-product')
