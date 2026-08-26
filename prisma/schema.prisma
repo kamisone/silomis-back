@@ -962,11 +962,21 @@ model ProductReview {
   /// Present but unused by current logic — reviews are matched by order+email/token, not a user account.
   userId String?
 
-  authorName  String  @db.VarChar(300)
-  authorEmail String  @db.VarChar(300)
+  authorName String  @db.VarChar(300)
+  /// Null for admin-entered reviews sourced from a supplier listing — there is
+  /// no customer behind them to email.
+  authorEmail String? @db.VarChar(300)
   rating      Int
   title       String? @db.VarChar(500)
   body        String?
+
+  /// 'customer' (submitted through the storefront) or 'imported' (entered in
+  /// admin from a supplier/marketplace listing). Kept so the two can never be
+  /// confused in admin, and so an imported row can never claim a verified
+  /// purchase.
+  source    String  @default("customer") @db.VarChar(20)
+  /// Where an imported review was copied from, for the admin's own records.
+  sourceUrl String? @db.VarChar(1000)
 
   /// ReviewMediaItem[] — { key, type: 'image'|'video', altText? }
   media Json @default("[]")
@@ -988,6 +998,7 @@ model ProductReview {
   @@unique([orderId, productId])
   @@index([productId, status])
   @@index([orderItemId])
+  @@index([source])
   @@map("shop_product_reviews")
 }
 

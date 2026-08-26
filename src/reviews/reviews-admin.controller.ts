@@ -1,8 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { ReviewsService } from './reviews.service';
-import { AdminUpdateReviewDto, AdminUpdateReviewSchema, ModerateReviewDto, ModerateReviewSchema } from './dto/review.dto';
+import {
+  AdminCreateReviewDto,
+  AdminCreateReviewSchema,
+  AdminUpdateReviewDto,
+  AdminUpdateReviewSchema,
+  ModerateReviewDto,
+  ModerateReviewSchema,
+} from './dto/review.dto';
 import { ReviewStatus } from '../../generated/prisma/client';
 
 interface AuthedRequest extends Request {
@@ -16,6 +23,12 @@ export class ReviewsAdminController {
   @Get()
   list(@Query('status') status?: ReviewStatus, @Query('limit') limit?: string, @Query('offset') offset?: string) {
     return this.reviews.adminList(status, limit ? parseInt(limit, 10) : undefined, offset ? parseInt(offset, 10) : undefined);
+  }
+
+  /** Enter a review copied from a supplier listing. See ReviewsService.adminCreate. */
+  @Post()
+  create(@Body(new ZodValidationPipe(AdminCreateReviewSchema)) dto: AdminCreateReviewDto) {
+    return this.reviews.adminCreate(dto);
   }
 
   @Patch(':id/moderate')

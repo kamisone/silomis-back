@@ -5,8 +5,8 @@ import { OrdersService } from '../orders/orders.service';
 import { GcsService } from '../gcs/gcs.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { AntiSpamService } from '../common/anti-spam/anti-spam.service';
-import { SubmitReviewDto, ModerateReviewDto, AdminUpdateReviewDto } from './dto/review.dto';
-import { ReviewStatus } from '../../generated/prisma/client';
+import { SubmitReviewDto, ModerateReviewDto, AdminCreateReviewDto, AdminUpdateReviewDto } from './dto/review.dto';
+import { Prisma, ReviewStatus } from '../../generated/prisma/client';
 
 export interface ReviewMediaItem {
   key: string;
@@ -130,23 +130,62 @@ export class ReviewsService {
     return updated;
   }
 
+  /**
+   * A review entered by hand in admin, copied from a supplier or marketplace
+   * listing for the same product.
+   *
+   * `isVerifiedPurchase` is pinned false and `source` to 'imported': there is no
+   * order in this shop behind one of these, so it must never be able to carry a
+   * badge that claims otherwise, whatever the caller sends.
+   */
+  async adminCreate(dto: AdminCreateReviewDto) {
+    const product = await this.prisma.product.findUnique({ where: { id: dto.productId }, select: { id: true } });
+    if (!product) throw new NotFoundException('Product not found');
+
+    const created = await this.prisma.productReview.create({
+      data: {
+        productId: dto.productId,
+        authorName: dto.authorName,
+        authorEmail: null,
+        rating: dto.rating,
+        title: dto.title ?? null,
+        body: dto.body ?? null,
+        media: (dto.media ?? []) as unknown as Prisma.InputJsonValue,
+        status: dto.status ?? 'approved',
+        isVerifiedPurchase: false,
+        source: 'imported',
+        sourceUrl: dto.sourceUrl ?? null,
+        ...(dto.createdAt ? { createdAt: dto.createdAt } : {}),
+      },
+    });
+    if (created.status === 'approved') await this.recomputeProductStats(created.productId);
+    return { ...created, media: await this.resolveMedia(created.media as unknown as ReviewMediaItem[]) };
+  }
+
   async adminUpdate(id: string, dto: AdminUpdateReviewDto) {
     await this.findOneOrThrow(id);
     const saved = await this.prisma.productReview.update({
       where: { id },
       data: {
+        ...(dto.authorName !== undefined ? { authorName: dto.authorName } : {}),
         ...(dto.rating !== undefined ? { rating: dto.rating } : {}),
         ...(dto.title !== undefined ? { title: dto.title } : {}),
         ...(dto.body !== undefined ? { body: dto.body } : {}),
+        ...(dto.createdAt !== undefined ? { createdAt: dto.createdAt } : {}),
+        ...(dto.sourceUrl !== undefined ? { sourceUrl: dto.sourceUrl } : {}),
+        ...(dto.media !== undefined ? { media: dto.media as unknown as Prisma.InputJsonValue } : {}),
       },
     });
     if (saved.status === 'approved') await this.recomputeProductStats(saved.productId);
-    return saved;
+    return { ...saved, media: await this.resolveMedia(saved.media as unknown as ReviewMediaItem[]) };
   }
 
   async adminDelete(id: string): Promise<void> {
     const review = await this.findOneOrThrow(id);
-    const media = (review.media as unknown as ReviewMediaItem[]) ?? [];
+    // Only a customer's own uploads are owned by the review. An imported one
+    // points at media-library objects that other records may also use, so
+    // deleting the review must not delete the picture out from under them.
+    const media = review.source === 'customer' ? ((review.media as unknown as ReviewMediaItem[]) ?? []) : [];
     Promise.allSettled(media.map((m) => this.gcs.delete(m.key))).catch(() => {});
     await this.prisma.productReview.delete({ where: { id } });
     await this.recomputeProductStats(review.productId);
