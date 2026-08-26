@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { z } from 'zod';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { TranslationService } from '../ai/translation.service';
 import { HeroSlidesService } from './hero-slides.service';
 import {
   CreateHeroSlideDto,
@@ -10,9 +12,23 @@ import {
   UpdateHeroSlideSchema,
 } from './dto/hero-slide.dto';
 
+const TranslateTextSchema = z.object({ text: z.string().min(1).max(2000) });
+
 @Controller('admin/shop/hero-slides')
 export class HeroSlidesAdminController {
-  constructor(private readonly slides: HeroSlidesService) {}
+  constructor(
+    private readonly slides: HeroSlidesService,
+    private readonly translation: TranslationService,
+  ) {}
+
+  // ── AI translation ─────────────────────────────────────────────────────
+  // Every slide field is ordinary copy — eyebrow, title, subtitle, a button
+  // label — so one endpoint serves them all. English in, the other six out.
+
+  @Post('sections/text/translate')
+  translateText(@Body(new ZodValidationPipe(TranslateTextSchema)) dto: z.infer<typeof TranslateTextSchema>) {
+    return this.translation.translateCopy(dto.text);
+  }
 
   @Get()
   list() {

@@ -86,6 +86,33 @@ export class TranslationService {
     );
   }
 
+  /**
+   * Field-agnostic plain-text translate.
+   *
+   * The per-field methods above exist because their callers translate one named
+   * thing. The home-page and hero editors translate whatever field the admin
+   * happens to be standing in — a heading, an eyebrow, a button label — so they
+   * ask for copy, not for a field.
+   */
+  async translateCopy(text: string): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'copy',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** As translateCopy, for a rich-text field whose value is HTML. */
+  async translateCopyHtml(
+    html: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'copy_html',
+      (lang) => this.freeTranslate.translateHtml(html, lang),
+      '',
+    );
+  }
+
   async translateDescription(
     html: string,
   ): Promise<SectionTranslationOutcome<string>> {

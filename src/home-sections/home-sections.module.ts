@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AiModule } from '../ai/ai.module';
 import { AssetUrlModule } from '../asset-url/asset-url.module';
 import { TranslationsModule } from '../translations/translations.module';
 import { HomeSectionsService } from './home-sections.service';
@@ -8,7 +9,7 @@ import { HeroSlidesAdminController } from './hero-slides-admin.controller';
 import { HomeSectionsPublicController } from './home-sections-public.controller';
 
 @Module({
-  imports: [AssetUrlModule, TranslationsModule],
+  imports: [AiModule, AssetUrlModule, TranslationsModule],
   providers: [HomeSectionsService, HeroSlidesService],
   controllers: [HomeSectionsAdminController, HeroSlidesAdminController, HomeSectionsPublicController],
   exports: [HomeSectionsService, HeroSlidesService],
