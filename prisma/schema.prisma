@@ -1349,6 +1349,9 @@ enum HomeSectionType {
   featured_collections
   product_rail
   promo_banner
+  /// Hand-made artwork rather than a catalogue query: each banner is an image
+  /// the admin uploads, opening a collection through its own button.
+  offer_banners
   blog_posts
 
   section_heading

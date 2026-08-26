@@ -7,6 +7,7 @@ export const HOME_SECTION_TYPES = [
   'featured_collections',
   'product_rail',
   'promo_banner',
+  'offer_banners',
   'blog_posts',
   // Editorial blocks: no catalogue query behind them, they render the copy the
   // admin typed into `config`.
