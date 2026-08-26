@@ -107,6 +107,7 @@ export class CollectionsService {
         name: dto.name,
         description: dto.description ?? null,
         imageKey: dto.imageKey ?? null,
+        bannerImageKey: dto.bannerImageKey ?? null,
         seoTitle: dto.seoTitle ?? null,
         seoDescription: dto.seoDescription ?? null,
         metaKeywords: dto.metaKeywords ?? null,
@@ -136,6 +137,9 @@ export class CollectionsService {
           ? { description: dto.description }
           : {}),
         ...(dto.imageKey !== undefined ? { imageKey: dto.imageKey } : {}),
+        ...(dto.bannerImageKey !== undefined
+          ? { bannerImageKey: dto.bannerImageKey }
+          : {}),
         ...(dto.seoTitle !== undefined ? { seoTitle: dto.seoTitle } : {}),
         ...(dto.seoDescription !== undefined
           ? { seoDescription: dto.seoDescription }

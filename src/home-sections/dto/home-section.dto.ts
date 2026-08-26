@@ -66,7 +66,24 @@ export const CreateHomeSectionSchema = z.object({
 });
 export type CreateHomeSectionDto = z.infer<typeof CreateHomeSectionSchema>;
 
-export const UpdateHomeSectionSchema = CreateHomeSectionSchema.partial();
+/**
+ * Spelled out rather than `CreateHomeSectionSchema.partial()`.
+ *
+ * `.partial()` makes each key optional but leaves its `.default()` in place, so
+ * a PATCH of `{ config }` parsed through the create schema also emitted
+ * `sortOrder: 0` and `isActive: true` — every settings change quietly moved the
+ * section to the top of the page and un-hid it, and toggling visibility sent
+ * `config: {}` and wiped the section's whole configuration.
+ *
+ * A partial update must carry only the keys the caller actually sent, so the
+ * fields are listed here without defaults.
+ */
+export const UpdateHomeSectionSchema = z.object({
+  type: HomeSectionTypeSchema.optional(),
+  sortOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+  config: HomeSectionConfigSchema.optional(),
+});
 export type UpdateHomeSectionDto = z.infer<typeof UpdateHomeSectionSchema>;
 
 export const ReorderHomeSectionsSchema = z.object({

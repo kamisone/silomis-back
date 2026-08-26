@@ -26,7 +26,18 @@ export const CreateHeroSlideSchema = z.object({
 });
 export type CreateHeroSlideDto = z.infer<typeof CreateHeroSlideSchema>;
 
-export const UpdateHeroSlideSchema = CreateHeroSlideSchema.partial();
+/**
+ * Only `sortOrder` and `isActive` are re-declared, because those are the two
+ * fields the create schema gives a `.default()`. `.partial()` keeps a default
+ * alive on an absent key, so deriving the whole thing from the create schema
+ * made every single-field PATCH also send `sortOrder: 0` and `isActive: true` —
+ * editing a slide moved it to the top of the carousel and un-hid it. The rest
+ * are `.nullish()` already and partial cleanly.
+ */
+export const UpdateHeroSlideSchema = CreateHeroSlideSchema.partial().extend({
+  sortOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+});
 export type UpdateHeroSlideDto = z.infer<typeof UpdateHeroSlideSchema>;
 
 export const ReorderHeroSlidesSchema = z.object({
