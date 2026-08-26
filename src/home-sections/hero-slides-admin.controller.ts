@@ -13,6 +13,7 @@ import {
 } from './dto/hero-slide.dto';
 
 const TranslateTextSchema = z.object({ text: z.string().min(1).max(2000) });
+const TranslateHtmlSchema = z.object({ html: z.string().min(1).max(50000) });
 
 @Controller('admin/shop/hero-slides')
 export class HeroSlidesAdminController {
@@ -22,12 +23,18 @@ export class HeroSlidesAdminController {
   ) {}
 
   // ── AI translation ─────────────────────────────────────────────────────
-  // Every slide field is ordinary copy — eyebrow, title, subtitle, a button
-  // label — so one endpoint serves them all. English in, the other six out.
+  // English in, the other six out. Plain fields (the eyebrow, a button label)
+  // post `{ text }`; the card's copy is markup and posts `{ html }`.
 
   @Post('sections/text/translate')
   translateText(@Body(new ZodValidationPipe(TranslateTextSchema)) dto: z.infer<typeof TranslateTextSchema>) {
     return this.translation.translateCopy(dto.text);
+  }
+
+  /** The card's copy, which is a rich-text block. */
+  @Post('sections/html/translate')
+  translateHtml(@Body(new ZodValidationPipe(TranslateHtmlSchema)) dto: z.infer<typeof TranslateHtmlSchema>) {
+    return this.translation.translateCopyHtml(dto.html);
   }
 
   @Get()

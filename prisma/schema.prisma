@@ -1297,9 +1297,15 @@ model HomeHeroSlide {
   imageKey String? @db.VarChar(1000)
   imageAlt String? @db.VarChar(300)
 
-  eyebrow  String? @db.VarChar(120)
-  title    String  @db.VarChar(255)
-  subtitle String?
+  /// A short kicker above the copy. Plain text — it renders as a small pill
+  /// beside an icon, which rich markup would only fight.
+  eyebrow String? @db.VarChar(120)
+
+  /// The card's copy as one rich-text block (HTML from the admin's WYSIWYG):
+  /// a heading, a lead line, a list — whatever the slide needs. Replaced the
+  /// old title + subtitle pair, which forced every slide into the same shape.
+  /// The storefront promotes the first heading of the visible slide to <h1>.
+  content String?
 
   /// Hrefs are locale-less storefront paths ("/shop", "/collections/summer") —
   /// the carousel prefixes the active locale. Absolute URLs are passed through.

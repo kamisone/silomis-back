@@ -79,21 +79,23 @@ export class FreeTranslateService {
    * too, breaking the token. A number isn't a translatable word, so it
    * survives intact; a side-channel array maps each index back to its
    * original tag name afterward. Safe for this product's fixed tag
-   * vocabulary (<p>, <h2>, <h3>, <strong>, <em>, <ul>/<ol>/<li>) — inline
-   * tags are assumed not to nest inside each other.
+   * vocabulary (<p>, <h1>–<h6>, <ul>/<ol>/<li> as blocks; <strong>, <em>,
+   * <b>, <i>, <u>, <s>, <span>, <a> inline) — inline tags are assumed not to
+   * nest inside each other. Anything not in that set is dropped from the
+   * block, so a new toolbar button means a new entry here.
    */
   async translateHtml(html: string, to: string): Promise<string> {
     const $ = cheerio.load(html);
-    const blocks = $('body').find('p, h2, h3, li').toArray();
+    const blocks = $('body').find('p, h1, h2, h3, h4, h5, h6, li').toArray();
 
     for (const block of blocks) {
       const $block = $(block);
-      const tagNames: string[] = [];
-      const placeholderText = buildPlaceholderText($, block, tagNames);
+      const tags: InlineTag[] = [];
+      const placeholderText = buildPlaceholderText($, block, tags);
       if (!placeholderText.trim()) continue;
 
       const translated = await this.translateText(placeholderText, to);
-      $block.html(restoreInlineTags(translated, tagNames));
+      $block.html(restoreInlineTags(translated, tags));
     }
 
     const result = $('body').html() ?? '';
@@ -108,16 +110,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const INLINE_TAGS = new Set(['strong', 'em']);
+const INLINE_TAGS = new Set(['strong', 'em', 'b', 'i', 'u', 's', 'span', 'a']);
+
+/**
+ * One inline tag pulled out of a block: its name, for the closing tag, and its
+ * *whole* opening tag, attributes included.
+ *
+ * The opening tag is kept verbatim rather than rebuilt from the name because
+ * the hero's inline editor colours words with `<span style="color: …">` — a
+ * side channel holding only "span" would put the tag back stripped of the very
+ * thing it was there for.
+ */
+interface InlineTag {
+  name: string;
+  open: string;
+}
 
 /**
  * Flattens a block element's children into one plain string, replacing each
  * inline tag with a `⟦N⟧...⟦/N⟧` numeric placeholder pair (N = its index in
- * `tagNames`, appended as a side effect) so the whole block can be
- * translated as a single unit while still knowing where to put the original
- * tags back afterward.
+ * `tags`, appended as a side effect) so the whole block can be translated as a
+ * single unit while still knowing where to put the original tags back
+ * afterward.
  */
-function buildPlaceholderText($: cheerio.CheerioAPI, block: Element, tagNames: string[]): string {
+function buildPlaceholderText($: cheerio.CheerioAPI, block: Element, tags: InlineTag[]): string {
   let out = '';
   $(block)
     .contents()
@@ -125,7 +141,9 @@ function buildPlaceholderText($: cheerio.CheerioAPI, block: Element, tagNames: s
       if (node.type === 'text') {
         out += node.data;
       } else if (node.type === 'tag' && INLINE_TAGS.has(node.tagName)) {
-        const i = tagNames.push(node.tagName) - 1;
+        const html = $.html(node);
+        const open = html.slice(0, html.indexOf('>') + 1);
+        const i = tags.push({ name: node.tagName, open }) - 1;
         out += `⟦${i}⟧${$(node).text()}⟦/${i}⟧`;
       }
     });
@@ -133,10 +151,10 @@ function buildPlaceholderText($: cheerio.CheerioAPI, block: Element, tagNames: s
 }
 
 /** Reverses buildPlaceholderText's substitution on translated text. */
-function restoreInlineTags(text: string, tagNames: string[]): string {
+function restoreInlineTags(text: string, tags: InlineTag[]): string {
   return text.replace(/⟦(\/?)(\d+)⟧/g, (match, closing: string, indexStr: string) => {
-    const tag = tagNames[Number(indexStr)];
+    const tag = tags[Number(indexStr)];
     if (!tag) return match;
-    return closing ? `</${tag}>` : `<${tag}>`;
+    return closing ? `</${tag.name}>` : tag.open;
   });
 }

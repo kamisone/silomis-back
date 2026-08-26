@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { PrismaService } from '../../prisma/prisma.service';
 import { AssetUrlService } from '../../asset-url/asset-url.service';
 import { slugify } from '../../common/utils/slug.util';
-import { ProductCategory } from '../../../generated/prisma/client';
+import { Prisma, ProductCategory } from '../../../generated/prisma/client';
 import { TranslationsService } from '../../translations/translations.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 
@@ -16,8 +16,13 @@ export class CategoriesService {
     private readonly translations: TranslationsService,
   ) {}
 
-  findAll(): Promise<ProductCategory[]> {
-    return this.prisma.productCategory.findMany({ orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] });
+  /**
+   * Admin category list. Carries `imageUrl` for the same reason the storefront
+   * list does: the admin form has to show the picture that is already set, and
+   * a raw storage key is not something it can render.
+   */
+  findAll(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+    return this.listWithImages({});
   }
 
   /**
@@ -25,9 +30,16 @@ export class CategoriesService {
    * to a URL here the way collections already do — the homepage category tiles
    * and any other picture-bearing surface can't do it themselves.
    */
-  async findActive(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+  findActive(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+    return this.listWithImages({ isActive: true });
+  }
+
+  /** One batch resolve for the whole list rather than a lookup per row. */
+  private async listWithImages(
+    where: Prisma.ProductCategoryWhereInput,
+  ): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
     const categories = await this.prisma.productCategory.findMany({
-      where: { isActive: true },
+      where,
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
     const keys = categories.map((c) => c.imageKey).filter((k): k is string => !!k);

@@ -19,6 +19,19 @@ export const HomeSectionTypeSchema = z.enum(HOME_SECTION_TYPES);
 export type HomeSectionTypeDto = z.infer<typeof HomeSectionTypeSchema>;
 
 /**
+ * Copy the admin typed, keyed by locale — `{ en: 'New in', fr: 'Nouveautés' }`.
+ *
+ * The locale keys are deliberately not constrained to a list: adding a language
+ * is a frontend concern, and a backend enum here would reject a valid new locale
+ * until this file caught up. A bare string is still accepted for rows written
+ * before the fields became translatable.
+ */
+export const LocalizedTextSchema = z.union([
+  z.string().max(120),
+  z.record(z.string(), z.string().max(120)),
+]);
+
+/**
  * Per-type settings. Kept permissive on purpose — the storefront registry owns
  * the real shape of each type's config, and a section that gains an option
  * should not need a backend deploy to accept it. Unknown keys are preserved.
@@ -34,10 +47,13 @@ export const HomeSectionConfigSchema = z
   .object({
     /** Item count for the list-bearing sections (categories, collections, rails, posts). */
     limit: z.number().int().min(1).max(24).optional(),
-    /** product_rail: which catalogue query feeds the rail. */
-    source: z.enum(['newest', 'featured']).optional(),
-    /** product_rail: plain-text heading override; falls back to the localized default. */
-    title: z.string().max(120).nullish(),
+    /**
+     * product_rail: which catalogue query feeds the rail. `manual` means the
+     * rail renders exactly `productIds`, in that order, and ignores `limit`.
+     */
+    source: z.enum(['newest', 'featured', 'on_sale', 'manual']).optional(),
+    /** Heading override for any list section; falls back to the localized default. */
+    title: LocalizedTextSchema.nullish(),
   })
   .passthrough();
 export type HomeSectionConfig = z.infer<typeof HomeSectionConfigSchema>;

@@ -22,6 +22,20 @@ export interface SearchResult {
   processingTimeMs: number;
 }
 
+/** One suggestion, with everything the dropdown draws. */
+export interface AutocompleteItem {
+  id: string;
+  slug: string;
+  title: string;
+  brand: string | null;
+  imageUrl: string | null;
+  priceCents: number;
+  ratingAverage: number;
+  reviewCount: number;
+  categoryId: string | null;
+  categoryName: string | null;
+}
+
 interface IndexableProduct {
   id: string;
   slug: string;
@@ -79,13 +93,16 @@ export class ProductSearchService implements OnModuleInit {
   async indexProduct(product: IndexableProduct): Promise<void> {
     if (!this.meili.isEnabled) return;
 
-    const minPriceRow = await this.prisma.productVariant.aggregate({
+    // Every variant's effective price, with null meaning "inherit the product's
+    // base" — aggregating the raw column instead would ignore the base entirely
+    // whenever at least one variant carries an override.
+    const variantRows = await this.prisma.productVariant.findMany({
       where: { productId: product.id },
-      _min: { priceCents: true },
-      _max: { priceCents: true },
+      select: { priceCents: true },
     });
-    const minPriceCents = minPriceRow._min.priceCents ?? product.basePriceCents ?? 0;
-    const maxPriceCents = minPriceRow._max.priceCents ?? product.basePriceCents ?? 0;
+    const prices = variantRows.map((v) => v.priceCents ?? product.basePriceCents ?? 0);
+    const minPriceCents = prices.length ? Math.min(...prices) : (product.basePriceCents ?? 0);
+    const maxPriceCents = prices.length ? Math.max(...prices) : (product.basePriceCents ?? 0);
 
     const doc = {
       id: product.id,
@@ -128,11 +145,14 @@ export class ProductSearchService implements OnModuleInit {
       where: { productId: { in: products.map((p) => p.id) } },
       select: { productId: true, priceCents: true },
     });
+    // Same fallback as indexProduct: a null override means the product's base
+    // price, so skipping those rows would drop the cheapest option from the
+    // index whenever a product mixes overridden and inherited variants.
+    const baseByProduct = new Map(products.map((p) => [p.id, p.basePriceCents ?? 0]));
     const pricesByProduct = new Map<string, number[]>();
     for (const v of variants) {
-      if (v.priceCents == null) continue;
       const arr = pricesByProduct.get(v.productId) ?? [];
-      arr.push(v.priceCents);
+      arr.push(v.priceCents ?? baseByProduct.get(v.productId) ?? 0);
       pricesByProduct.set(v.productId, arr);
     }
 
@@ -256,7 +276,13 @@ export class ProductSearchService implements OnModuleInit {
         SELECT
           p.id, p.slug, p.title, p."shortDescription", p.brand, p.sku,
           p."featuredImageKey", p.featured, p."createdAt",
-          MIN(v."priceCents") AS min_price
+          /* A variant's priceCents is an *override*: null means "use the
+             product's basePriceCents" (see the schema comment on that column).
+             A raw MIN over it returns null for every product priced at the
+             product level, which the mapper below then read as a price of 0 —
+             the whole search page quoted €0.00. The Meilisearch indexer has
+             always applied this same fallback; only this path had not. */
+          MIN(COALESCE(v."priceCents", p."basePriceCents")) AS min_price
           ${rankSelect}
         FROM shop_products p
         LEFT JOIN shop_product_variants v ON v."productId" = p.id
@@ -271,7 +297,10 @@ export class ProductSearchService implements OnModuleInit {
     const countQuery = Prisma.sql`
       SELECT COUNT(*)::int AS total
       FROM (
-        SELECT p.id, MIN(v."priceCents") AS min_price
+        /* Same COALESCE as the hits query — this one feeds the min/max price
+           filter, which would otherwise exclude every product priced at the
+           product level. */
+        SELECT p.id, MIN(COALESCE(v."priceCents", p."basePriceCents")) AS min_price
         FROM shop_products p
         LEFT JOIN shop_product_variants v ON v."productId" = p.id
         WHERE ${where}
@@ -304,7 +333,8 @@ export class ProductSearchService implements OnModuleInit {
       brand: r.brand ?? '',
       sku: r.sku ?? '',
       featuredImageKey: r.featuredImageKey ?? null,
-      minPriceCents: r.min_price != null ? Number(r.min_price) : 0,
+      // Null only survives now when a product has no price anywhere at all.
+      minPriceCents: r.min_price != null ? Number(r.min_price) : null,
     }));
 
     const brandFacets: Record<string, number> = {};
@@ -321,26 +351,28 @@ export class ProductSearchService implements OnModuleInit {
 
   // ── Autocomplete ──────────────────────────────────────────────────────────
 
-  async autocomplete(query: string, limit = 8): Promise<Array<{ id: string; slug: string; title: string }>> {
-    const q = query.trim();
-    if (!q) return [];
-
+  /**
+   * Matching product ids, best first. Whichever engine is running only has to
+   * answer "which products, in what order" — everything the dropdown actually
+   * renders is loaded from the database below, so the two paths can't drift.
+   */
+  private async autocompleteIds(q: string, limit: number): Promise<string[]> {
     if (this.meili.isEnabled) {
       const result = await this.meili.index(INDEX).search(q, {
         filter: 'status = "active"',
-        attributesToRetrieve: ['id', 'slug', 'title'],
+        attributesToRetrieve: ['id'],
         hitsPerPage: limit,
         page: 1,
       });
-      return result.hits.map((h: any) => ({ id: h.id, slug: h.slug, title: h.title }));
+      return result.hits.map((h: any) => h.id as string);
     }
 
     const like = `%${q}%`;
     const words = q.split(/\s+/).filter((w) => w.length >= 2);
     const wordClauses = words.length > 1 ? words.map((w) => Prisma.sql`(p.title ILIKE ${'%' + w + '%'} OR p.brand ILIKE ${'%' + w + '%'} OR p."shortDescription" ILIKE ${'%' + w + '%'})`) : [];
 
-    const rows = await this.prisma.$queryRaw<Array<{ id: string; slug: string; title: string }>>(Prisma.sql`
-      SELECT p.id, p.slug, p.title
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT p.id
       FROM shop_products p
       WHERE p.status = 'active'
         AND p."deletedAt" IS NULL
@@ -349,6 +381,66 @@ export class ProductSearchService implements OnModuleInit {
       ORDER BY p.featured DESC, p."createdAt" DESC
       LIMIT ${limit}
     `);
-    return rows;
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Suggestions rich enough to decide from without leaving the dropdown: a
+   * photo, the brand, the price the card would show, and the review score.
+   *
+   * `category` is carried on each item rather than the response being
+   * pre-grouped — the order here is relevance, and the client groups while
+   * preserving it, so the best match still leads.
+   */
+  async autocomplete(query: string, limit = 12): Promise<AutocompleteItem[]> {
+    const q = query.trim();
+    if (!q) return [];
+
+    const ids = await this.autocompleteIds(q, limit);
+    if (!ids.length) return [];
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: ids }, status: 'active', deletedAt: null },
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        brand: true,
+        featuredImageKey: true,
+        basePriceCents: true,
+        ratingAverage: true,
+        reviewCount: true,
+        primaryCategory: { select: { id: true, name: true } },
+        categories: { select: { id: true, name: true } },
+        variants: { select: { priceCents: true, isDefault: true } },
+      },
+    });
+
+    // findMany's order has nothing to do with relevance — put it back.
+    const rank = new Map(ids.map((id, i) => [id, i]));
+    products.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+
+    const keys = products.map((p) => p.featuredImageKey).filter((k): k is string => !!k);
+    const urlMap = keys.length ? await this.assetUrl.resolveBatch(keys) : new Map<string, string>();
+
+    return products.map((p) => {
+      // Mirrors ProductCard: the default variant's own price, falling back to
+      // the product's base — so the dropdown never quotes a different number
+      // from the card the shopper lands on.
+      const def = p.variants.find((v) => v.isDefault) ?? p.variants[0];
+      const category = p.primaryCategory ?? p.categories[0] ?? null;
+      return {
+        id: p.id,
+        slug: p.slug,
+        title: p.title,
+        brand: p.brand,
+        imageUrl: p.featuredImageKey ? (urlMap.get(p.featuredImageKey) ?? null) : null,
+        priceCents: def?.priceCents ?? p.basePriceCents ?? 0,
+        ratingAverage: Number(p.ratingAverage),
+        reviewCount: p.reviewCount,
+        categoryId: category?.id ?? null,
+        categoryName: category?.name ?? null,
+      };
+    });
   }
 }

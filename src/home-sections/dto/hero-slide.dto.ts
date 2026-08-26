@@ -15,8 +15,10 @@ export const CreateHeroSlideSchema = z.object({
   imageKey: z.string().max(1000).nullish(),
   imageAlt: z.string().max(300).nullish(),
   eyebrow: z.string().max(120).nullish(),
-  title: z.string().min(1).max(255),
-  subtitle: z.string().nullish(),
+  /** The card's copy as one HTML block from the admin's WYSIWYG. Unbounded
+   *  like any other rich-text body — the markup, not the headline, sets the
+   *  length. */
+  content: z.string().nullish(),
   ctaLabel: z.string().max(80).nullish(),
   ctaHref: HrefSchema.nullish(),
   ctaSecondaryLabel: z.string().max(80).nullish(),

@@ -33,7 +33,7 @@ export class ProductSearchPublicController {
   }
 
   @Get('autocomplete')
-  autocomplete(@Query('q') q: string = '', @Query('limit') limit: string = '8') {
+  autocomplete(@Query('q') q: string = '', @Query('limit') limit: string = '12') {
     return this.searchService.autocomplete(q, parseInt(limit, 10));
   }
 }
