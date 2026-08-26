@@ -21,7 +21,7 @@ export class CategoriesService {
    * list does: the admin form has to show the picture that is already set, and
    * a raw storage key is not something it can render.
    */
-  findAll(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+  findAll(): Promise<Array<ProductCategory & { imageUrl: string | null; bannerUrl: string | null }>> {
     return this.listWithImages({});
   }
 
@@ -30,23 +30,26 @@ export class CategoriesService {
    * to a URL here the way collections already do — the homepage category tiles
    * and any other picture-bearing surface can't do it themselves.
    */
-  findActive(): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+  findActive(): Promise<Array<ProductCategory & { imageUrl: string | null; bannerUrl: string | null }>> {
     return this.listWithImages({ isActive: true });
   }
 
   /** One batch resolve for the whole list rather than a lookup per row. */
   private async listWithImages(
     where: Prisma.ProductCategoryWhereInput,
-  ): Promise<Array<ProductCategory & { imageUrl: string | null }>> {
+  ): Promise<Array<ProductCategory & { imageUrl: string | null; bannerUrl: string | null }>> {
     const categories = await this.prisma.productCategory.findMany({
       where,
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
-    const keys = categories.map((c) => c.imageKey).filter((k): k is string => !!k);
+    // Both pictures resolve in the same round trip — two batches for one list
+    // would be the same query twice.
+    const keys = categories.flatMap((c) => [c.imageKey, c.bannerKey]).filter((k): k is string => !!k);
     const urlMap = keys.length ? await this.assetUrls.resolveBatch(keys) : new Map<string, string>();
     return categories.map((c) => ({
       ...c,
       imageUrl: c.imageKey ? (urlMap.get(c.imageKey) ?? null) : null,
+      bannerUrl: c.bannerKey ? (urlMap.get(c.bannerKey) ?? null) : null,
     }));
   }
 
@@ -69,6 +72,7 @@ export class CategoriesService {
         seoTitle: dto.seoTitle ?? null,
         seoDescription: dto.seoDescription ?? null,
         imageKey: dto.imageKey ?? null,
+        bannerKey: dto.bannerKey ?? null,
         parentId: dto.parentId ?? null,
         sortOrder: dto.sortOrder ?? 0,
         isActive: dto.isActive ?? true,
@@ -96,6 +100,7 @@ export class CategoriesService {
         seoTitle: dto.seoTitle,
         seoDescription: dto.seoDescription,
         imageKey: dto.imageKey,
+        bannerKey: dto.bannerKey,
         parentId: dto.parentId,
         sortOrder: dto.sortOrder,
         isActive: dto.isActive,

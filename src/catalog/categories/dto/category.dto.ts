@@ -7,6 +7,7 @@ export const CreateCategorySchema = z.object({
   seoTitle: z.string().max(300).nullable().optional(),
   seoDescription: z.string().nullable().optional(),
   imageKey: z.string().max(1000).nullable().optional(),
+  bannerKey: z.string().max(1000).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),

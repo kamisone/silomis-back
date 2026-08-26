@@ -349,7 +349,12 @@ model ProductCategory {
   description    String?
   seoTitle       String? @db.VarChar(300)
   seoDescription String?
-  imageKey       String? @db.VarChar(1000)
+  /// Small square/portrait picture — the category tile on the home page.
+  imageKey String? @db.VarChar(1000)
+  /// Wide picture printed across the top of the category's listing page. A
+  /// separate field because it is a different crop for a different job, not a
+  /// bigger version of the tile.
+  bannerKey String? @db.VarChar(1000)
 
   parentId String?           @map("parentId")
   parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
