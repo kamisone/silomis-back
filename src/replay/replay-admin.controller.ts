@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
+import { resolveWindow, intParam } from '../analytics/analytics-filters';
 import { ReplayAdminService } from './replay-admin.service';
 import { ReplaySessionStatus } from '../../generated/prisma/client';
 
@@ -7,12 +8,20 @@ export class ReplayAdminController {
   constructor(private readonly replayAdmin: ReplayAdminService) {}
 
   @Get()
-  list(@Query('productId') productId?: string, @Query('status') status?: ReplaySessionStatus, @Query('limit') limit?: string, @Query('offset') offset?: string) {
-    return this.replayAdmin.list({
+  list(
+    @Query('productId') productId?: string,
+    @Query('status') status?: ReplaySessionStatus,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('days') days?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.replayAdmin.list(resolveWindow({ days, startDate, endDate }), {
       productId,
       status,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: intParam(limit),
+      offset: intParam(offset),
     });
   }
 

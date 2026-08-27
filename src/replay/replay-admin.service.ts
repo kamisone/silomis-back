@@ -29,9 +29,15 @@ export class ReplayAdminService {
     return counts;
   }
 
-  async list(filter: { productId?: string; status?: ReplaySessionStatus; limit?: number; offset?: number } = {}) {
+  /**
+   * Sessions for the replay list — newest first, scoped to the same date
+   * window the test-products table and the unread badge use, so a badge
+   * count and the list it opens can never disagree.
+   */
+  async list(window: DateWindow, filter: { productId?: string; status?: ReplaySessionStatus; limit?: number; offset?: number } = {}) {
     const { productId, status, limit = 20, offset = 0 } = filter;
     const where = {
+      startedAt: { gte: window.since, lt: window.until },
       ...(productId ? { productId } : {}),
       ...(status ? { status } : {}),
     };

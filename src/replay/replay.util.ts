@@ -5,8 +5,13 @@
 const MUTATION_EVENT_TYPE = 3;
 
 const EMAIL_PATTERN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
-// Loose 13-19 digit run, optionally grouped by spaces/dashes — catches most PAN-shaped strings.
-const CARD_NUMBER_PATTERN = /\b(?:\d[ -]?){13,19}\b/;
+// Only the *grouped* PAN shape (4-4-4-N, space- or dash-separated). A looser
+// "any 13-19 digit run" also matches a bare 13-digit epoch-millisecond
+// timestamp, and since tripping this check drops the entire batch — rrweb
+// events included — a false positive here silently breaks playback for a
+// perfectly ordinary session. This is a backstop behind rrweb's own input
+// masking, so it errs toward keeping the recording.
+const CARD_NUMBER_PATTERN = /\b\d{4}[ -]\d{4}[ -]\d{4}[ -]?\d{1,7}\b/;
 
 interface RawRrwebEvent {
   type?: number;
