@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MediaService, TrackUsageDto } from './media.service';
 
@@ -19,7 +31,8 @@ export class MediaController {
     @Query('offset') offset?: string,
   ) {
     const folderSet = folderId !== undefined;
-    const resolvedFolderId = folderId === '' || folderId === 'null' ? null : folderId;
+    const resolvedFolderId =
+      folderId === '' || folderId === 'null' ? null : folderId;
     return this.media.list({
       search,
       mimeType,
@@ -67,9 +80,17 @@ export class MediaController {
     return this.media.createFolder(dto.name, dto.parentId);
   }
 
+  /** Rename, re-parent, or both. `parentId: null` moves the folder to the root;
+   *  an absent key leaves the folder where it is. */
   @Patch('folders/:folderId')
-  renameFolder(@Param('folderId') id: string, @Body() dto: { name: string }) {
-    return this.media.renameFolder(id, dto.name);
+  async updateFolder(
+    @Param('folderId') id: string,
+    @Body() dto: { name?: string; parentId?: string | null },
+  ) {
+    if (dto.parentId !== undefined)
+      await this.media.moveFolder(id, dto.parentId);
+    if (dto.name !== undefined) return this.media.renameFolder(id, dto.name);
+    return this.media.listFolders();
   }
 
   @Delete('folders/:folderId')
@@ -86,7 +107,16 @@ export class MediaController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: { altText?: string; title?: string; tags?: string[]; folderId?: string | null }) {
+  update(
+    @Param('id') id: string,
+    @Body()
+    dto: {
+      altText?: string;
+      title?: string;
+      tags?: string[];
+      folderId?: string | null;
+    },
+  ) {
     return this.media.updateMetadata(id, dto);
   }
 
@@ -108,7 +138,12 @@ export class MediaController {
 
   @Delete(':id/usage')
   @HttpCode(204)
-  removeUsage(@Param('id') assetId: string, @Body('entityType') entityType: string, @Body('entityId') entityId: string, @Body('field') field: string) {
+  removeUsage(
+    @Param('id') assetId: string,
+    @Body('entityType') entityType: string,
+    @Body('entityId') entityId: string,
+    @Body('field') field: string,
+  ) {
     return this.media.removeUsage(assetId, entityType, entityId, field);
   }
 }
