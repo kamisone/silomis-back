@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { FreeTranslateService } from './free-translate.service';
+import {
+  FreeTranslateService,
+  TranslationProviderBlockedError,
+} from './free-translate.service';
 
 /**
  * The shop's 6 non-English display languages — everything a product needs
@@ -38,6 +41,13 @@ export interface SectionTranslationOutcome<T> {
  * Generate, and gets all 6 overlay languages back — via free Google
  * Translate (see FreeTranslateService).
  */
+
+/** Shown next to the Generate button. Says what is wrong and that retrying is
+ *  not the fix — "try again" would send the admin round a loop that cannot end
+ *  well while the server's IP is refused. */
+const BLOCKED_MESSAGE =
+  'Translation service unavailable from the server. Retrying will not help — this needs a supported translation provider configured.';
+
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
@@ -94,7 +104,9 @@ export class TranslationService {
    * happens to be standing in — a heading, an eyebrow, a button label — so they
    * ask for copy, not for a field.
    */
-  async translateCopy(text: string): Promise<SectionTranslationOutcome<string>> {
+  async translateCopy(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
     return this.translateSection(
       'copy',
       (lang) => this.freeTranslate.translateText(text, lang),
@@ -272,12 +284,30 @@ export class TranslationService {
     const result = {} as Record<SectionTranslationLang, T>;
     const errors: Partial<Record<SectionTranslationLang, string>> = {};
 
+    // Once the provider has refused the server, it will refuse it for every
+    // remaining language too — so the first block ends the loop instead of
+    // spending five more round trips to be told the same thing.
+    let blocked = false;
+
     for (const lang of SECTION_TARGET_LANGS) {
+      if (blocked) {
+        result[lang] = emptyValue;
+        errors[lang] = BLOCKED_MESSAGE;
+        continue;
+      }
       try {
         result[lang] = await translateOne(lang);
       } catch (err) {
-        this.logger.warn(`${name}_${lang} failed: ${(err as Error).message}`);
         result[lang] = emptyValue;
+        if (err instanceof TranslationProviderBlockedError) {
+          blocked = true;
+          this.logger.error(
+            `${name}: translation provider blocked this server — skipping remaining languages.`,
+          );
+          errors[lang] = BLOCKED_MESSAGE;
+          continue;
+        }
+        this.logger.warn(`${name}_${lang} failed: ${(err as Error).message}`);
         errors[lang] = 'Translation failed — try again.';
       }
     }
