@@ -50,6 +50,10 @@ export interface UpsellConfig {
  * This is the ONLY place quantity affects unit price. Every write path that
  * persists or verifies a cart line's `unitPriceCents` (cart add/update,
  * checkout price re-verification) must go through this function.
+ *
+ * `quantity` is the PRODUCT's total across the cart, not one line's — see
+ * tierQuantityByProduct. A customer buying three shirts in three sizes has
+ * three lines of one unit each and still expects the "buy 3" tier.
  */
 export function resolveUnitPriceForQuantity(components: VariantPriceComponents, quantity: number, upsell: UpsellConfig | null | undefined): number {
   const basePrice = resolveVariantPrice(components);
@@ -58,4 +62,25 @@ export function resolveUnitPriceForQuantity(components: VariantPriceComponents, 
   const bestTier = upsell.upsellTiers.filter((t) => t.active && Number.isInteger(t.quantity) && t.quantity <= quantity).sort((a, b) => b.quantity - a.quantity)[0];
 
   return bestTier ? bestTier.unitPriceCents : basePrice;
+}
+
+/**
+ * Total units of each product across a set of cart lines.
+ *
+ * Upsell tiers are a property of the product, not of one variant, so a basket
+ * split across variants (per-unit variant choice) must resolve its tier against
+ * the combined quantity. Resolving per line instead would quietly charge full
+ * price for three shirts bought in three sizes while the product page had
+ * already shown the tier price.
+ *
+ * Every line of a product therefore shares one tier price — which is why
+ * changing any line's quantity has to re-price all of that product's lines,
+ * not just the one that changed.
+ */
+export function tierQuantityByProduct(items: Array<{ productId: string; quantity: number }>): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const item of items) {
+    totals.set(item.productId, (totals.get(item.productId) ?? 0) + item.quantity);
+  }
+  return totals;
 }

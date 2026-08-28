@@ -10,14 +10,12 @@ import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service'
 import { COMMERCE_EVENTS, OrderStatusChangedEvent } from '../commerce-events/commerce-events.constants';
 import { TranslationsService } from '../translations/translations.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
-import { resolveUnitPriceForQuantity, sumOptionAdjustments } from '../pricing/variant-price.util';
+import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduct } from '../pricing/variant-price.util';
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
 import { CartItem, Order, OrderStatus, Prisma } from '../../generated/prisma/client';
 
-const ET_SHOP_PRODUCT = 'shop_product';
-const ET_VARIANT_ATTR = 'shop_variant_attribute';
-const ET_VARIATION_OPTION = 'shop_variation_option_value';
+import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -484,6 +482,9 @@ export class OrdersService {
 
     const variantMap = new Map(variants.map((v) => [v.id, v]));
     const productMap = new Map(products.map((p) => [p.id, p]));
+    // Tiers are resolved against the product's total across every line, so a
+    // basket split across variants qualifies exactly as a single line would.
+    const tierQuantities = tierQuantityByProduct(items);
 
     for (const item of items) {
       const variant = variantMap.get(item.variantId);
@@ -493,15 +494,16 @@ export class OrdersService {
       if (!product) throw new BadRequestException(`Product "${item.productId}" no longer exists. Please update your cart.`);
       if (product.status !== 'active') throw new BadRequestException(`Product "${product.title}" is no longer available.`);
 
-      // Quantity-aware: an upselling product's line must re-verify at the
-      // tier price for item.quantity, not the flat variant/option price.
+      // Quantity-aware: an upselling product's line must re-verify at the tier
+      // price for the product's total quantity, not the flat variant/option
+      // price and not this line's quantity alone.
       const currentPrice = resolveUnitPriceForQuantity(
         {
           variantPriceCents: variant.priceCents,
           basePriceCents: product.basePriceCents,
           optionAdjustmentCents: sumOptionAdjustments(variant.options),
         },
-        item.quantity,
+        tierQuantities.get(item.productId) ?? item.quantity,
         {
           upsellingEnabled: product.upsellingEnabled,
           upsellTiers: product.upsellTiers as never,

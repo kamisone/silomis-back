@@ -13,9 +13,7 @@ import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSo
 import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
-const ET_SHOP_PRODUCT = 'shop_product';
-const ET_SHOP_VARIANT_ATTR = 'shop_variant_attribute';
-const ET_SHOP_VARIATION_OPTION = 'shop_variation_option_value';
+import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
 
 /** Ceiling on rows pulled for a sort that has to run in memory (curated
  * order, search rank, price). Well above any realistic collection, and low
@@ -518,8 +516,74 @@ export class ProductsService {
     this.resolveVariantPricesInPlace(resolved as never);
     await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
+    await this.translateVariantOptionsInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
     return translated;
+  }
+
+  /**
+   * Overlays option-value and attribute translations onto a product's variants.
+   *
+   * Translating the product row alone leaves every variation label in the base
+   * language, so the storefront picker showed "Couleur: Noir" beside an
+   * otherwise fully translated page. Same rule getAvailabilityMatrix applies —
+   * translate the option values, translate the attribute names, then rebuild
+   * `variant.title` from the translated values, because that title is baked
+   * once at creation time (buildVariantTitle) and never picks up translations
+   * on its own.
+   *
+   * A missing translation falls back to the stored value, per field: an
+   * attribute translated into the customer's language still shows its untranslated
+   * option values rather than blanking them.
+   *
+   * Mutates in place: the caller has already resolved URLs and prices onto the
+   * same object graph, and re-cloning it here would drop that work.
+   */
+  private async translateVariantOptionsInPlace(
+    product: {
+      variants?: Array<{
+        title: string | null;
+        options?: Array<{ attributeId: string; value: string; optionValueId: string | null; optionValue?: Record<string, unknown> | null; attribute?: Record<string, unknown> | null }>;
+      }>;
+    },
+    lang?: string,
+  ): Promise<void> {
+    const variants = product.variants ?? [];
+    if (!lang || !variants.length) return;
+
+    const options = variants.flatMap((v) => v.options ?? []);
+    if (!options.length) return;
+
+    // One lookup per distinct option value / attribute, not one per variant —
+    // the same "Noir" is shared by every variant that uses it.
+    const optionValues = [...new Map(options.filter((o) => o.optionValue?.id).map((o) => [o.optionValue!.id as string, o.optionValue!])).values()];
+    const attributes = [...new Map(options.filter((o) => o.attribute?.id).map((o) => [o.attribute!.id as string, o.attribute!])).values()];
+
+    const [translatedValues, translatedAttrs] = await Promise.all([
+      this.translations.maybeApply(optionValues, ET_SHOP_VARIATION_OPTION, lang),
+      this.translations.maybeApply(attributes, ET_SHOP_VARIANT_ATTR, lang),
+    ]);
+
+    // applyToEntities returns copies, so the overlaid fields are written back.
+    // Crucially this walks EVERY option row, not the de-duplicated lookup list:
+    // Prisma hydrates a separate object per row, so two variants sharing "Noir"
+    // hold two distinct instances and assigning to only one would leave the
+    // other variant untranslated.
+    const valueById = new Map(translatedValues.map((ov) => [ov.id as string, ov]));
+    const attrById = new Map(translatedAttrs.map((a) => [a.id as string, a]));
+    for (const option of options) {
+      const translatedValue = option.optionValue?.id ? valueById.get(option.optionValue.id as string) : undefined;
+      if (translatedValue) Object.assign(option.optionValue!, translatedValue);
+
+      const translatedAttr = option.attribute?.id ? attrById.get(option.attribute.id as string) : undefined;
+      if (translatedAttr) Object.assign(option.attribute!, translatedAttr);
+    }
+
+    for (const variant of variants) {
+      const sorted = [...(variant.options ?? [])].sort((a, b) => ((a.attribute?.sortOrder as number) ?? 0) - ((b.attribute?.sortOrder as number) ?? 0));
+      if (!sorted.length) continue;
+      variant.title = sorted.map((o) => ((o.optionValue?.displayValue as string) ?? o.value)).join(' / ');
+    }
   }
 
   /**
@@ -599,6 +663,7 @@ export class ProductsService {
           primaryCategoryId: dto.primaryCategoryId ?? null,
           basePriceCents: dto.basePriceCents,
           upsellingEnabled: dto.upsellingEnabled ?? false,
+          perUnitVariantChoice: dto.perUnitVariantChoice ?? false,
           upsellTiers: dto.upsellTiers ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : [],
           categories: dto.categoryIds?.length ? { connect: dto.categoryIds.map((id) => ({ id })) } : undefined,
           tags: dto.tagIds?.length ? { connect: dto.tagIds.map((id) => ({ id })) } : undefined,
@@ -688,6 +753,7 @@ export class ProductsService {
         primaryCategoryId: dto.primaryCategoryId !== undefined ? (dto.primaryCategoryId ?? null) : undefined,
         basePriceCents: dto.basePriceCents !== undefined ? (dto.basePriceCents ?? null) : undefined,
         upsellingEnabled: dto.upsellingEnabled,
+        perUnitVariantChoice: dto.perUnitVariantChoice,
         upsellTiers: dto.upsellTiers !== undefined ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : undefined,
         categories: dto.categoryIds !== undefined ? { set: dto.categoryIds.map((cid) => ({ id: cid })) } : undefined,
         tags: dto.tagIds !== undefined ? { set: dto.tagIds.map((tid) => ({ id: tid })) } : undefined,

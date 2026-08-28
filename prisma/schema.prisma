@@ -493,6 +493,11 @@ model Product {
   upsellingEnabled Boolean @default(false)
   upsellTiers      Json    @default("[]") // ProductUpsellTier[]
 
+  /// Lets the customer choose a different variant for each unit when buying
+  /// more than one (three shirts in three sizes, one trip through the PDP).
+  /// Off by default — it makes no sense where units aren't interchangeable.
+  perUnitVariantChoice Boolean @default(false)
+
   featured            Boolean @default(false)
   isTestProduct       Boolean @default(false)
   freeShipping        Boolean @default(false)

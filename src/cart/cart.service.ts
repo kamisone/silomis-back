@@ -27,9 +27,7 @@ export interface RequestMeta {
   userAgent?: string;
 }
 
-const ET_SHOP_PRODUCT = 'shop_product';
-const ET_VARIANT_ATTR = 'shop_variant_attribute';
-const ET_VARIATION_OPTION = 'shop_variation_option_value';
+import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
 
 const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
 
@@ -245,6 +243,10 @@ export class CartService {
       trackUnitPriceCents = unitPriceCents;
     }
 
+    // The line above was priced from its own quantity; this settles every line
+    // of the product against their combined total, which is what tiers use.
+    await this.repriceProductLines(cart.id, product.id);
+
     // Schedule (or reschedule) an abandonment reminder for this cart. The
     // deterministic jobId means BullMQ dedupes automatically — only one
     // pending job per cart token, so it's safe to call on every add-item.
@@ -373,6 +375,9 @@ export class CartService {
       where: { id: item.id },
       data: { quantity, unitPriceCents },
     });
+    // A quantity change moves the product's total in either direction, so the
+    // sibling lines have to follow it across the threshold.
+    await this.repriceProductLines(cart.id, item.productId);
     await this.behaviorTracking.record({
       eventType: 'update_cart_item',
       cartToken: token,
@@ -386,6 +391,57 @@ export class CartService {
 
   // ── Remove item ──────────────────────────────────────────────────────
 
+  /**
+   * Re-prices every cart line of one product against their combined quantity.
+   *
+   * A tier belongs to the product, not to a variant, so three shirts bought in
+   * three sizes are three lines that must all carry the "buy 3" price. That
+   * makes any quantity change contagious: adding, growing or removing one line
+   * can push the others across a threshold in either direction, so all of them
+   * are recomputed together after every write.
+   *
+   * Without this, verifyCartItemPrices — which resolves against the same total —
+   * would disagree with the stored lines and block checkout with PRICE_CHANGED.
+   */
+  private async repriceProductLines(cartId: string, productId: string): Promise<void> {
+    const [lines, product] = await Promise.all([
+      this.prisma.cartItem.findMany({ where: { cartId, productId } }),
+      this.prisma.product.findUnique({ where: { id: productId } }),
+    ]);
+    // Only upselling products can have a cross-line price; skip the variant
+    // lookup and the writes entirely for everything else.
+    if (!product?.upsellingEnabled || !lines.length) return;
+
+    // CartItem.variantId is a plain column, not a relation — same as
+    // verifyCartItemPrices, the variants are loaded separately.
+    const variants = await this.prisma.productVariant.findMany({
+      where: { id: { in: [...new Set(lines.map((l) => l.variantId))] } },
+      include: { options: { include: { optionValue: true } } },
+    });
+    const variantMap = new Map(variants.map((v) => [v.id, v]));
+
+    const totalQuantity = lines.reduce((sum, line) => sum + line.quantity, 0);
+
+    await Promise.all(
+      lines.map((line) => {
+        const variant = variantMap.get(line.variantId);
+        if (!variant) return Promise.resolve();
+
+        const unitPriceCents = resolveUnitPriceForQuantity(
+          {
+            variantPriceCents: variant.priceCents,
+            basePriceCents: product.basePriceCents,
+            optionAdjustmentCents: sumOptionAdjustments(variant.options),
+          },
+          totalQuantity,
+          { upsellingEnabled: product.upsellingEnabled, upsellTiers: product.upsellTiers as never },
+        );
+        if (unitPriceCents === line.unitPriceCents) return Promise.resolve();
+        return this.prisma.cartItem.update({ where: { id: line.id }, data: { unitPriceCents } });
+      }),
+    );
+  }
+
   async removeItem(
     token: string,
     itemId: string,
@@ -396,6 +452,9 @@ export class CartService {
     const item = cart.items.find((i) => i.id === itemId);
     if (!item) throw new NotFoundException('Cart item not found');
     await this.prisma.cartItem.delete({ where: { id: item.id } });
+    // Removing units can drop the product back below a tier, so what remains
+    // has to return to its ordinary price.
+    await this.repriceProductLines(cart.id, item.productId);
     await this.behaviorTracking.record({
       eventType: 'remove_from_cart',
       cartToken: token,

@@ -3,8 +3,7 @@ import { Public } from '../../auth/public.decorator';
 import { TranslationsService } from '../../translations/translations.service';
 import { VariantAttributesService } from './variant-attributes.service';
 
-const ET_VARIANT_ATTR = 'shop_variant_attribute';
-const ET_VARIATION_OPTION = 'shop_variation_option_value';
+import { ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../../translations/translation-entities';
 
 @Public()
 @Controller('shop/variant-attributes')
