@@ -32,6 +32,8 @@ import {
 } from './checkout-reservation.constants';
 import { InitiateCheckoutDto } from './dto/checkout.dto';
 import { UpdateShippingDto } from '../shipping/dto/shipping.dto';
+import { PickupPointsService, PickupPointSnapshot } from '../shipping/pickup-points/pickup-points.service';
+import { SelectPickupPointDto } from '../shipping/pickup-points/dto/pickup-point.dto';
 import { CartItem, Order, Prisma } from '../../generated/prisma/client';
 
 // ── Response ────────────────────────────────────────────────────────────
@@ -51,6 +53,8 @@ export interface CheckoutSnapshot {
   shippingMethodId: string | null;
   /** Quoted methods for the order's current shipping address — empty until an address is set. */
   shippingMethods: QuotedMethod[];
+  /** Chosen pickup point, when the selected method requires one. Cleared with the method. */
+  pickupPoint: PickupPointSnapshot | null;
   reservationExpiresAt: string | null;
   trackingToken: string | null;
 }
@@ -74,6 +78,7 @@ export class CheckoutService {
     private readonly ordersService: OrdersService,
     private readonly customerService: CustomerService,
     private readonly shipping: ShippingService,
+    private readonly pickupPoints: PickupPointsService,
     private readonly pricingEngine: PricingEngineService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
@@ -141,9 +146,12 @@ export class CheckoutService {
           ) as Prisma.InputJsonValue,
           subtotalCents,
           // Re-quoting requires a fresh shipping-method pick since the
-          // address/cart may have changed since the last quote.
+          // address/cart may have changed since the last quote. The pickup
+          // point goes with it: it belongs to a country and a carrier method,
+          // and this branch is exactly how a changed shipping country arrives.
           shippingMethodId: null,
           shippingCents: 0,
+          pickupPointSnapshot: Prisma.DbNull,
           categoryDiscountCents:
             pricing.categoryDiscountCents + pricing.priceRuleDiscountCents,
           discountCents: pricing.couponDiscountCents,
@@ -300,8 +308,9 @@ export class CheckoutService {
     if (!country)
       throw new BadRequestException('Order has no shipping address');
 
+    const productIds = await this.orderProductIds(orderId);
     const ctx = await this.resolveShippingContext(
-      await this.orderProductIds(orderId),
+      productIds,
       order.pricingSnapshot,
     );
     const quote = await this.shipping.getMethodsForCountry(
@@ -313,6 +322,7 @@ export class CheckoutService {
         upgradeMethodIds: ctx.upgradeMethodIds,
         freeDaysMin: ctx.freeDaysMin,
         freeDaysMax: ctx.freeDaysMax,
+        productIds,
       },
     );
     const method = quote.methods.find((m) => m.id === dto.shippingMethodId);
@@ -330,12 +340,87 @@ export class CheckoutService {
       order.taxCents +
       method.priceCents;
 
+    // A pickup point belongs to the method it was chosen under. Switching
+    // methods — including switching between two pickup-point methods, whose
+    // point ids come from different carrier networks — always discards it.
+    const keepPickupPoint =
+      method.requiresPickupPoint && order.shippingMethodId === shippingMethodId;
+
     const updated = await this.prisma.order.update({
       where: { id: orderId },
-      data: { shippingMethodId, shippingCents: method.priceCents, totalCents },
+      data: {
+        shippingMethodId,
+        shippingCents: method.priceCents,
+        totalCents,
+        ...(keepPickupPoint ? {} : { pickupPointSnapshot: Prisma.DbNull }),
+      },
     });
 
     return this.toSnapshot(updated);
+  }
+
+  // ── Pickup-point selection ────────────────────────────────────────────
+
+  /**
+   * Attaches a carrier pickup point to the order.
+   *
+   * The client sends only an id; every stored field is re-read from the
+   * carrier (PickupPointsService.resolveForOrder), against the country on the
+   * order's own address. So a forged id fails, a point in the wrong country
+   * fails, and a point that closed since the customer searched fails — none of
+   * which the browser could be trusted to enforce.
+   */
+  async selectPickupPoint(
+    orderId: string,
+    dto: SelectPickupPointDto,
+  ): Promise<CheckoutSnapshot> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== 'draft' && order.status !== 'awaiting_payment') {
+      throw new BadRequestException(
+        'Pickup point can only be changed before payment',
+      );
+    }
+
+    const method = await this.selectedPickupPointMethod(order);
+    if (!method) {
+      throw new BadRequestException(
+        'The selected shipping method does not use a pickup point',
+      );
+    }
+
+    const snapshot = await this.pickupPoints.resolveForOrder(
+      orderId,
+      dto.pickupPointId,
+    );
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        pickupPointSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    return this.toSnapshot(updated);
+  }
+
+  /**
+   * The order's currently selected method when it requires a pickup point,
+   * otherwise null. A free-shipping order has no shippingMethodId at all, and
+   * the synthetic free option never requires one.
+   */
+  private async selectedPickupPointMethod(
+    order: Order,
+  ): Promise<{ id: string; name: string } | null> {
+    if (!order.shippingMethodId) return null;
+    const method = await this.prisma.shippingMethod.findUnique({
+      where: { id: order.shippingMethodId },
+      select: { id: true, name: true, requiresPickupPoint: true },
+    });
+    if (!method?.requiresPickupPoint) return null;
+    return { id: method.id, name: method.name };
   }
 
   // ── Transition draft → awaiting_payment ───────────────────────────────
@@ -374,6 +459,23 @@ export class CheckoutService {
         throw new BadRequestException(
           'Please select a shipping method before payment',
         );
+    }
+
+    // Last server-side gate before the order can be paid for: a pickup-point
+    // method must have a point, and that point is re-read from the carrier
+    // rather than trusted from storage — it may have closed, or the customer
+    // may have changed country since choosing it.
+    if (await this.selectedPickupPointMethod(order)) {
+      const revalidated = await this.pickupPoints.revalidateSnapshot(
+        orderId,
+        order.pickupPointSnapshot,
+      );
+      await this.prisma.order.update({
+        where: { id: orderId },
+        data: {
+          pickupPointSnapshot: revalidated as unknown as Prisma.InputJsonValue,
+        },
+      });
     }
 
     await this.prisma.order.update({
@@ -572,8 +674,9 @@ export class CheckoutService {
     } | null;
     const country = address?.country;
 
+    const productIds = await this.orderProductIds(order.id);
     const ctx = await this.resolveShippingContext(
-      await this.orderProductIds(order.id),
+      productIds,
       order.pricingSnapshot,
     );
     const quote = country
@@ -586,6 +689,7 @@ export class CheckoutService {
             upgradeMethodIds: ctx.upgradeMethodIds,
             freeDaysMin: ctx.freeDaysMin,
             freeDaysMax: ctx.freeDaysMax,
+            productIds,
           },
         )
       : { zone: null, methods: [] };
@@ -603,6 +707,9 @@ export class CheckoutService {
       freeShipping: ctx.freeShipping,
       shippingMethodId: order.shippingMethodId,
       shippingMethods: quote.methods,
+      pickupPoint:
+        (order.pickupPointSnapshot as unknown as PickupPointSnapshot | null) ??
+        null,
       reservationExpiresAt: order.reservationExpiresAt?.toISOString() ?? null,
       trackingToken: order.trackingToken ?? null,
     };

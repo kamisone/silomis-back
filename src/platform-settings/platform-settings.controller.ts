@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, HttpStatus, Post, Put } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
-import { CurrencyConfig, MetaPixelConfig, PlatformSettingsService, TikTokPixelConfig } from './platform-settings.service';
+import { CurrencyConfig, MapTilesConfig, MetaPixelConfig, PlatformSettingsService, TikTokPixelConfig } from './platform-settings.service';
 
 interface UpdateTimezoneDto {
   timezone: string;
@@ -23,7 +23,7 @@ export class PlatformSettingsController {
   /** Public — readable by the storefront for SSR timezone / pixel / currency-formatting injection. */
   @Get('public/platform-settings')
   @Public()
-  getConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig } {
+  getConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig; mapTiles: MapTilesConfig } {
     return this.service.getPlatformConfig();
   }
 
@@ -32,6 +32,14 @@ export class PlatformSettingsController {
   @HttpCode(HttpStatus.OK)
   async update(@Body() body: UpdateTimezoneDto) {
     await this.service.setTimezone(body.timezone);
+    return this.service.getPlatformConfig();
+  }
+
+  /** Admin-only — basemap used by the pickup-point picker. */
+  @Put('admin/platform-settings/map-tiles')
+  @HttpCode(HttpStatus.OK)
+  async updateMapTiles(@Body() body: MapTilesConfig) {
+    await this.service.setMapTilesConfig(body);
     return this.service.getPlatformConfig();
   }
 

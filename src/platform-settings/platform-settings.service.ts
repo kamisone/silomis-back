@@ -14,6 +14,23 @@ const LOW_STOCK_ALERTS_ENABLED_KEY = 'low_stock_alerts_enabled';
 const DISPLAY_CURRENCY_CODE_KEY = 'display_currency_code';
 const DISPLAY_CURRENCY_SYMBOL_POSITION_KEY = 'display_currency_symbol_position';
 const DISPLAY_CURRENCY_DECIMAL_PLACES_KEY = 'display_currency_decimal_places';
+const MAP_TILES_URL_KEY = 'map_tiles_url';
+const MAP_TILES_ATTRIBUTION_KEY = 'map_tiles_attribution';
+const MAP_TILES_ENABLED_KEY = 'map_tiles_enabled';
+
+/**
+ * OpenStreetMap's own tiles, so the pickup-point map works with no signup.
+ *
+ * Their Tile Usage Policy discourages heavy commercial use, which is why the
+ * URL is configurable: point it at a keyed provider (MapTiler, Stadia, Carto)
+ * before real traffic. A tile key is domain-restricted and public by design, so
+ * it belongs here rather than in the encrypted credential store.
+ */
+const DEFAULT_MAP_TILES: MapTilesConfig = {
+  tileUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  attribution: '© OpenStreetMap contributors',
+  enabled: true,
+};
 const DEFAULT_CURRENCY: CurrencyConfig = { code: 'EUR', symbolPosition: 'after', decimalPlaces: 2 };
 const CACHE_TTL_MS = 60_000; // refresh ceiling: 60 s
 
@@ -43,6 +60,15 @@ export interface CurrencyConfig {
   decimalPlaces: number;
 }
 
+export interface MapTilesConfig {
+  /** XYZ tile template — must contain {z}, {x} and {y}. */
+  tileUrl: string;
+  /** Rendered over the map. Most tile providers require it; never blank it out. */
+  attribution: string;
+  /** Off hides the map entirely and leaves the pickup-point list working. */
+  enabled: boolean;
+}
+
 @Injectable()
 export class PlatformSettingsService implements OnModuleInit {
   private readonly logger = new Logger(PlatformSettingsService.name);
@@ -55,6 +81,7 @@ export class PlatformSettingsService implements OnModuleInit {
   // Admin must opt in — off until explicitly enabled.
   private cachedLowStockAlertsEnabled = false;
   private cachedCurrency: CurrencyConfig = DEFAULT_CURRENCY;
+  private cachedMapTiles: MapTilesConfig = DEFAULT_MAP_TILES;
   private cacheExpiresAt = 0;
 
   constructor(private readonly prisma: PrismaService) {}
@@ -128,12 +155,19 @@ export class PlatformSettingsService implements OnModuleInit {
     return this.cachedCurrency;
   }
 
-  getPlatformConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig } {
+  /** Basemap for the pickup-point picker. Public: a tile URL has to reach the browser. */
+  getMapTilesConfig(): MapTilesConfig {
+    this.refreshIfStale();
+    return this.cachedMapTiles;
+  }
+
+  getPlatformConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig; mapTiles: MapTilesConfig } {
     return {
       timezone: this.getTimezone(),
       metaPixel: this.getMetaPixelConfig(),
       tiktokPixel: this.getTikTokPixelConfig(),
       currency: this.getCurrencyConfig(),
+      mapTiles: this.getMapTilesConfig(),
     };
   }
 
@@ -147,6 +181,32 @@ export class PlatformSettingsService implements OnModuleInit {
     this.cachedTimezone = tz;
     this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
     this.logger.log(`Business timezone updated to "${tz}"`);
+  }
+
+  async setMapTilesConfig(input: MapTilesConfig): Promise<void> {
+    const tileUrl = input.tileUrl?.trim() || '';
+    if (input.enabled) {
+      if (!/^https:\/\//i.test(tileUrl)) {
+        throw new BadRequestException('The tile URL must be an https:// address');
+      }
+      // Without all three placeholders a tile layer silently renders nothing,
+      // which is far harder to diagnose than a rejected save.
+      for (const token of ['{z}', '{x}', '{y}']) {
+        if (!tileUrl.includes(token)) {
+          throw new BadRequestException(`The tile URL must contain ${token}`);
+        }
+      }
+    }
+
+    const attribution = input.attribution?.trim() || DEFAULT_MAP_TILES.attribution;
+    await Promise.all([
+      this.upsert(MAP_TILES_URL_KEY, tileUrl),
+      this.upsert(MAP_TILES_ATTRIBUTION_KEY, attribution),
+      this.upsert(MAP_TILES_ENABLED_KEY, String(input.enabled)),
+    ]);
+    this.cachedMapTiles = { tileUrl: tileUrl || DEFAULT_MAP_TILES.tileUrl, attribution, enabled: input.enabled };
+    this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
+    this.logger.log(`Map tiles config updated (enabled=${input.enabled})`);
   }
 
   async setMetaPixelConfig(input: { pixelId: string | null; enabled: boolean }): Promise<void> {
@@ -258,7 +318,7 @@ export class PlatformSettingsService implements OnModuleInit {
       const rows = await this.prisma.platformSettings.findMany({
         where: {
           key: {
-            in: [TIMEZONE_KEY, META_PIXEL_ID_KEY, META_PIXEL_ENABLED_KEY, TIKTOK_PIXEL_ID_KEY, TIKTOK_PIXEL_ENABLED_KEY, ANALYTICS_EXCLUDED_IPS_KEY, ANALYTICS_BOT_USER_AGENTS_KEY, LOW_STOCK_ALERTS_ENABLED_KEY, DISPLAY_CURRENCY_CODE_KEY, DISPLAY_CURRENCY_SYMBOL_POSITION_KEY, DISPLAY_CURRENCY_DECIMAL_PLACES_KEY],
+            in: [TIMEZONE_KEY, META_PIXEL_ID_KEY, META_PIXEL_ENABLED_KEY, TIKTOK_PIXEL_ID_KEY, TIKTOK_PIXEL_ENABLED_KEY, ANALYTICS_EXCLUDED_IPS_KEY, ANALYTICS_BOT_USER_AGENTS_KEY, LOW_STOCK_ALERTS_ENABLED_KEY, DISPLAY_CURRENCY_CODE_KEY, DISPLAY_CURRENCY_SYMBOL_POSITION_KEY, DISPLAY_CURRENCY_DECIMAL_PLACES_KEY, MAP_TILES_URL_KEY, MAP_TILES_ATTRIBUTION_KEY, MAP_TILES_ENABLED_KEY],
           },
         },
       });
@@ -292,6 +352,13 @@ export class PlatformSettingsService implements OnModuleInit {
         code: byKey.get(DISPLAY_CURRENCY_CODE_KEY) ?? DEFAULT_CURRENCY.code,
         symbolPosition: (byKey.get(DISPLAY_CURRENCY_SYMBOL_POSITION_KEY) as 'before' | 'after') ?? DEFAULT_CURRENCY.symbolPosition,
         decimalPlaces: byKey.has(DISPLAY_CURRENCY_DECIMAL_PLACES_KEY) ? parseInt(byKey.get(DISPLAY_CURRENCY_DECIMAL_PLACES_KEY)!, 10) : DEFAULT_CURRENCY.decimalPlaces,
+      };
+      this.cachedMapTiles = {
+        tileUrl: byKey.get(MAP_TILES_URL_KEY) || DEFAULT_MAP_TILES.tileUrl,
+        attribution: byKey.get(MAP_TILES_ATTRIBUTION_KEY) || DEFAULT_MAP_TILES.attribution,
+        // Never configured -> on, so the map works out of the box. Explicitly
+        // saved as "false" -> off.
+        enabled: byKey.has(MAP_TILES_ENABLED_KEY) ? byKey.get(MAP_TILES_ENABLED_KEY) === 'true' : DEFAULT_MAP_TILES.enabled,
       };
       this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
     } catch (err) {

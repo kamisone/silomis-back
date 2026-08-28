@@ -502,6 +502,11 @@ model Product {
   /// Paid upgrade methods offerable alongside free shipping (e.g. Express as a paid add-on)
   freeShippingUpgradeMethods ShippingMethod[] @relation("ProductFreeShippingMethods")
 
+  /// Methods this product is explicitly eligible for. Only consulted for
+  /// methods with requiresProductOptIn — an empty set never restricts an
+  /// ordinary method, so existing products are unaffected.
+  shippingMethods ShippingMethod[] @relation("ProductShippingMethods")
+
   status ProductStatus @default(draft)
 
   ratingAverage      Decimal @default(0) @db.Decimal(3, 2)
@@ -871,6 +876,12 @@ model Order {
   couponCode       String?         @db.VarChar(100)
   shippingMethodId String?
   shippingMethod   ShippingMethod? @relation(fields: [shippingMethodId], references: [id], onDelete: SetNull)
+
+  /// Normalized PickupPoint chosen for a requiresPickupPoint method, snapshotted
+  /// like the address is: the carrier can retire or move a point after purchase
+  /// and the order must still show what the customer picked. Cleared whenever
+  /// the shipping address or method changes.
+  pickupPointSnapshot Json?
   /// Saved payment method used for this order
   paymentMethodId  String?
 
@@ -1795,6 +1806,12 @@ model ShippingMethod {
   zoneId String
   zone   ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
 
+  /// Stable internal identifier (e.g. "mondial_relay") for methods the code
+  /// must recognise across environments, where the uuid differs and the name
+  /// is admin-editable/translated. NULL for ordinary admin-created methods —
+  /// nothing in the domain layer branches on a specific code.
+  code String? @unique @db.VarChar(60)
+
   name        String  @db.VarChar(200)
   description String?
   carrier     String? @db.VarChar(200)
@@ -1814,7 +1831,26 @@ model ShippingMethod {
   /// a free-shipping order (see Product.freeShippingUpgradeMethods)
   availableForFreeShipping Boolean @default(false)
 
+  /// When true this method is quoted only if EVERY product in the order opted
+  /// into it (see Product.shippingMethods). False (the default) preserves the
+  /// original behaviour: available to any cart the zone covers.
+  requiresProductOptIn Boolean @default(false)
+
+  /// When true the customer must choose a pickup point before payment, and the
+  /// order carries a pickupPointSnapshot. Generic — any pickup/locker network.
+  requiresPickupPoint Boolean @default(false)
+
+  /// Machine-readable carrier slug the pickup-point provider filters on, e.g.
+  /// "mondial_relay" or "colissimo". Distinct from `carrier`, which is the
+  /// admin-facing display name. NULL = no carrier filter (all networks).
+  carrierCode String? @db.VarChar(60)
+
+  /// Countries this specific method serves, narrowing its zone. Empty = the
+  /// whole zone, which is how every pre-existing method behaves.
+  supportedCountryCodes String[] @default([])
+
   freeShippingProducts Product[] @relation("ProductFreeShippingMethods")
+  eligibleProducts     Product[] @relation("ProductShippingMethods")
   orders               Order[]
 
   createdAt DateTime @default(now())

@@ -59,6 +59,12 @@ export class ShippingAdminController {
     return this.shipping.listMethods(zoneId);
   }
 
+  /** Feeds the product form's "Shipping methods" checkbox list. */
+  @Get('product-opt-in-methods')
+  listProductOptInMethods() {
+    return this.shipping.listProductOptInMethods();
+  }
+
   @Get('free-shipping-methods')
   listFreeShippingUpgradeMethods() {
     return this.shipping.listFreeShippingUpgradeMethods();

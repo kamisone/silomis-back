@@ -130,6 +130,12 @@ export const CreateProductSchema = z.object({
   freeShippingDaysMax: z.number().int().min(0).max(365).nullish(),
   /** Paid shipping methods still offerable alongside the default free option (e.g. an express upgrade). */
   freeShippingUpgradeMethodIds: z.array(z.string().uuid()).optional(),
+  /**
+   * Methods this product is eligible for, among those requiring an explicit
+   * opt-in. Only consulted for such methods, so omitting it never restricts
+   * ordinary shipping.
+   */
+  shippingMethodIds: z.array(z.string().uuid()).optional(),
   primaryCategoryId: z.string().uuid().nullish(),
   categoryIds: z.array(z.string().uuid()).optional(),
   tagIds: z.array(z.string().uuid()).optional(),

@@ -479,6 +479,7 @@ export class ProductsService {
         tags: true,
         primaryCategory: true,
         freeShippingUpgradeMethods: true,
+        shippingMethods: true,
         variants: {
           include: {
             options: { include: { optionValue: true, attribute: true } },
@@ -502,6 +503,7 @@ export class ProductsService {
         tags: true,
         primaryCategory: true,
         freeShippingUpgradeMethods: true,
+        shippingMethods: true,
         variants: {
           include: {
             options: { include: { optionValue: true, attribute: true } },
@@ -603,6 +605,7 @@ export class ProductsService {
           freeShippingUpgradeMethods: dto.freeShippingUpgradeMethodIds?.length
             ? { connect: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) }
             : undefined,
+          shippingMethods: dto.shippingMethodIds?.length ? { connect: dto.shippingMethodIds.map((id) => ({ id })) } : undefined,
         },
       });
 
@@ -690,6 +693,7 @@ export class ProductsService {
         tags: dto.tagIds !== undefined ? { set: dto.tagIds.map((tid) => ({ id: tid })) } : undefined,
         freeShippingUpgradeMethods:
           dto.freeShippingUpgradeMethodIds !== undefined ? { set: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) } : undefined,
+        shippingMethods: dto.shippingMethodIds !== undefined ? { set: dto.shippingMethodIds.map((id) => ({ id })) } : undefined,
       },
     });
 

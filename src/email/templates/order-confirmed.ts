@@ -7,6 +7,7 @@ import {
   fmtCents,
 } from './layout';
 import { COPY, resolveLang } from './copy';
+import { PickupPointEmailData, pickupPointBlock } from './pickup-point-block';
 
 export interface OrderConfirmedEmailData {
   orderNumber: string;
@@ -18,6 +19,8 @@ export interface OrderConfirmedEmailData {
   couponCode: string | null;
   totalCents: number;
   trackingUrl: string | null;
+  /** Present only for a pickup-point method — the customer's only record of which point they chose. */
+  pickupPoint?: PickupPointEmailData | null;
   locale?: string | null;
 }
 
@@ -110,6 +113,7 @@ export function renderOrderConfirmed(data: OrderConfirmedEmailData): {
 
     <p style="font-size:13px;color:#64748b;margin:0;">${c.orderRef} : <strong style="color:#0f172a;">${esc(data.orderNumber)}</strong></p>
 
+    ${data.pickupPoint ? pickupPointBlock(data.pickupPoint, data.locale) : ''}
     ${data.trackingUrl ? ctaButton(c.trackOrder, data.trackingUrl) : ''}
     ${mutedText(c.helpText)}
   `;

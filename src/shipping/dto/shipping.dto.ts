@@ -15,6 +15,18 @@ export type UpdateZoneDto = z.infer<typeof UpdateZoneSchema>;
 
 export const UpsertMethodSchema = z.object({
   zoneId: z.string().uuid(),
+  /**
+   * Lower-case snake_case, e.g. "mondial_relay". Unique across methods.
+   * Normalized to null when blank — the column is UNIQUE, so a second method
+   * saved with an empty code would otherwise collide with the first.
+   */
+  code: z
+    .string()
+    .max(60)
+    .trim()
+    .transform((v) => v || null)
+    .refine((v) => v === null || /^[a-z0-9_]+$/.test(v), 'Use lower-case letters, digits and underscores only')
+    .nullish(),
   name: z.string().min(1).max(200),
   carrier: z.string().max(200).nullish(),
   priceCents: z.number().int().min(0),
@@ -24,6 +36,18 @@ export const UpsertMethodSchema = z.object({
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
   availableForFreeShipping: z.boolean().optional(),
+  requiresProductOptIn: z.boolean().optional(),
+  requiresPickupPoint: z.boolean().optional(),
+  /** Carrier slug the pickup-point provider filters on, e.g. "mondial_relay". */
+  carrierCode: z
+    .string()
+    .max(60)
+    .trim()
+    .transform((v) => v || null)
+    .refine((v) => v === null || /^[a-z0-9_]+$/.test(v), 'Use lower-case letters, digits and underscores only')
+    .nullish(),
+  /** Narrows the method below its zone. Empty = the whole zone. */
+  supportedCountryCodes: z.array(z.string().length(2).toUpperCase()).optional(),
 });
 export type UpsertMethodDto = z.infer<typeof UpsertMethodSchema>;
 

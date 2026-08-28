@@ -7,6 +7,15 @@ export function resolveLang(locale?: string | null): Lang {
 
 export const COPY = {
   fr: {
+    /** Shared by the confirmation and status emails — both name the chosen point. */
+    pickup: {
+      title: 'Votre point de retrait',
+      intro: 'Votre colis vous attendra ici :',
+      ref: 'N° du point',
+      hours: 'Horaires',
+      closed: 'Fermé',
+      weekdays: ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'],
+    },
     footer: (year: number, name: string) =>
       `© ${year} ${name}. Tous droits réservés.`,
 
@@ -100,6 +109,15 @@ export const COPY = {
   },
 
   en: {
+    /** Shared by the confirmation and status emails — both name the chosen point. */
+    pickup: {
+      title: 'Your pickup point',
+      intro: 'Your parcel will be waiting for you here:',
+      ref: 'Point number',
+      hours: 'Opening hours',
+      closed: 'Closed',
+      weekdays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+    },
     footer: (year: number, name: string) =>
       `© ${year} ${name}. All rights reserved.`,
 

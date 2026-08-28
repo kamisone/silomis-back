@@ -28,6 +28,10 @@ import {
   UpdateShippingDto,
   UpdateShippingSchema,
 } from '../shipping/dto/shipping.dto';
+import {
+  SelectPickupPointDto,
+  SelectPickupPointSchema,
+} from '../shipping/pickup-points/dto/pickup-point.dto';
 
 @Public()
 @Controller('shop/checkout')
@@ -109,6 +113,17 @@ export class CheckoutController {
     @Body(new ZodValidationPipe(UpdateShippingSchema)) dto: UpdateShippingDto,
   ) {
     return this.checkoutService.updateShipping(orderId, dto);
+  }
+
+  /** Attaches a carrier pickup point; the id is re-read server-side before it is stored. */
+  @Put(':orderId/pickup-point')
+  @HttpCode(200)
+  selectPickupPoint(
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body(new ZodValidationPipe(SelectPickupPointSchema))
+    dto: SelectPickupPointDto,
+  ) {
+    return this.checkoutService.selectPickupPoint(orderId, dto);
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   OrderStatusChangedEvent,
 } from '../commerce-events/commerce-events.constants';
 import { OrderStatusKind } from './templates/order-status';
+import { PickupPointEmailData } from './templates/pickup-point-block';
 import { OrderStatus } from '../../generated/prisma/client';
 
 const STATUS_TO_EMAIL_KIND: Partial<Record<OrderStatus, OrderStatusKind>> = {
@@ -17,6 +18,27 @@ const STATUS_TO_EMAIL_KIND: Partial<Record<OrderStatus, OrderStatusKind>> = {
   delivered: 'delivered',
   cancelled: 'cancelled',
 };
+
+/**
+ * Narrows the stored snapshot to what an email renders. Returns null for an
+ * ordinary home-delivery order, which is what keeps the block out of those
+ * emails entirely.
+ */
+function toPickupPointEmailData(snapshot: unknown): PickupPointEmailData | null {
+  const point = snapshot as Partial<PickupPointEmailData> | null;
+  if (!point?.id || !point.name) return null;
+
+  return {
+    id: point.id,
+    name: point.name,
+    address: point.address ?? '',
+    postcode: point.postcode ?? '',
+    city: point.city ?? '',
+    country: point.country ?? '',
+    type: point.type ?? null,
+    openingHours: point.openingHours ?? null,
+  };
+}
 
 @Injectable()
 export class OrderEmailListener {
@@ -54,6 +76,7 @@ export class OrderEmailListener {
         couponCode: order.couponCode,
         totalCents: order.totalCents,
         trackingUrl,
+        pickupPoint: toPickupPointEmailData(order.pickupPointSnapshot),
         locale: order.customerLocale,
       });
     } catch (err) {
@@ -115,6 +138,7 @@ export class OrderEmailListener {
             orderNumber: order.orderNumber,
             customerName: order.customerName ?? order.customerEmail,
             trackingUrl,
+            pickupPoint: toPickupPointEmailData(order.pickupPointSnapshot),
             locale: order.customerLocale,
           });
         }
