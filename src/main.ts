@@ -9,6 +9,7 @@ import compression = require('compression');
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ErrorCollectorService } from './common/error-collector/error-collector.service';
+import { RedisIoAdapter } from './support/redis-io.adapter';
 import { config } from 'dotenv';
 
 config();
@@ -61,10 +62,34 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
   app.useGlobalFilters(new AllExceptionsFilter(app.get(ErrorCollectorService)));
+
+  // Rooms and emits have to cross replicas once the Deployment is scaled —
+  // see the class comment for why the ingress needs sticky sessions too.
+  const ioAdapter = new RedisIoAdapter(app);
+  await ioAdapter.connectToRedis();
+  app.useWebSocketAdapter(ioAdapter);
+
+  // Lets Nest run onModuleDestroy/beforeApplicationShutdown on SIGTERM, which
+  // is what makes the readiness probe start failing so Kubernetes drains this
+  // pod before killing it. Without it SIGTERM kills the process outright and
+  // every in-flight request on a scaled-down pod is dropped.
+  app.enableShutdownHooks();
+
   const port = process.env.BACK_PORT || 3000; 
   await app.listen(port);
   console.log(`[boot] listening on ${port}`);
 }
+
+// A rejected promise with no catch anywhere in the chain kills the process on
+// Node >= 15. That is right for a genuine bug at startup, but wrong for a
+// background client that reconnects on its own: an ioredis command rejecting
+// mid-outage took the entire API down and put the Deployment into a crash
+// loop, which is far worse than the degraded behaviour the app is written to
+// handle. Log loudly and keep serving; the liveness probe still restarts a
+// process that is actually wedged.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] keeping process alive:', reason);
+});
 
 // Without this an unhandled rejection can leave the process "running" with an
 // empty log while the service has no endpoints. Fail loudly and exit so the

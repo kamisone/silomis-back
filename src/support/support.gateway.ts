@@ -10,6 +10,7 @@ import {
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
+import { RedisService } from '../redis/redis.service';
 import { SupportConversationsService } from './support-conversations.service';
 import { SupportSenderType } from '../../generated/prisma/client';
 import {
@@ -17,29 +18,6 @@ import {
   WS_RATE_LIMIT_WINDOW,
   MAX_MESSAGE_LENGTH,
 } from './support.constants';
-
-interface RateEntry {
-  count: number;
-  resetAt: number;
-}
-
-// In a multi-instance deployment replace with Redis-backed rate limiting.
-const rateLimitMap = new Map<string, RateEntry>();
-
-function checkRate(socketId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(socketId);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(socketId, {
-      count: 1,
-      resetAt: now + WS_RATE_LIMIT_WINDOW,
-    });
-    return true;
-  }
-  if (entry.count >= WS_RATE_LIMIT_COUNT) return false;
-  entry.count++;
-  return true;
-}
 
 function sanitize(raw: string): string {
   return raw
@@ -74,7 +52,38 @@ export class SupportGateway
   constructor(
     private readonly convService: SupportConversationsService,
     private readonly jwtService: JwtService,
+    private readonly redis: RedisService,
   ) {}
+
+  /**
+   * Per-socket flood control, counted in Redis rather than a process-local Map.
+   *
+   * With the API Deployment scaled out, a socket is only ever attached to one
+   * pod, so a Map would technically still bound *that* socket — but a client
+   * that reconnects lands on a different pod with a fresh counter, and a bot
+   * cycling connections gets N x the allowance. Redis keeps one counter per
+   * socket regardless of which replica serves it, and the key expires on its
+   * own so no cleanup is needed on disconnect.
+   *
+   * Fails open: if Redis is unreachable, chat keeps working unthrottled rather
+   * than blocking every customer message. That is the opposite trade-off from
+   * the cron locks, where a duplicate run is worse than a missed one.
+   */
+  private async checkRate(socketId: string): Promise<boolean> {
+    const key = `ws:rate:${socketId}`;
+    try {
+      const count = await this.redis.client.incr(key);
+      if (count === 1) {
+        await this.redis.client.pexpire(key, WS_RATE_LIMIT_WINDOW);
+      }
+      return count <= WS_RATE_LIMIT_COUNT;
+    } catch (err) {
+      this.logger.warn(
+        `Redis unavailable for WS rate limit, allowing message: ${(err as Error)?.message}`,
+      );
+      return true;
+    }
+  }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -144,7 +153,7 @@ export class SupportGateway
   }
 
   handleDisconnect(socket: Socket): void {
-    rateLimitMap.delete(socket.id);
+    // The rate-limit key carries its own TTL, so there is nothing to clean up.
     this.logger.debug(`Socket disconnected [${socket.id}]`);
   }
 
@@ -168,7 +177,8 @@ export class SupportGateway
     error?: string;
   }> {
     if (!socket.data.guestToken) return { ok: false, error: 'NOT_JOINED' };
-    if (!checkRate(socket.id)) return { ok: false, error: 'RATE_LIMITED' };
+    if (!(await this.checkRate(socket.id)))
+      return { ok: false, error: 'RATE_LIMITED' };
 
     const content = sanitize(data?.content ?? '');
     if (!content) return { ok: false, error: 'EMPTY_MESSAGE' };
@@ -285,7 +295,8 @@ export class SupportGateway
     error?: string;
   }> {
     if (!socket.data.adminId) return { ok: false, error: 'FORBIDDEN' };
-    if (!checkRate(socket.id)) return { ok: false, error: 'RATE_LIMITED' };
+    if (!(await this.checkRate(socket.id)))
+      return { ok: false, error: 'RATE_LIMITED' };
 
     const content = sanitize(data?.content ?? '');
     if (!content) return { ok: false, error: 'EMPTY_MESSAGE' };

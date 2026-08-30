@@ -18,4 +18,8 @@ ADD dist/ ./dist
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+# Migrations deliberately do NOT run here. Every replica shares this image, so
+# a migration in CMD runs once per pod: on an HPA scale-up each new pod blocks
+# on Prisma's advisory lock behind the others, slowing exactly the scale-up
+# that was needed. back-migrate-job.yaml runs them once, before the rollout.
+CMD ["node", "dist/src/main"]

@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import Redis from 'ioredis';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { LoggerModule } from 'nestjs-pino';
@@ -9,6 +11,8 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
+import { baseRedisOptions } from './redis/redis.options';
+import { RedisLockModule } from './common/redis-lock/redis-lock.module';
 import { AssetUrlModule } from './asset-url/asset-url.module';
 import { MeilisearchModule } from './meilisearch/meilisearch.module';
 import { DlqModule } from './dlq/dlq.module';
@@ -63,10 +67,31 @@ import { PageContentModule } from './page-content/page-content.module';
   imports: [
     PrismaModule,
     MeilisearchModule,
-    ThrottlerModule.forRoot([
-      { name: 'auth', ttl: 15 * 60 * 1000, limit: 10 },
-      { name: 'contact', ttl: 15 * 60 * 1000, limit: 5 },
-    ]),
+    // Redis-backed, not the default in-memory store: with the HPA running N
+    // API replicas an in-memory counter makes the real limit N x the configured
+    // one, so `auth: 10 per 15min` would become 100 per 15min at 10 pods —
+    // brute-force protection would weaken exactly when the site is busiest.
+    // forRootAsync, not forRoot: this module is imported by main.ts *before*
+    // dotenv's config() runs, so anything built eagerly in the decorator
+    // metadata reads a process.env that has no .env values in it yet and would
+    // connect to Redis with no password. The factory runs at bootstrap instead.
+    ThrottlerModule.forRootAsync({
+      useFactory: () => ({
+        throttlers: [
+          { name: 'auth', ttl: 15 * 60 * 1000, limit: 10 },
+          { name: 'contact', ttl: 15 * 60 * 1000, limit: 5 },
+        ],
+        storage: new ThrottlerStorageRedisService(
+          new Redis({
+            ...baseRedisOptions(),
+            keyPrefix: 'throttle:',
+            // Bounded so a Redis outage fails the throttler check quickly
+            // instead of parking the request until the client reconnects.
+            commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS ?? 1_000),
+          }),
+        ),
+      }),
+    }),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
     // BullMQ uses its own Redis connection (BULLMQ_REDIS_*), separate from
@@ -92,6 +117,7 @@ import { PageContentModule } from './page-content/page-content.module';
       }),
     }),
     RedisModule,
+    RedisLockModule,
     AssetUrlModule,
     DlqModule,
     ErrorCollectorModule,

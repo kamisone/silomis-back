@@ -4,6 +4,9 @@ metadata:
   name: redis-deployment
 spec:
   replicas: 1
+  # Same ReadWriteOnce deadlock as the database — see db-deployment.yaml.
+  strategy:
+    type: Recreate
   selector: 
     matchLabels:
       component: redis
@@ -12,6 +15,8 @@ spec:
       labels:
         component: redis
     spec:
+      priorityClassName: silomis-datastore
+      terminationGracePeriodSeconds: 30
       volumes:
         - name: redis-data
           persistentVolumeClaim:
@@ -20,10 +25,58 @@ spec:
         - name: redis-container
           image: redis:7-alpine
           command: ["/bin/sh", "-c"]
+          # noeviction, not the default: this instance now holds the cron locks
+          # and the throttler counters that keep the scaled-out API correct, and
+          # BullMQ falls back to it when BULLMQ_REDIS_* is unset. Silently
+          # evicting a lock key would let two replicas run the same cron job.
+          # Cache entries all carry TTLs, so they expire without needing LRU.
           args:
-            - redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes
+            - >-
+              redis-server
+              --requirepass "$REDIS_PASSWORD"
+              --appendonly yes
+              --maxmemory 256mb
+              --maxmemory-policy noeviction
           ports:
             - containerPort: 6379
+          resources:
+            # `requests` is what the scheduler reserves, so it is kept to the
+            # real idle footprint — an inflated request is what makes a pod
+            # Pending on a small node. `limits` carries the headroom: maxmemory
+            # 256mb plus copy-on-write room for an AOF rewrite, which needs the
+            # limit to sit well above maxmemory or the rewrite is OOMKilled.
+            limits:
+              cpu: 500m
+              memory: 768Mi
+            requests:
+              cpu: 50m
+              memory: 96Mi
+          # Startup gets its own probe with a long budget (60 x 5s) because
+          # `--appendonly yes` means Redis replays the AOF before it answers
+          # PING, and a large file can take minutes. A liveness probe with a
+          # short initialDelay would kill it mid-replay and crash-loop it
+          # forever, which looks from the API side exactly like Redis being
+          # permanently down.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Only runs after startupProbe has succeeded once, so it never
+          # competes with AOF loading.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
           volumeMounts:
             - name: redis-data
               mountPath: /data
@@ -32,6 +85,4 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: back-envs
-                  key: REDIS_PASSWORD 
-            
-            
+                  key: REDIS_PASSWORD

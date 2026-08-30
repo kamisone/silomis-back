@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Redis from 'ioredis';
+import { baseRedisOptions } from './redis.options';
 
 /** Cap on how often a Redis connection error is logged while it stays down. */
 const ERROR_LOG_INTERVAL_MS = 30_000;
@@ -16,25 +17,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   // BullMQ jobs use a separate connection — see BullModule.forRootAsync in app.module.ts.
   onModuleInit(): void {
     this._client = new Redis({
-      host: process.env.REDIS_HOST ?? 'localhost',
-      port: Number(process.env.REDIS_PORT ?? 6379),
-      password: process.env.REDIS_PASSWORD ?? undefined,
-      db: Number(process.env.REDIS_DB ?? 0),
-
-      // Never give up. Returning null makes ioredis emit 'end' and stop
-      // reconnecting for the lifetime of the process — a transient DNS blip
-      // would then leave this process with a permanently dead Redis client
-      // until it is restarted.
-      retryStrategy: (times) => Math.min(times * 200, 5_000),
+      ...baseRedisOptions(),
 
       // Bounds every command so an unreachable Redis degrades instead of
       // hanging. Callers already fall back on a rejected promise, but a
       // catch block never runs while a promise is simply pending.
       commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS ?? 1_000),
-
-      enableReadyCheck: true,
-      lazyConnect: false,
-      connectTimeout: 5_000,
     });
 
     this._client.on('connect', () => this.logger.log('Redis connected'));

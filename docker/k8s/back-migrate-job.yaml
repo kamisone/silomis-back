@@ -1,0 +1,59 @@
+# Runs `prisma migrate deploy` exactly once per release, before the Deployment
+# rolls out — not once per pod from the container CMD, which made every HPA
+# scale-up serialize new pods behind Prisma's advisory lock.
+#
+# The CI job rewrites both the name and the image tag to the run number, so
+# each release gets its own Job (a Job's `spec` is immutable, and re-applying
+# a completed one under the same name would fail).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: back-migrate
+spec:
+  # Old completed Jobs clean themselves up an hour after finishing instead of
+  # accumulating one Pod per deploy forever.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        component: back-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: mo29172/silomis_back:latest
+          command: ["npx", "prisma", "migrate", "deploy"]
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          env:
+            - name: PRISMA_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: PRISMA_HOST
+            - name: PRISMA_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: PRISMA_PORT
+            - name: PRISMA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: PRISMA_USERNAME
+            - name: PRISMA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: PRISMA_PASSWORD
+            - name: PRISMA_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: PRISMA_DATABASE

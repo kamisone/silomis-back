@@ -6,6 +6,22 @@ metadata:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-body-size: "200m"
+    # ── Sticky sessions, required by the support chat gateway ──────────────
+    # socket.io opens with HTTP long-polling and only then upgrades. With more
+    # than one back pod and no affinity, the handshake's follow-up requests
+    # round-robin to a pod that has never seen that session id, and the client
+    # fails with "Session ID unknown" before a websocket is established. The
+    # cookie pins a client to one pod; the Redis adapter (redis-io.adapter.ts)
+    # handles fan-out *between* pods.
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "silomis_back_affinity"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "86400"
+    # Long-lived websockets: the 60s default read timeout would drop an idle
+    # chat connection every minute.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
 spec:
   ingressClassName: nginx

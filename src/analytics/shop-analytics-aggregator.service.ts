@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { RedisLockService } from '../common/redis-lock/redis-lock.service';
+import { CRON_LOCK_TTL } from '../common/redis-lock/cron-lock.constants';
 import { ShopAnalyticsService } from './shop-analytics.service';
 import { RedisService } from '../redis/redis.service';
 
@@ -22,14 +24,23 @@ export class ShopAnalyticsAggregatorService {
   constructor(
     private readonly analytics: ShopAnalyticsService,
     private readonly redis: RedisService,
+    private readonly lock: RedisLockService,
   ) {}
 
   // ── Nightly aggregation at 03:00 UTC ──────────────────────────────────────
 
+  // `aggregate()` stays public and unlocked — the admin can trigger a rebuild
+  // on demand. Only the scheduled tick needs to be deduplicated across replicas.
   @Cron('0 3 * * *')
   async runNightlyAggregation(): Promise<void> {
-    this.logger.log('Starting nightly shop analytics aggregation');
-    await this.aggregate();
+    await this.lock.runOncePerWindow(
+      'shop-analytics-nightly',
+      CRON_LOCK_TTL.day,
+      async () => {
+        this.logger.log('Starting nightly shop analytics aggregation');
+        await this.aggregate();
+      },
+    );
   }
 
   async aggregate(): Promise<void> {

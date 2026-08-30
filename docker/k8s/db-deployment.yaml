@@ -5,6 +5,17 @@ metadata:
 
 spec:
   replicas: 1
+  # Recreate, not the default RollingUpdate. The PVC below is ReadWriteOnce, so
+  # a rolling update deadlocks: the new pod cannot mount the volume while the
+  # old pod still holds it, and the old pod is never terminated because the new
+  # one never becomes ready. Recreate stops the old pod first.
+  #
+  # This is a single-instance database — scaling the API tier does not scale
+  # this, and it stays a single point of failure. For real production traffic
+  # move to managed Postgres (Cloud SQL, alongside the GCS usage already here)
+  # or a replicated operator, and put PgBouncer in front of it.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       component: back_db
@@ -13,6 +24,8 @@ spec:
       labels:
         component: back_db
     spec:
+      priorityClassName: silomis-datastore
+      terminationGracePeriodSeconds: 60
       volumes:
         - name: db-storage
           persistentVolumeClaim:
@@ -20,8 +33,56 @@ spec:
       containers:
         - name: db-container
           image: postgres:14-alpine
+          # Postgres defaults to max_connections=100. With maxReplicas=10 API
+          # pods each holding a pool of PG_POOL_MAX=8, worst case is 80 client
+          # connections; 120 leaves room for the migration Job, superuser
+          # slots, and any psql session. shared_buffers is bumped in step so
+          # the extra backends have somewhere to work.
+          args:
+            - -c
+            - max_connections=120
+            - -c
+            - shared_buffers=256MB
           ports:
             - containerPort: 5432
+          resources:
+            # Previously unset, which made this pod BestEffort QoS — the first
+            # thing the kubelet evicts under node pressure, i.e. precisely when
+            # the API tier has scaled up and is leaning on it hardest.
+            #
+            # `requests` reserves node capacity, so it is sized to the real
+            # idle footprint (shared_buffers 256MB plus backends), not to the
+            # ceiling. Over-requesting here is what leaves pods Pending on a
+            # small node.
+            limits:
+              cpu: 1500m
+              memory: 1536Mi
+            requests:
+              cpu: 100m
+              memory: 384Mi
+          # pg_isready via the configured superuser. Readiness gates the API
+          # pods' own readiness indirectly: /health/ready runs SELECT 1.
+          # Same reasoning as Redis: a long startup budget covers crash
+          # recovery on a dirty shutdown, and liveness only begins afterwards
+          # so it can never kill a database that is mid-recovery.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -h 127.0.0.1"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -h 127.0.0.1"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -h 127.0.0.1"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - name: db-storage
               mountPath: /var/lib/postgresql/data

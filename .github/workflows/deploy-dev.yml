@@ -28,6 +28,13 @@ jobs:
       - name: update back deployment file version
         run: |
           sed -i -e"s/:latest/:v${{ github.run_number }}/" docker/k8s/back-deployment.yaml
+          # The migration Job needs the same image, and a unique name per
+          # release: a Job's pod template is immutable, so re-applying a
+          # completed `back-migrate` under one fixed name fails.
+          sed -i \
+            -e"s/:latest/:v${{ github.run_number }}/" \
+            -e"s/^  name: back-migrate$/  name: back-migrate-v${{ github.run_number }}/" \
+            docker/k8s/back-migrate-job.yaml
 
 
       - name: copy k8s files via ssh
@@ -36,7 +43,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: 'docker/k8s/back-deployment.yaml,docker/k8s/back-hpa.yaml,docker/k8s/back-cluster-ip-service.yaml,docker/k8s/back-ingress-service.yaml,docker/k8s/db-deployment.yaml,docker/k8s/db-persistent-volume-claim.yaml,docker/k8s/db-cluster-ip-service.yaml,docker/k8s/redis-deployment.yaml,docker/k8s/redis-persistent-volume-claim.yaml,docker/k8s/redist-cluster-ip-service.yaml,docker/k8s/ingress-nginx-configmap.yaml,'
+          source: 'docker/k8s/priority-classes.yaml,docker/k8s/back-deployment.yaml,docker/k8s/back-hpa.yaml,docker/k8s/back-pdb.yaml,docker/k8s/back-migrate-job.yaml,docker/k8s/back-cluster-ip-service.yaml,docker/k8s/back-ingress-service.yaml,docker/k8s/db-deployment.yaml,docker/k8s/db-persistent-volume-claim.yaml,docker/k8s/db-cluster-ip-service.yaml,docker/k8s/redis-deployment.yaml,docker/k8s/redis-persistent-volume-claim.yaml,docker/k8s/redist-cluster-ip-service.yaml,docker/k8s/ingress-nginx-configmap.yaml,'
           target: '/srv/k8s/back'
           strip_components: 2
           timeout: 5m
@@ -106,8 +113,28 @@ jobs:
             --from-literal META_CAPI_API_VERSION=${{ secrets.META_CAPI_API_VERSION }} \
             --from-literal TIKTOK_EVENTS_API_ACCESS_TOKEN=${{ secrets.TIKTOK_EVENTS_API_ACCESS_TOKEN }} \
             --from-literal TURNSTILE_SECRET_KEY=${{ secrets.TURNSTILE_SECRET_KEY }}
+            # Cluster-scoped and referenced by every pod spec below, so they
+            # have to exist before the Deployments are applied.
+            kubectl apply -f /srv/k8s/back/priority-classes.yaml
+            # Migrations run once, here, and must finish before any new pod
+            # starts — the image no longer runs them from its CMD.
+            kubectl apply -f /srv/k8s/back/back-migrate-job.yaml
+            if ! kubectl wait --for=condition=complete \
+                 job/back-migrate-v${{ github.run_number }} --timeout=600s; then
+              echo "::error::migration job failed — aborting rollout"
+              kubectl logs job/back-migrate-v${{ github.run_number }} --tail=100 || true
+              exit 1
+            fi
             kubectl apply -f /srv/k8s/back
+            # maxUnavailable: 0 means a broken image leaves the old pods
+            # serving rather than taking the API down; surface that as a failed
+            # deploy instead of a green one.
+            kubectl rollout status deployment/back-deployment --timeout=300s
             minikube addons enable ingress
+            # Without metrics-server the HPAs report targets as <unknown> and
+            # never scale at all — the autoscaling config is inert until this
+            # addon is running. Idempotent, so it is safe on every deploy.
+            minikube addons enable metrics-server
             echo ${{ secrets.SERVER_SECOND_USER_PASSWORD }} | sudo -S systemctl restart nginx
             echo y | docker exec -i minikube docker system prune -a --volumes
             

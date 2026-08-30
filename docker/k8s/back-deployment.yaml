@@ -3,27 +3,112 @@ kind: Deployment
 metadata:
   name: back-deployment
 spec:
+  # No `replicas:` on purpose — back-hpa.yaml owns the replica count, and
+  # setting it here would make every `kubectl apply` reset the HPA's decision
+  # back to this number.
   selector: 
     matchLabels:
       component: back
+  # maxSurge/maxUnavailable relative to the HPA's current replica count: never
+  # take a pod out of rotation before its replacement is ready.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         component: back
     spec:
+      # SIGTERM -> readiness starts failing -> endpoints removed -> in-flight
+      # requests finish. 45s is comfortably above the ~10s the endpoint
+      # propagation plus the longest normal request takes.
+      priorityClassName: silomis-app
+      terminationGracePeriodSeconds: 45
+      # Spread replicas over nodes so one node failing doesn't take the whole
+      # API down. ScheduleAnyway, not DoNotSchedule: on a single-node cluster a
+      # hard constraint would leave every replica past the first unschedulable
+      # and the HPA would scale into Pending pods forever.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              component: back
       containers:
         - name: back-container
           image: mo29172/silomis_back:latest
           ports:
             - containerPort: 3000
           resources:
+            # Memory limits matter more than the CPU ones for a Node service:
+            # without them a leak or one oversized response consumes the node
+            # and takes unrelated pods with it. requests are what the HPA
+            # divides by, so changing them changes the scaling threshold.
             limits:
-              cpu: 500m
+              cpu: 1000m
+              memory: 1Gi
+            # Sized to a warm idle pod, not to peak. `requests` is a
+            # reservation the scheduler subtracts from node capacity for every
+            # replica, so at maxReplicas=10 an inflated value is what makes the
+            # HPA scale into Pending pods — or crowds out the datastores.
             requests:
-              cpu: 200m
+              cpu: 100m
+              memory: 256Mi
+          # Gives the process up to 90s (18 x 5s) to boot before the liveness
+          # probe is allowed to kill it, without delaying the moment traffic
+          # starts flowing the way a fixed initialDelaySeconds would.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 18
+          # Restart only on a genuinely wedged process. /health/live checks
+          # nothing but the event loop — probing the DB here would restart
+          # every replica at once during a Postgres blip.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 3000
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # This is the probe that makes autoscaling safe: without it the
+          # Service adds each new pod to its endpoints the instant the
+          # container starts, so every scale-up sends real traffic into a pod
+          # that is still running migrations and booting Nest.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # kube-proxy updates iptables asynchronously, so a pod can keep
+                # receiving connections for a moment after it is marked
+                # terminating. Sleeping before SIGTERM reaches the process
+                # closes that window instead of resetting those connections.
+                command: ["sh", "-c", "sleep 10"]
           env:
             - name: TZ
               value: UTC
+            # Per-process node-postgres pool size. 10 replicas x 8 = 80, which
+            # fits under the 120 max_connections set in db-deployment.yaml with
+            # room for migrations, psql, and superuser slots.
+            - name: PG_POOL_MAX
+              value: "8"
+            # Next.js and Nest both size internals off the cgroup, but V8's old
+            # space still defaults to a fraction of *host* memory. Pin it under
+            # the container limit so the GC works harder instead of the pod
+            # being OOMKilled.
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
             - name: NODE_ENV
               valueFrom:
                 secretKeyRef:

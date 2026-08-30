@@ -1,0 +1,21 @@
+# Datastores must outrank the API pods when the node runs out of room.
+# Without this, an HPA scaling the back/front Deployments up can leave the
+# Postgres or Redis pod Pending after any reschedule — and because the app
+# pods depend on them, the cluster starves the very thing it is scaling for.
+# A higher-priority pod also gets to preempt app pods rather than queue behind
+# them.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: silomis-datastore
+value: 1000000
+globalDefault: false
+description: "Postgres and Redis — must be schedulable before any app replica."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: silomis-app
+value: 1000
+globalDefault: false
+description: "Stateless front/back replicas. Evictable in favour of datastores."

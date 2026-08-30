@@ -1,0 +1,13 @@
+# Without this, a node drain (upgrade, maintenance) can evict every API pod at
+# once. minAvailable: 1 keeps the API answering through a voluntary disruption.
+# It is deliberately a count, not a percentage: at minReplicas=2 a percentage
+# would round to a value that lets both pods go.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: back-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      component: back

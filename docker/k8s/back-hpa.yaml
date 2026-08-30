@@ -8,12 +8,42 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: back-deployment
-  minReplicas: 1
+  # 2, not 1: at one replica any node drain, eviction, or crash is a full API
+  # outage, and the first traffic spike lands entirely on a single pod while
+  # the HPA takes ~30s to notice and another ~30s to start a second one.
+  minReplicas: 2
   maxReplicas: 10
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  # Memory is deliberately NOT an HPA metric. V8 grows its heap to the
+  # high-water mark and does not hand it back, so a Node pod's RSS stays near
+  # its peak long after the load has gone: the ratio never falls, the
+  # autoscaler ratchets to maxReplicas and never scales down. Memory is
+  # handled by the container `limits` instead, which cap a runaway pod without
+  # feeding a feedback loop. CPU tracks real request load and does fall again.
+  behavior:
+    scaleUp:
+      # React to a spike in one polling interval rather than averaging over the
+      # previous 5 minutes.
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      # Slow on the way down: shedding replicas the moment a burst ends causes
+      # flapping, and each removed pod drops its warm Prisma pool.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
