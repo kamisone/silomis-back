@@ -203,8 +203,10 @@ export interface ProductListFilter {
   featured?: boolean;
   isTestProduct?: boolean;
   ids?: string[];
-  /** Only products carrying an active automatic promotion — the /sale listing.
-   * See ProductsService.onSalePromotionWhere for what "on sale" resolves to. */
+  /** Only products the storefront would badge as discounted — the /sale
+   * listing. See ProductsService.onSaleWhere for what "on sale" resolves to:
+   * a compare-at price above the rendered price, or an active automatic
+   * promotion scoped to the product or its category. */
   onSale?: boolean;
   /** Bounds on the price the card actually renders (default variant's own
    * price, falling back to basePriceCents) — inclusive, in cents. */

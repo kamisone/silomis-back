@@ -226,18 +226,37 @@ export class ProductsService {
   /**
    * The `where` fragment that means "this product is on sale".
    *
-   * There is no flag on Product to read — a product is on sale when an active
-   * automatic promotion reaches it, which is the same three-scope match the
-   * storefront card already does when it decides whether to draw a promo
-   * badge. `site_wide` is deliberately NOT one of the scopes here: a site-wide
+   * There is no flag on Product to read, and two independent things put a
+   * product on the sale listing — the same two things that make the storefront
+   * card draw a badge:
+   *
+   *  - a compare-at price above the price the card renders (the "Sale" badge);
+   *  - an active automatic promotion scoped to the product or its category
+   *    (the promo badge).
+   *
+   * Either alone is enough, hence the OR. Returns a clause matching nothing
+   * when neither applies — an empty sale page is the honest answer, not the
+   * whole catalogue.
+   */
+  private async onSaleWhere(): Promise<Prisma.ProductWhereInput> {
+    const [promoWhere, compareAtIds] = await Promise.all([this.promotionSaleWhere(), this.compareAtSaleProductIds()]);
+
+    const clauses: Prisma.ProductWhereInput[] = [];
+    if (promoWhere) clauses.push(promoWhere);
+    if (compareAtIds.length) clauses.push({ id: { in: compareAtIds } });
+
+    if (clauses.length === 0) return { id: { in: [] } };
+    return clauses.length === 1 ? clauses[0] : { OR: clauses };
+  }
+
+  /**
+   * Products reached by an active automatic promotion, or null when none is
+   * running. `site_wide` is deliberately NOT one of the scopes: a site-wide
    * promo reaches the entire catalogue, so honouring it would turn the sale
    * listing into the shop listing. Only promotions an admin pointed at
-   * specific categories or products mark a product as discounted.
-   *
-   * Returns a clause matching nothing when no such promotion is running —
-   * an empty sale page is the honest answer, not the whole catalogue.
+   * specific categories or products count.
    */
-  private async onSalePromotionWhere(): Promise<Prisma.ProductWhereInput> {
+  private async promotionSaleWhere(): Promise<Prisma.ProductWhereInput | null> {
     const now = new Date();
     const promos = await this.prisma.shopPromotion.findMany({
       where: {
@@ -251,7 +270,7 @@ export class ProductsService {
 
     const categoryIds = [...new Set(promos.flatMap((p) => p.categoryLinks.map((l) => l.categoryId)))];
     const productIds = [...new Set(promos.flatMap((p) => p.productLinks.map((l) => l.productId)))];
-    if (categoryIds.length === 0 && productIds.length === 0) return { id: { in: [] } };
+    if (categoryIds.length === 0 && productIds.length === 0) return null;
 
     return {
       OR: [
@@ -259,6 +278,36 @@ export class ProductsService {
         ...(productIds.length ? [{ id: { in: productIds } }] : []),
       ],
     };
+  }
+
+  /**
+   * Products whose card shows the struck-through "Sale" badge: the default
+   * variant carries a compareAtPriceCents above the price actually rendered.
+   *
+   * Resolved to ids in memory rather than as a `where` fragment because the
+   * comparison spans two tables — a variant with a null priceCents prices from
+   * product.basePriceCents — which Prisma's field references cannot express.
+   * The scan is narrow: only variants that have a compare-at price at all are
+   * read, and only the default one of each decides, exactly as ProductCard
+   * does, so the listing can never disagree with the badge it is built from.
+   */
+  private async compareAtSaleProductIds(): Promise<string[]> {
+    const candidates = await this.prisma.product.findMany({
+      where: { status: 'active', deletedAt: null, variants: { some: { compareAtPriceCents: { not: null } } } },
+      select: {
+        id: true,
+        basePriceCents: true,
+        variants: { select: { priceCents: true, compareAtPriceCents: true, isDefault: true } },
+      },
+    });
+
+    return candidates
+      .filter((p) => {
+        const def = p.variants.find((v) => v.isDefault) ?? p.variants[0];
+        if (!def?.compareAtPriceCents) return false;
+        return def.compareAtPriceCents > (def.priceCents ?? p.basePriceCents ?? 0);
+      })
+      .map((p) => p.id);
   }
 
   /** Product ids for a collection in the admin's curated order. */
@@ -343,7 +392,7 @@ export class ProductsService {
     const curatedIds =
       collection && (sort ?? 'curated') === 'curated' ? await this.collectionOrderedIds(collection) : null;
 
-    const saleWhere = onSale ? await this.onSalePromotionWhere() : null;
+    const saleWhere = onSale ? await this.onSaleWhere() : null;
 
     const where: Prisma.ProductWhereInput = {
       status: 'active',
@@ -354,7 +403,10 @@ export class ProductsService {
       ...(featured !== undefined ? { featured } : {}),
       ...(ids?.length ? { id: { in: ids } } : {}),
       ...(rankedIds ? { id: { in: rankedIds } } : {}),
-      ...(saleWhere ?? {}),
+      // Nested under AND rather than spread: the sale clause can itself be a
+      // top-level `id: { in: ... }`, which spreading would silently swap for
+      // the search/ids one above instead of intersecting with it.
+      ...(saleWhere ? { AND: [saleWhere] } : {}),
     };
 
     // Price sorting must match the price the card actually shows — the
