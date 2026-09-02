@@ -44,6 +44,7 @@ export class ProductAdminController {
     @Query('search') search?: string,
     @Query('featured') featured?: string,
     @Query('isTestProduct') isTestProduct?: string,
+    @Query('onSale') onSale?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
@@ -52,6 +53,7 @@ export class ProductAdminController {
       search,
       featured: featured === 'true' ? true : featured === 'false' ? false : undefined,
       isTestProduct: isTestProduct === 'true' ? true : isTestProduct === 'false' ? false : undefined,
+      onSale: onSale === 'true' ? true : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
     });

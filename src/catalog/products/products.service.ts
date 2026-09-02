@@ -310,6 +310,48 @@ export class ProductsService {
       .map((p) => p.id);
   }
 
+  /**
+   * Drops a product from every promotion banner that lists it, once it stops
+   * being on sale.
+   *
+   * The banner is defined as "reduced products the admin picked", so an id that
+   * is no longer reduced is stale config, not a choice. The storefront already
+   * refuses to render it — it re-checks `onSale` when it fetches — but leaving
+   * the id in the section means the admin's picker keeps showing a product that
+   * will never appear, which reads as a bug in the picker rather than a change
+   * in the product.
+   *
+   * Reaches the home_sections table directly rather than through its service:
+   * the dependency would be circular (home sections already read products), and
+   * this is a two-column write, not a use of that module's behaviour.
+   *
+   * Only covers what a write can observe. A product that leaves the sale
+   * because its *promotion expired* has no write to hang this on, which is why
+   * the storefront keeps its own filter.
+   */
+  private async pruneFromPromoBanners(productId: string): Promise<void> {
+    const stillOnSale = await this.prisma.product.findFirst({
+      where: { id: productId, AND: [await this.onSaleWhere()] },
+      select: { id: true },
+    });
+    if (stillOnSale) return;
+
+    const banners = await this.prisma.homeSection.findMany({
+      where: { type: 'promo_banner' },
+      select: { id: true, config: true },
+    });
+
+    for (const banner of banners) {
+      const config = (banner.config ?? {}) as { productIds?: unknown };
+      const ids = Array.isArray(config.productIds) ? (config.productIds as string[]) : null;
+      if (!ids?.includes(productId)) continue;
+      await this.prisma.homeSection.update({
+        where: { id: banner.id },
+        data: { config: { ...config, productIds: ids.filter((id) => id !== productId) } as Prisma.InputJsonValue },
+      });
+    }
+  }
+
   /** Product ids for a collection in the admin's curated order. */
   private async collectionOrderedIds(slug: string): Promise<string[]> {
     const links = await this.prisma.collectionProduct.findMany({
@@ -323,12 +365,16 @@ export class ProductsService {
   // ── Admin list ──────────────────────────────────────────────────────────
 
   async adminList(filter: ProductListFilter = {}) {
-    const { status, search, featured, isTestProduct, limit = 20, offset = 0 } = filter;
+    const { status, search, featured, isTestProduct, onSale, limit = 20, offset = 0 } = filter;
+    // Same definition the storefront badges by, so a picker restricted to
+    // "on sale" offers exactly the products that would carry the badge.
+    const saleWhere = onSale ? await this.onSaleWhere() : null;
     const where: Prisma.ProductWhereInput = {
       deletedAt: null,
       ...(status ? { status: status as Product['status'] } : {}),
       ...(featured !== undefined ? { featured } : {}),
       ...(isTestProduct !== undefined ? { isTestProduct } : {}),
+      ...(saleWhere ? { AND: [saleWhere] } : {}),
       ...(search
         ? {
             OR: [{ title: { contains: search, mode: 'insensitive' } }, { sku: { contains: search, mode: 'insensitive' } }],
@@ -862,6 +908,9 @@ export class ProductsService {
       where: { id },
     });
     this.syncProductMediaUsage(fresh);
+    // basePriceCents is one half of the on-sale comparison, so a plain product
+    // edit can end a sale just as a variant edit can.
+    await this.pruneFromPromoBanners(id);
     this.eventBus.emit(COMMERCE_EVENTS.PRODUCT_UPDATED, { productId: id }, { entityId: id, source: 'ProductsService.update' });
     return this.findById(id);
   }
@@ -1135,6 +1184,9 @@ export class ProductsService {
       }
     });
 
+    // Clearing compareAtPriceCents here is the ordinary way a sale ends.
+    await this.pruneFromPromoBanners(variant.productId);
+
     return this.prisma.productVariant.findUniqueOrThrow({
       where: { id: variantId },
       include: { options: { include: { optionValue: true, attribute: true } } },
@@ -1147,6 +1199,8 @@ export class ProductsService {
     });
     if (!variant) throw new NotFoundException('Variant not found');
     await this.prisma.productVariant.delete({ where: { id: variantId } });
+    // Deleting the default variant can take the compare-at price with it.
+    await this.pruneFromPromoBanners(variant.productId);
   }
 
   /** Auto-generates every variant combination from the product's linked attributes (Cartesian product of active option values). */
