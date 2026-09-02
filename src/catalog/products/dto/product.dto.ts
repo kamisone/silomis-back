@@ -115,6 +115,8 @@ export const CreateProductSchema = z.object({
   socialVideos: z.array(ProductSocialVideoSchema).optional(),
   socialVideosTitle: z.string().max(300).nullish(),
   /** Heading over the linked articles at the foot of the product page. */
+  /** Draws the "New" badge on the storefront. */
+  isNew: z.boolean().optional(),
   articlesTitle: z.string().max(300).nullish(),
   /** Blog posts to show on this product's page. Writes the same
    *  BlogProductReference join a post used to own from its own side, so a link

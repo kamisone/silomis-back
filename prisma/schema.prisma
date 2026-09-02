@@ -493,6 +493,11 @@ model Product {
   /// when the variant has no explicit priceCents override.
   basePriceCents Int?
 
+  /// Draws the "New" badge on the storefront. A flag rather than a window on
+  /// createdAt: an admin sells a product long after adding it, and a product
+  /// added months ago can become the new thing this season — only they know.
+  isNew Boolean @default(false)
+
   upsellingEnabled Boolean @default(false)
   upsellTiers      Json    @default("[]") // ProductUpsellTier[]
 
