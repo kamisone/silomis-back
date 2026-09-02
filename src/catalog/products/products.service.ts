@@ -376,7 +376,7 @@ export class ProductsService {
   // ── Public list ───────────────────────────────────────────────────────
 
   async publicList(filter: ProductListFilter & { lang?: string } = {}) {
-    const { categoryId, tagId, collection, search, featured, ids, onSale, minPriceCents, maxPriceCents, sort, lang, limit = 24, offset = 0 } = filter;
+    const { categoryId, tagId, collection, search, featured, ids, onSale, isNew, minPriceCents, maxPriceCents, sort, lang, limit = 24, offset = 0 } = filter;
 
     // Ranked by Postgres full-text search (falls back to a prefix match so
     // short/partial terms still hit) rather than a plain ILIKE substring —
@@ -401,6 +401,7 @@ export class ProductsService {
       ...(tagId ? { tags: { some: { id: tagId } } } : {}),
       ...(collection ? { collectionLinks: { some: { collection: { slug: collection, isActive: true } } } } : {}),
       ...(featured !== undefined ? { featured } : {}),
+      ...(isNew !== undefined ? { isNew } : {}),
       ...(ids?.length ? { id: { in: ids } } : {}),
       ...(rankedIds ? { id: { in: rankedIds } } : {}),
       // Nested under AND rather than spread: the sale clause can itself be a

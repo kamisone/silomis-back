@@ -216,6 +216,8 @@ export interface ProductListFilter {
    * a compare-at price above the rendered price, or an active automatic
    * promotion scoped to the product or its category. */
   onSale?: boolean;
+  /** Only products carrying the admin-set New flag — the /new listing. */
+  isNew?: boolean;
   /** Bounds on the price the card actually renders (default variant's own
    * price, falling back to basePriceCents) — inclusive, in cents. */
   minPriceCents?: number;

@@ -23,6 +23,7 @@ export class ProductPublicController {
     @Query('featured') featured?: string,
     @Query('ids') ids?: string,
     @Query('onSale') onSale?: string,
+    @Query('isNew') isNew?: string,
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
     @Query('sort') sort?: string,
@@ -38,6 +39,7 @@ export class ProductPublicController {
       featured: featured === 'true' ? true : featured === 'false' ? false : undefined,
       ids: ids ? ids.split(',').filter(Boolean) : undefined,
       onSale: onSale === 'true' ? true : undefined,
+      isNew: isNew === 'true' ? true : undefined,
       // Prices arrive in cents, matching every other price on the wire.
       // Garbage parses to NaN, which is dropped rather than 400'd — same
       // tolerance the sort below applies to a stale bookmark.
