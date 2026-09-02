@@ -525,6 +525,16 @@ export class ProductsService {
     const product = await this.prisma.product.findUnique({
       where: { id },
       include: {
+        // The linked articles, so the editor can show what is already attached
+        // without a second round trip. Only what the picker renders is
+        // selected — a post's body has no business in a product payload.
+        blogRefs: {
+          orderBy: { sortOrder: 'asc' },
+          select: {
+            postId: true,
+            post: { select: { id: true, title: true, slug: true, status: true } },
+          },
+        },
         categories: true,
         tags: true,
         primaryCategory: true,
@@ -701,6 +711,10 @@ export class ProductsService {
           socialVideos: dto.socialVideos ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : [],
           socialVideosTitle: dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null,
           storyNarrativeTitle: dto.storyNarrativeTitle?.trim() ? dto.storyNarrativeTitle : null,
+          articlesTitle: dto.articlesTitle?.trim() ? dto.articlesTitle : null,
+          blogRefs: dto.articleIds?.length
+            ? { create: dto.articleIds.map((postId, i) => ({ postId, sortOrder: i })) }
+            : undefined,
           documents: dto.documents ? (normalizeDocuments(dto.documents) as unknown as Prisma.InputJsonValue) : [],
           privateLinks: dto.privateLinks ? (normalizeLinks(dto.privateLinks) as unknown as Prisma.InputJsonValue) : [],
           featuredImageKey: legacy ? legacy.featuredImageKey : (dto.featuredImageKey ?? null),
@@ -791,6 +805,17 @@ export class ProductsService {
         socialVideos: dto.socialVideos !== undefined ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : undefined,
         socialVideosTitle: dto.socialVideosTitle !== undefined ? (dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null) : undefined,
         storyNarrativeTitle: dto.storyNarrativeTitle !== undefined ? (dto.storyNarrativeTitle?.trim() ? dto.storyNarrativeTitle : null) : undefined,
+        articlesTitle: dto.articlesTitle !== undefined ? (dto.articlesTitle?.trim() ? dto.articlesTitle : null) : undefined,
+        // Replace rather than diff: the array's order is the stored order, so
+        // a reorder is indistinguishable from a different set and both are one
+        // write. Left untouched when the client did not send the field at all.
+        blogRefs:
+          dto.articleIds !== undefined
+            ? {
+                deleteMany: {},
+                create: dto.articleIds.map((postId, i) => ({ postId, sortOrder: i })),
+              }
+            : undefined,
         documents: dto.documents !== undefined ? (normalizeDocuments(dto.documents) as unknown as Prisma.InputJsonValue) : undefined,
         privateLinks: dto.privateLinks !== undefined ? (normalizeLinks(dto.privateLinks) as unknown as Prisma.InputJsonValue) : undefined,
         featuredImageKey: legacy ? legacy.featuredImageKey : dto.featuredImageKey !== undefined ? (dto.featuredImageKey ?? null) : undefined,

@@ -114,6 +114,12 @@ export const CreateProductSchema = z.object({
   storyGallery: z.array(ProductStoryItemSchema).optional(),
   socialVideos: z.array(ProductSocialVideoSchema).optional(),
   socialVideosTitle: z.string().max(300).nullish(),
+  /** Heading over the linked articles at the foot of the product page. */
+  articlesTitle: z.string().max(300).nullish(),
+  /** Blog posts to show on this product's page. Writes the same
+   *  BlogProductReference join a post used to own from its own side, so a link
+   *  made here is the same link — the article lists this product too. */
+  articleIds: z.array(z.string().uuid()).max(24).optional(),
   storyNarrativeTitle: z.string().max(300).nullish(),
   documents: z.array(ProductDocumentSchema).optional(),
   /** Admin-only reference links (supplier pages, sourcing, etc.) — never sent to public consumers. */

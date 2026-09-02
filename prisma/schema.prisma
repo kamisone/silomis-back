@@ -482,6 +482,9 @@ model Product {
 
   socialVideosTitle   String? @db.VarChar(300)
   storyNarrativeTitle String? @db.VarChar(300)
+  /// Heading over the linked articles at the foot of the product page. Null
+  /// falls back to the storefront's own translated string.
+  articlesTitle       String? @db.VarChar(300)
 
   documents    Json @default("[]") // ProductDocument[]
   privateLinks Json @default("[]") // ProductPrivateLink[] — admin-only, never public

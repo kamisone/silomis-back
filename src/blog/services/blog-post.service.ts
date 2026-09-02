@@ -64,6 +64,10 @@ export interface PublicListFilter {
   tagId?: string;
   search?: string;
   featured?: boolean;
+  /** Posts that reference this product — the product page's reading list.
+   *  The relation already existed in the other direction (a post picks its
+   *  products in the admin); this is the same join read backwards. */
+  productId?: string;
   limit?: number;
   offset?: number;
   lang?: string;
@@ -215,12 +219,15 @@ export class BlogPostService {
     tagId?: string;
     search?: string;
     featured?: boolean;
+    productId?: string;
   }): Prisma.BlogPostWhereInput {
     const where: Prisma.BlogPostWhereInput = {};
     if (filter.featured !== undefined) where.featured = filter.featured;
     if (filter.categoryId)
       where.categories = { some: { id: filter.categoryId } };
     if (filter.tagId) where.tags = { some: { id: filter.tagId } };
+    if (filter.productId)
+      where.productRefs = { some: { productId: filter.productId } };
     if (filter.search) {
       where.OR = [
         { title: { contains: filter.search, mode: 'insensitive' } },
