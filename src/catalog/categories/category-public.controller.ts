@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { Public } from '../../auth/public.decorator';
 import { CategoriesService } from './categories.service';
 
@@ -8,7 +8,7 @@ export class CategoryPublicController {
   constructor(private readonly categories: CategoriesService) {}
 
   @Get()
-  findActive() {
-    return this.categories.findActive();
+  findActive(@Query('lang') lang?: string) {
+    return this.categories.findActive(lang);
   }
 }

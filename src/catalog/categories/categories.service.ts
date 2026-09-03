@@ -4,9 +4,8 @@ import { AssetUrlService } from '../../asset-url/asset-url.service';
 import { slugify } from '../../common/utils/slug.util';
 import { Prisma, ProductCategory } from '../../../generated/prisma/client';
 import { TranslationsService } from '../../translations/translations.service';
+import { ET_SHOP_CATEGORY } from '../../translations/translation-entities';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
-
-const ET_SHOP_PRODUCT_CATEGORY = 'shop_product_category';
 
 @Injectable()
 export class CategoriesService {
@@ -29,9 +28,15 @@ export class CategoriesService {
    * Storefront category list. `imageKey` is a raw storage key, so it is resolved
    * to a URL here the way collections already do — the homepage category tiles
    * and any other picture-bearing surface can't do it themselves.
+   *
+   * `lang` overlays the admin's translated name/description when present —
+   * every caller (header nav, home tiles, the shop sidebar) fetches this same
+   * list, so switching locale without it left every one of them stuck on the
+   * category's base-language name.
    */
-  findActive(): Promise<Array<ProductCategory & { imageUrl: string | null; bannerUrl: string | null }>> {
-    return this.listWithImages({ isActive: true });
+  async findActive(lang?: string): Promise<Array<ProductCategory & { imageUrl: string | null; bannerUrl: string | null }>> {
+    const categories = await this.listWithImages({ isActive: true });
+    return this.translations.maybeApply(categories, ET_SHOP_CATEGORY, lang);
   }
 
   /** One batch resolve for the whole list rather than a lookup per row. */
@@ -114,7 +119,7 @@ export class CategoriesService {
     if (childCount > 0) {
       throw new ConflictException(`Category has ${childCount} subcategor${childCount === 1 ? 'y' : 'ies'} — move or delete them first`);
     }
-    await this.translations.deleteForEntity(ET_SHOP_PRODUCT_CATEGORY, id);
+    await this.translations.deleteForEntity(ET_SHOP_CATEGORY, id);
     await this.prisma.productCategory.delete({ where: { id } });
     return { ok: true };
   }
