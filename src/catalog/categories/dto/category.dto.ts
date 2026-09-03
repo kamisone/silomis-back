@@ -11,6 +11,13 @@ export const CreateCategorySchema = z.object({
   parentId: z.string().uuid().nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
+  /** Storefront price-range slider on this category's listing. */
+  showPriceFilter: z.boolean().optional(),
+  /** The slider's own endpoints, in cents — required together whenever the
+   *  effective showPriceFilter is true; CategoriesService checks the pair
+   *  together since a partial update can send one without the other. */
+  priceFilterMinCents: z.number().int().min(0).nullable().optional(),
+  priceFilterMaxCents: z.number().int().min(0).nullable().optional(),
 });
 export type CreateCategoryDto = z.infer<typeof CreateCategorySchema>;
 

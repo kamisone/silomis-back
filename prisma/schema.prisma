@@ -363,11 +363,28 @@ model ProductCategory {
   sortOrder Int     @default(0)
   isActive  Boolean @default(true)
 
+  /// Shows the price-range slider on this leaf category's storefront listing
+  /// (`/shop?categoryId=`) — on by default, off for a category where price
+  /// isn't a meaningful way to narrow the products in it. Has no effect on a
+  /// branch category, which shows its children rather than a filtered grid.
+  showPriceFilter Boolean @default(true)
+
+  /// The slider's own endpoints, in cents — admin-set rather than derived
+  /// from the category's current products, so the range stays put as stock
+  /// changes and a category with one product (or several sharing one price)
+  /// still gets a real, draggable slider instead of a degenerate one. Both
+  /// required together whenever showPriceFilter is true; enforced in
+  /// CategoriesService, not here, since a partial update can touch one field
+  /// without the other in the same request.
+  priceFilterMinCents Int?
+  priceFilterMaxCents Int?
+
   products          Product[]           @relation("PrimaryCategory")
   categoryProducts  Product[]           @relation("ProductCategoryMap")
   variantAttributes VariantAttribute[]
   promotionLinks    PromotionCategory[]
   taxRates          TaxRate[]
+  filters           CategoryFilter[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -545,6 +562,7 @@ model Product {
   reviews           ProductReview[]
   wishlistItems     WishlistItem[]
   blogRefs          BlogProductReference[]
+  filterValues      ProductFilterValue[]
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -662,6 +680,78 @@ model ProductOptionValueImage {
 
   @@unique([productId, optionValueId])
   @@map("shop_product_option_value_images")
+}
+
+/// A storefront browse-time facet scoped to one leaf category (e.g. "Material"
+/// on "Sandals") — distinct from VariantAttribute, which is a global axis a
+/// shopper picks between to buy (colour/size), not something they filter a
+/// listing by.
+model CategoryFilter {
+  id         String @id @default(uuid())
+  categoryId String
+  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  name String @db.VarChar(200)
+  /// URL-safe key, unique within the category — not the URL param itself
+  /// (the storefront filters by CategoryFilterValue id), just a stable
+  /// admin-facing identifier.
+  slug String @db.VarChar(200)
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  values        CategoryFilterValue[]
+  productValues ProductFilterValue[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([categoryId, slug])
+  @@index([categoryId])
+  @@map("shop_category_filters")
+}
+
+/// One selectable value of a CategoryFilter (e.g. "Leather"). Exactly one
+/// value per filter should carry isDefault — enforced in the service, not the
+/// schema, the same way ProductVariant.isDefault is.
+model CategoryFilterValue {
+  id       String @id @default(uuid())
+  filterId String
+  filter   CategoryFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+
+  value String @db.VarChar(200)
+  label String @db.VarChar(200)
+
+  sortOrder Int     @default(0)
+  isDefault Boolean @default(false)
+
+  productValues ProductFilterValue[]
+
+  @@unique([filterId, value])
+  @@map("shop_category_filter_values")
+}
+
+/// One product's chosen value for one of its categories' filters. A product
+/// linked to two leaf categories can carry filter values from both — this is
+/// what the storefront's category listing actually filters products by, and
+/// what the admin picks (or leaves at the filter's default) when linking a
+/// product to a category.
+model ProductFilterValue {
+  id        String @id @default(uuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  filterId  String
+  filter    CategoryFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+  valueId   String
+  value     CategoryFilterValue @relation(fields: [valueId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, filterId])
+  @@index([filterId])
+  @@index([valueId])
+  @@map("shop_product_filter_values")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

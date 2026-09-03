@@ -12,6 +12,9 @@ import { TagAdminController } from './tags/tag-admin.controller';
 import { VariantAttributesService } from './variant-attributes/variant-attributes.service';
 import { VariantAttributeAdminController } from './variant-attributes/variant-attribute-admin.controller';
 import { VariantAttributePublicController } from './variant-attributes/variant-attribute-public.controller';
+import { CategoryFiltersService } from './category-filters/category-filters.service';
+import { CategoryFiltersAdminController } from './category-filters/category-filters-admin.controller';
+import { CategoryFiltersPublicController } from './category-filters/category-filters-public.controller';
 import { ProductsService } from './products/products.service';
 import { ProductAdminController } from './products/product-admin.controller';
 import { ProductPublicController } from './products/product-public.controller';
@@ -25,8 +28,8 @@ import { ReviewsModule } from '../reviews/reviews.module';
 
 @Module({
   imports: [GcsModule, AssetUrlModule, MediaModule, TranslationsModule, ReviewsModule, AiModule],
-  controllers: [CategoryAdminController, CategoryPublicController, TagAdminController, VariantAttributeAdminController, VariantAttributePublicController, ProductAdminController, ProductPublicController, VariantStockController, ProductSearchPublicController, ProductSearchAdminController],
-  providers: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, RecommendationListener, ProductSearchService, SearchIndexListener],
-  exports: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, ProductSearchService],
+  controllers: [CategoryAdminController, CategoryPublicController, TagAdminController, VariantAttributeAdminController, VariantAttributePublicController, ProductAdminController, ProductPublicController, VariantStockController, ProductSearchPublicController, ProductSearchAdminController, CategoryFiltersAdminController, CategoryFiltersPublicController],
+  providers: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, RecommendationListener, ProductSearchService, SearchIndexListener, CategoryFiltersService],
+  exports: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, ProductSearchService, CategoryFiltersService],
 })
 export class CatalogModule {}

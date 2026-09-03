@@ -235,6 +235,28 @@ export class TranslationService {
     );
   }
 
+  /** Category filter name (e.g. "Material", "Fit"). */
+  async translateCategoryFilterName(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'category_filter_name',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
+  /** Category filter value label (e.g. "Cotton", "Slim"). */
+  async translateCategoryFilterValueLabel(
+    text: string,
+  ): Promise<SectionTranslationOutcome<string>> {
+    return this.translateSection(
+      'category_filter_value_label',
+      (lang) => this.freeTranslate.translateText(text, lang),
+      '',
+    );
+  }
+
   /** Country display name (e.g. "France", "Morocco"). */
   async translateCountryName(
     text: string,

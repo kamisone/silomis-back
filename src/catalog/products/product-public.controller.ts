@@ -26,6 +26,7 @@ export class ProductPublicController {
     @Query('isNew') isNew?: string,
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
+    @Query('filters') filters?: string,
     @Query('sort') sort?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
@@ -45,6 +46,10 @@ export class ProductPublicController {
       // tolerance the sort below applies to a stale bookmark.
       minPriceCents: this.parsePrice(minPrice),
       maxPriceCents: this.parsePrice(maxPrice),
+      // Comma-separated CategoryFilterValue ids from the storefront's filter
+      // sidebar. A stale/garbage id just drops out in the service rather than
+      // 400ing a bookmarked URL, same tolerance as the sort param below.
+      filterValueIds: filters ? filters.split(',').filter(Boolean) : undefined,
       // Unrecognized values fall through as undefined rather than 400 — a
       // stale bookmark with ?sort=whatever should still render the listing.
       sort: (PRODUCT_SORTS as readonly string[]).includes(sort ?? '') ? (sort as ProductSort) : undefined,

@@ -238,6 +238,25 @@ export class ProductsService {
    * when neither applies — an empty sale page is the honest answer, not the
    * whole catalogue.
    */
+  /** Splits a flat list of CategoryFilterValue ids (the storefront's
+   * `?filters=` param) into one array per CategoryFilter they belong to — the
+   * shape publicList's where-clause needs to AND across filters while ORing
+   * within one. A stale/foreign id that doesn't resolve to a value just drops
+   * out rather than 400ing a bookmarked URL. */
+  private async groupFilterValueIdsByFilter(valueIds: string[]): Promise<string[][]> {
+    const rows = await this.prisma.categoryFilterValue.findMany({
+      where: { id: { in: valueIds } },
+      select: { id: true, filterId: true },
+    });
+    const byFilter = new Map<string, string[]>();
+    for (const row of rows) {
+      const group = byFilter.get(row.filterId) ?? [];
+      group.push(row.id);
+      byFilter.set(row.filterId, group);
+    }
+    return [...byFilter.values()];
+  }
+
   private async onSaleWhere(): Promise<Prisma.ProductWhereInput> {
     const [promoWhere, compareAtIds] = await Promise.all([this.promotionSaleWhere(), this.compareAtSaleProductIds()]);
 
@@ -422,7 +441,7 @@ export class ProductsService {
   // ── Public list ───────────────────────────────────────────────────────
 
   async publicList(filter: ProductListFilter & { lang?: string } = {}) {
-    const { categoryId, tagId, collection, search, featured, ids, onSale, isNew, minPriceCents, maxPriceCents, sort, lang, limit = 24, offset = 0 } = filter;
+    const { categoryId, tagId, collection, search, featured, ids, onSale, isNew, minPriceCents, maxPriceCents, filterValueIds, sort, lang, limit = 24, offset = 0 } = filter;
 
     // Ranked by Postgres full-text search (falls back to a prefix match so
     // short/partial terms still hit) rather than a plain ILIKE substring —
@@ -440,6 +459,20 @@ export class ProductsService {
 
     const saleWhere = onSale ? await this.onSaleWhere() : null;
 
+    // Each group is one category filter's selected values — any value within
+    // a group matches (a product with *any* of them satisfies that filter),
+    // every group present must match (AND across filters). Standard faceted
+    // search semantics, and what "multi-select in filter values" means here.
+    const filterGroups = filterValueIds?.length ? await this.groupFilterValueIdsByFilter(filterValueIds) : [];
+
+    // Nested under AND rather than spread: the sale clause (and each filter
+    // group) can itself be a top-level `id`/relation clause, which spreading
+    // would silently overwrite instead of intersecting with the others.
+    const andConditions: Prisma.ProductWhereInput[] = [
+      ...(saleWhere ? [saleWhere] : []),
+      ...filterGroups.map((valueIds): Prisma.ProductWhereInput => ({ filterValues: { some: { valueId: { in: valueIds } } } })),
+    ];
+
     const where: Prisma.ProductWhereInput = {
       status: 'active',
       deletedAt: null,
@@ -450,10 +483,7 @@ export class ProductsService {
       ...(isNew !== undefined ? { isNew } : {}),
       ...(ids?.length ? { id: { in: ids } } : {}),
       ...(rankedIds ? { id: { in: rankedIds } } : {}),
-      // Nested under AND rather than spread: the sale clause can itself be a
-      // top-level `id: { in: ... }`, which spreading would silently swap for
-      // the search/ids one above instead of intersecting with it.
-      ...(saleWhere ? { AND: [saleWhere] } : {}),
+      ...(andConditions.length ? { AND: andConditions } : {}),
     };
 
     // Price sorting must match the price the card actually shows — the
@@ -587,6 +617,9 @@ export class ProductsService {
         primaryCategory: true,
         freeShippingUpgradeMethods: true,
         shippingMethods: true,
+        // So the edit page can pre-select each category filter's current
+        // value without a second round trip.
+        filterValues: { select: { filterId: true, valueId: true } },
         variants: {
           include: {
             options: { include: { optionValue: true, attribute: true } },
@@ -729,6 +762,40 @@ export class ProductsService {
     }
   }
 
+  /**
+   * Assigns each of the given categories' active filters' default value to
+   * this product — but only for a filter the product doesn't already have a
+   * value for (`skipDuplicates`, backed by ProductFilterValue's
+   * `[productId, filterId]` unique constraint), so calling this again after a
+   * category is re-added never clobbers an admin's explicit choice.
+   */
+  private async applyDefaultCategoryFiltersInPlace(productId: string, categoryIds: string[]): Promise<void> {
+    if (!categoryIds.length) return;
+    const filters = await this.prisma.categoryFilter.findMany({
+      where: { categoryId: { in: categoryIds }, isActive: true },
+      include: { values: { where: { isDefault: true }, take: 1 } },
+    });
+    const rows = filters
+      .filter((f) => f.values.length > 0)
+      .map((f) => ({ productId, filterId: f.id, valueId: f.values[0].id }));
+    if (!rows.length) return;
+    await this.prisma.productFilterValue.createMany({ data: rows, skipDuplicates: true });
+  }
+
+  /**
+   * The storefront's category listing (`publicList`'s `categoryId` filter)
+   * only ever reads the `categories` many-to-many — never `primaryCategoryId`
+   * — so a product whose primary category isn't also in that list is
+   * invisible on its own category page despite the admin form showing it
+   * selected. Every write path funnels through here so that can't happen:
+   * the primary category is always at least a member of `categories` too.
+   */
+  private mergeCategoryIds(categoryIds: string[] | undefined, primaryCategoryId: string | null | undefined): string[] | undefined {
+    if (!primaryCategoryId) return categoryIds;
+    if (categoryIds?.includes(primaryCategoryId)) return categoryIds;
+    return [...(categoryIds ?? []), primaryCategoryId];
+  }
+
   // ── Create ────────────────────────────────────────────────────────────
 
   async create(dto: CreateProductDto): Promise<Product> {
@@ -738,6 +805,7 @@ export class ProductsService {
 
     const media = dto.media ? normalizeMedia(dto.media) : [];
     const legacy = dto.media ? deriveLegacyImageFields(media) : null;
+    const categoryIds = this.mergeCategoryIds(dto.categoryIds, dto.primaryCategoryId);
 
     const product = await this.prisma.$transaction(async (tx) => {
       const created = await tx.product.create({
@@ -779,7 +847,7 @@ export class ProductsService {
           upsellingEnabled: dto.upsellingEnabled ?? false,
           perUnitVariantChoice: dto.perUnitVariantChoice ?? false,
           upsellTiers: dto.upsellTiers ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : [],
-          categories: dto.categoryIds?.length ? { connect: dto.categoryIds.map((id) => ({ id })) } : undefined,
+          categories: categoryIds?.length ? { connect: categoryIds.map((id) => ({ id })) } : undefined,
           tags: dto.tagIds?.length ? { connect: dto.tagIds.map((id) => ({ id })) } : undefined,
           freeShippingUpgradeMethods: dto.freeShippingUpgradeMethodIds?.length
             ? { connect: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) }
@@ -813,13 +881,20 @@ export class ProductsService {
     });
 
     this.syncProductMediaUsage(product);
+    // A product is created with the categories it's linked to already
+    // connected above — this is what makes "a product in a filtered category
+    // gets that filter's default" true from the moment it exists.
+    if (categoryIds?.length) await this.applyDefaultCategoryFiltersInPlace(product.id, categoryIds);
     return product;
   }
 
   // ── Update ────────────────────────────────────────────────────────────
 
   async update(id: string, dto: UpdateProductDto): Promise<Product> {
-    const existing = await this.prisma.product.findUnique({ where: { id } });
+    const existing = await this.prisma.product.findUnique({
+      where: { id },
+      include: { categories: { select: { id: true } } },
+    });
     if (!existing) throw new NotFoundException('Product not found');
 
     let slug = existing.slug;
@@ -833,6 +908,18 @@ export class ProductsService {
 
     const media = dto.media !== undefined ? normalizeMedia(dto.media) : (existing.media as unknown as ProductMediaItem[]);
     const legacy = dto.media !== undefined ? deriveLegacyImageFields(media) : null;
+
+    // The category membership this save actually results in, whether or not
+    // this particular request touched `categoryIds` — a `primaryCategoryId`
+    // change on its own still has to land in `categories` too, and a
+    // `categoryIds` change on its own still has to keep the existing primary
+    // a member.
+    const categoriesTouched = dto.categoryIds !== undefined || dto.primaryCategoryId !== undefined;
+    const effectivePrimaryCategoryId = dto.primaryCategoryId !== undefined ? dto.primaryCategoryId : existing.primaryCategoryId;
+    const finalCategoryIds = this.mergeCategoryIds(
+      dto.categoryIds !== undefined ? dto.categoryIds : existing.categories.map((c) => c.id),
+      effectivePrimaryCategoryId,
+    )!;
 
     await this.prisma.product.update({
       where: { id },
@@ -881,7 +968,7 @@ export class ProductsService {
         upsellingEnabled: dto.upsellingEnabled,
         perUnitVariantChoice: dto.perUnitVariantChoice,
         upsellTiers: dto.upsellTiers !== undefined ? (normalizeUpsellTiers(dto.upsellTiers) as unknown as Prisma.InputJsonValue) : undefined,
-        categories: dto.categoryIds !== undefined ? { set: dto.categoryIds.map((cid) => ({ id: cid })) } : undefined,
+        categories: categoriesTouched ? { set: finalCategoryIds.map((cid) => ({ id: cid })) } : undefined,
         tags: dto.tagIds !== undefined ? { set: dto.tagIds.map((tid) => ({ id: tid })) } : undefined,
         freeShippingUpgradeMethods:
           dto.freeShippingUpgradeMethodIds !== undefined ? { set: dto.freeShippingUpgradeMethodIds.map((id) => ({ id })) } : undefined,
@@ -902,6 +989,38 @@ export class ProductsService {
         where: { productId: id, isDefault: true },
         data: { compareAtPriceCents: dto.compareAtPriceCents ?? null },
       });
+    }
+
+    // A category the product just gained hands it that category's filter
+    // defaults; one it just lost takes its filter values for it — a product
+    // no longer in "Sandals" has no business still carrying a "Sandals"-only
+    // filter's value.
+    if (categoriesTouched) {
+      const previousIds = new Set(existing.categories.map((c) => c.id));
+      const nextIds = new Set(finalCategoryIds);
+      const added = finalCategoryIds.filter((cid) => !previousIds.has(cid));
+      const removed = [...previousIds].filter((cid) => !nextIds.has(cid));
+
+      if (added.length) await this.applyDefaultCategoryFiltersInPlace(id, added);
+      if (removed.length) {
+        await this.prisma.productFilterValue.deleteMany({
+          where: { productId: id, filter: { categoryId: { in: removed } } },
+        });
+      }
+    }
+
+    // Explicit admin picks from the product edit page — applied after the
+    // default-fill above so a deliberate choice always wins over it.
+    if (dto.filterValues?.length) {
+      await Promise.all(
+        dto.filterValues.map((fv) =>
+          this.prisma.productFilterValue.upsert({
+            where: { productId_filterId: { productId: id, filterId: fv.filterId } },
+            create: { productId: id, filterId: fv.filterId, valueId: fv.valueId },
+            update: { valueId: fv.valueId },
+          }),
+        ),
+      );
     }
 
     const fresh = await this.prisma.product.findUniqueOrThrow({

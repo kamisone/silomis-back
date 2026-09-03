@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AssetUrlService } from '../../asset-url/asset-url.service';
 import { slugify } from '../../common/utils/slug.util';
@@ -64,10 +64,34 @@ export class CategoriesService {
     return category;
   }
 
+  /**
+   * The slider needs two real, ordered endpoints to be a slider at all — so
+   * whenever the price filter ends up on, both bounds must be present and
+   * min below max. Skipped entirely when nothing about the price filter was
+   * touched in this request: a category saved from before this pair existed
+   * can still have `showPriceFilter: true` with no bounds set, and an
+   * unrelated edit (renaming it, say) shouldn't start failing because of a
+   * setting the admin isn't even looking at right now.
+   */
+  private assertValidPriceFilterBounds(showPriceFilter: boolean, minCents: number | null | undefined, maxCents: number | null | undefined): void {
+    if (!showPriceFilter) return;
+    if (minCents == null || maxCents == null) {
+      throw new BadRequestException('Set a minimum and maximum price before turning the price filter on.');
+    }
+    if (minCents >= maxCents) {
+      throw new BadRequestException("The price filter's minimum must be less than its maximum.");
+    }
+  }
+
   async create(dto: CreateCategoryDto): Promise<ProductCategory> {
     const slug = dto.slug ? slugify(dto.slug) : slugify(dto.name);
     await this.assertSlugFree(slug);
     if (dto.parentId) await this.findOne(dto.parentId);
+
+    // Off by default for a brand-new category — on requires bounds, and a
+    // category that doesn't exist yet has none to default to.
+    const showPriceFilter = dto.showPriceFilter ?? false;
+    this.assertValidPriceFilterBounds(showPriceFilter, dto.priceFilterMinCents, dto.priceFilterMaxCents);
 
     return this.prisma.productCategory.create({
       data: {
@@ -81,12 +105,15 @@ export class CategoriesService {
         parentId: dto.parentId ?? null,
         sortOrder: dto.sortOrder ?? 0,
         isActive: dto.isActive ?? true,
+        showPriceFilter,
+        priceFilterMinCents: dto.priceFilterMinCents ?? null,
+        priceFilterMaxCents: dto.priceFilterMaxCents ?? null,
       },
     });
   }
 
   async update(id: string, dto: UpdateCategoryDto): Promise<ProductCategory> {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
     if (dto.parentId === id) throw new ConflictException('A category cannot be its own parent');
     if (dto.parentId) await this.findOne(dto.parentId);
 
@@ -94,6 +121,14 @@ export class CategoriesService {
     if (dto.slug !== undefined) {
       slug = slugify(dto.slug);
       await this.assertSlugFree(slug, id);
+    }
+
+    const priceFilterTouched = dto.showPriceFilter !== undefined || dto.priceFilterMinCents !== undefined || dto.priceFilterMaxCents !== undefined;
+    if (priceFilterTouched) {
+      const effectiveShowPriceFilter = dto.showPriceFilter !== undefined ? dto.showPriceFilter : existing.showPriceFilter;
+      const effectiveMin = dto.priceFilterMinCents !== undefined ? dto.priceFilterMinCents : existing.priceFilterMinCents;
+      const effectiveMax = dto.priceFilterMaxCents !== undefined ? dto.priceFilterMaxCents : existing.priceFilterMaxCents;
+      this.assertValidPriceFilterBounds(effectiveShowPriceFilter, effectiveMin, effectiveMax);
     }
 
     return this.prisma.productCategory.update({
@@ -109,6 +144,9 @@ export class CategoriesService {
         parentId: dto.parentId,
         sortOrder: dto.sortOrder,
         isActive: dto.isActive,
+        showPriceFilter: dto.showPriceFilter,
+        priceFilterMinCents: dto.priceFilterMinCents,
+        priceFilterMaxCents: dto.priceFilterMaxCents,
       },
     });
   }

@@ -168,7 +168,16 @@ export const CreateProductSchema = z.object({
 export type CreateProductDto = z.infer<typeof CreateProductSchema>;
 
 export const UpdateProductSchema = CreateProductSchema.omit({ initialStock: true })
-  .extend({ status: z.enum(['draft', 'active', 'archived', 'hidden']).optional() })
+  .extend({
+    status: z.enum(['draft', 'active', 'archived', 'hidden']).optional(),
+    /**
+     * Explicit overrides for this product's category filter values — the
+     * admin picking something other than a filter's default on the product
+     * edit page. Sent whole (not diffed): every entry here is upserted,
+     * winning over whatever a category-link default already set.
+     */
+    filterValues: z.array(z.object({ filterId: z.string().uuid(), valueId: z.string().uuid() })).optional(),
+  })
   .partial();
 export type UpdateProductDto = z.infer<typeof UpdateProductSchema>;
 
@@ -222,6 +231,11 @@ export interface ProductListFilter {
    * price, falling back to basePriceCents) — inclusive, in cents. */
   minPriceCents?: number;
   maxPriceCents?: number;
+  /** CategoryFilterValue ids from the storefront's category filter sidebar.
+   * Grouped by which CategoryFilter each belongs to: any value within one
+   * filter matches (OR), every filter with a selection must match (AND) —
+   * standard faceted-filter semantics. */
+  filterValueIds?: string[];
   sort?: ProductSort;
   limit?: number;
   offset?: number;

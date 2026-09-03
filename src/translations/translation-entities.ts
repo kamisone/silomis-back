@@ -18,3 +18,5 @@ export const ET_SHOP_PRODUCT = 'shop_product';
 export const ET_SHOP_VARIANT_ATTR = 'shop_variant_attribute';
 export const ET_SHOP_VARIATION_OPTION = 'shop_variation_option';
 export const ET_SHOP_CATEGORY = 'shop_product_category';
+export const ET_SHOP_CATEGORY_FILTER = 'shop_category_filter';
+export const ET_SHOP_CATEGORY_FILTER_VALUE = 'shop_category_filter_value';
