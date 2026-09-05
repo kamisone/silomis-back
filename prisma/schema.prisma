@@ -1471,6 +1471,7 @@ enum HomeSectionType {
   section_heading
   separator
   seo_text
+  faqs
 }
 
 model CollectionProduct {
