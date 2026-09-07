@@ -60,7 +60,9 @@ export const ProductStoryItemSchema = z.object({
   altText: z.string().max(500).nullish(),
   aspectRatio: z.enum(['1:1', '16:9', '9:16']).optional(),
   title: z.string().max(300).optional(),
-  description: z.string().max(5000).optional(),
+  /** Rich text (HTML) from the admin's WYSIWYG — the cap is generous because
+   *  the markup is bulk on top of the copy. */
+  description: z.string().max(20000).optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
 });

@@ -166,6 +166,13 @@ export class TranslationService {
   }
 
   /** One card, one click: translates a single story-gallery block (title + description). */
+  /**
+   * The description is rich text (the admin writes it in the WYSIWYG), so it
+   * goes through `translateHtml` — which walks the text nodes and leaves the
+   * markup alone. Sending it through `translateText` would hand the raw
+   * `<p><strong>…` to the translator as a sentence and get the tags back
+   * mangled or dropped.
+   */
   async translateStoryItem(item: {
     title: string;
     description: string;
@@ -176,7 +183,7 @@ export class TranslationService {
       'story_item',
       async (lang) => ({
         title: await this.freeTranslate.translateText(item.title, lang),
-        description: await this.freeTranslate.translateText(
+        description: await this.freeTranslate.translateHtml(
           item.description,
           lang,
         ),

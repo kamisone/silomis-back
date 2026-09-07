@@ -25,7 +25,7 @@ const TranslateShortTextSchema = z.object({ text: z.string().min(1).max(2000) })
 const TranslateHtmlSchema = z.object({ html: z.string().min(1) });
 const TranslateInfoSectionSchema = z.object({ label: z.string().min(1).max(200), value: z.string().min(1).max(5000) });
 const TranslateFaqSchema = z.object({ question: z.string().min(1).max(300), answer: z.string().min(1).max(5000) });
-const TranslateStoryItemSchema = z.object({ title: z.string().min(1).max(300), description: z.string().min(1).max(5000) });
+const TranslateStoryItemSchema = z.object({ title: z.string().min(1).max(300), description: z.string().min(1).max(20000) });
 const TranslateTrustBadgeSchema = z.object({ title: z.string().min(1).max(200), subtitle: z.string().max(300) });
 const TranslateSocialVideoSchema = z.object({ text: z.string().min(1).max(60) });
 
