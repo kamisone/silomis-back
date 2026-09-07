@@ -1952,8 +1952,12 @@ model ShippingMethod {
   /// admin-facing display name. NULL = no carrier filter (all networks).
   carrierCode String? @db.VarChar(60)
 
-  /// Countries this specific method serves, narrowing its zone. Empty = the
-  /// whole zone, which is how every pre-existing method behaves.
+  /// DEAD — nothing reads or writes this. Countries belong to the zone: a
+  /// destination resolves to a zone and every method in it inherits that
+  /// reach, so a method serving less than its zone belongs in its own zone.
+  /// Kept only so the column is dropped by a deliberate migration rather than
+  /// as a side effect of this change; safe to remove once you are sure no
+  /// saved value is still wanted.
   supportedCountryCodes String[] @default([])
 
   freeShippingProducts Product[] @relation("ProductFreeShippingMethods")

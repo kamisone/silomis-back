@@ -19,6 +19,7 @@ export const MONDIAL_RELAY_METHOD_CODE = 'mondial_relay';
  * so this is a safe default to widen, not an authoritative list.
  */
 const MONDIAL_RELAY_DEFAULT_COUNTRIES = ['FR', 'BE', 'LU', 'ES', 'PT', 'NL'];
+const MONDIAL_RELAY_ZONE_NAME = 'Mondial Relay network';
 
 export interface QuotedMethod {
   id: string;
@@ -111,12 +112,12 @@ export class ShippingService implements OnModuleInit {
       return;
     }
 
-    // Attach to the worldwide fallback when present, else any active zone —
-    // supportedCountryCodes is what actually scopes this method, not the zone.
-    const zone =
-      (await this.prisma.shippingZone.findFirst({ where: { isActive: true, countryCodes: { equals: [] } } })) ??
-      (await this.prisma.shippingZone.findFirst({ where: { isActive: true } }));
-    if (!zone) return;
+    // The zone owns the destination list, so this method has to live in one
+    // that covers the relay network and nothing wider — on a worldwide
+    // fallback zone it would be offered to every country on earth. Reuse a
+    // zone that already covers all six; otherwise make one, inactive, so
+    // nothing about quoting changes until an admin switches it on.
+    const zone = (await this.findZoneCovering(MONDIAL_RELAY_DEFAULT_COUNTRIES)) ?? (await this.createMondialRelayZone());
 
     await this.prisma.shippingMethod.create({
       data: {
@@ -135,10 +136,30 @@ export class ShippingService implements OnModuleInit {
         sortOrder: 10,
         requiresProductOptIn: true,
         requiresPickupPoint: true,
-        supportedCountryCodes: MONDIAL_RELAY_DEFAULT_COUNTRIES,
       },
     });
-    this.logger.log(`Seeded shipping method "${MONDIAL_RELAY_METHOD_CODE}" (inactive — enable it in Shop → Shipping)`);
+    this.logger.log(`Seeded shipping method "${MONDIAL_RELAY_METHOD_CODE}" in zone "${zone.name}" (both inactive — enable them in Shop → Shipping)`);
+  }
+
+  /** An active zone whose country list contains every one of `countries`. */
+  private async findZoneCovering(countries: string[]): Promise<ShippingZone | null> {
+    return this.prisma.shippingZone.findFirst({ where: { isActive: true, countryCodes: { hasEvery: countries } } });
+  }
+
+  private async createMondialRelayZone(): Promise<ShippingZone> {
+    const existing = await this.prisma.shippingZone.findFirst({ where: { name: MONDIAL_RELAY_ZONE_NAME } });
+    if (existing) return existing;
+    return this.prisma.shippingZone.create({
+      data: {
+        name: MONDIAL_RELAY_ZONE_NAME,
+        countryCodes: MONDIAL_RELAY_DEFAULT_COUNTRIES,
+        // Inactive: an active zone claims its countries away from whatever
+        // zone serves them today, which would change live quoting the moment
+        // this code deploys.
+        isActive: false,
+        estimatedDeliveryDays: '3-5 business days',
+      },
+    });
   }
 
   // ── Quoting ──────────────────────────────────────────────────────────────
@@ -154,7 +175,7 @@ export class ShippingService implements OnModuleInit {
     if (!zone) return { zone: null, methods: [] };
 
     const allMethods = await this.prisma.shippingMethod.findMany({ where: { zoneId: zone.id, isActive: true }, orderBy: { sortOrder: 'asc' } });
-    const eligible = await this.filterEligible(allMethods, countryCode, opts.productIds ?? []);
+    const eligible = await this.filterEligible(allMethods, opts.productIds ?? []);
     const translated = (await this.translations.maybeApply(eligible, ET_SHIPPING_METHOD, lang)) as ShippingMethod[];
     const localZone = (await this.translations.maybeApplyOne(zone, ET_SHIPPING_ZONE, lang)) as ShippingZone;
 
@@ -166,37 +187,35 @@ export class ShippingService implements OnModuleInit {
   }
 
   /**
-   * Narrows a zone's methods to those actually offerable for this destination
-   * and this basket. Two independent gates, both fail-closed:
+   * Narrows a zone's methods to those actually offerable for this basket.
    *
-   * - `supportedCountryCodes` narrows a method below its zone (a carrier may
-   *   serve only part of a zone). Empty means "the whole zone", which is how
-   *   every method behaved before the column existed.
-   * - `requiresProductOptIn` enforces the all-or-nothing product rule: the
-   *   method is offered only if every distinct product being shipped is linked
-   *   to it. One product without the link removes the method for the whole
-   *   basket, and an unknown basket removes it too.
+   * Destination is not a question here: the zone owns the country list, and
+   * the caller has already resolved the destination to a zone, so every method
+   * reaching this point serves the customer's country by definition. A method
+   * that covers only part of a zone belongs in a zone of its own.
    *
-   * Quantities are irrelevant here — eligibility is a property of the product,
-   * so ten units of an opted-in product is still one opted-in product. Callers
+   * `requiresProductOptIn` enforces the all-or-nothing product rule, and it
+   * fails closed: the method is offered only if every distinct product being
+   * shipped is linked to it. One product without the link removes the method
+   * for the whole basket, and an unknown basket removes it too.
+   *
+   * Quantities are irrelevant — eligibility is a property of the product, so
+   * ten units of an opted-in product is still one opted-in product. Callers
    * pass distinct product ids.
    */
-  private async filterEligible(methods: ShippingMethod[], countryCode: string, productIds: string[]): Promise<ShippingMethod[]> {
-    const country = countryCode.toUpperCase();
-    const servesCountry = methods.filter((m) => m.supportedCountryCodes.length === 0 || m.supportedCountryCodes.includes(country));
-
-    const optIn = servesCountry.filter((m) => m.requiresProductOptIn);
-    if (!optIn.length) return servesCountry;
+  private async filterEligible(methods: ShippingMethod[], productIds: string[]): Promise<ShippingMethod[]> {
+    const optIn = methods.filter((m) => m.requiresProductOptIn);
+    if (!optIn.length) return methods;
 
     // No basket context: an opt-in method can't be proven eligible, so it is
     // not offered. Applies to the public quote endpoint, which has no cart.
-    if (!productIds.length) return servesCountry.filter((m) => !m.requiresProductOptIn);
+    if (!productIds.length) return methods.filter((m) => !m.requiresProductOptIn);
 
     const allowedIds = await this.methodIdsEveryProductAllows(
       optIn.map((m) => m.id),
       productIds,
     );
-    return servesCountry.filter((m) => !m.requiresProductOptIn || allowedIds.has(m.id));
+    return methods.filter((m) => !m.requiresProductOptIn || allowedIds.has(m.id));
   }
 
   /**

@@ -49,8 +49,6 @@ export const UpsertMethodSchema = z.object({
     .transform((v) => v || null)
     .refine((v) => v === null || /^[a-z0-9_]+$/.test(v), 'Use lower-case letters, digits and underscores only')
     .nullish(),
-  /** Narrows the method below its zone. Empty = the whole zone. */
-  supportedCountryCodes: z.array(z.string().length(2).toUpperCase()).optional(),
 });
 export type UpsertMethodDto = z.infer<typeof UpsertMethodSchema>;
 

@@ -18,7 +18,6 @@ interface MethodRow {
   name: string;
   requiresProductOptIn: boolean;
   requiresPickupPoint: boolean;
-  supportedCountryCodes: string[];
   availableForFreeShipping: boolean;
   estimatedDaysMin: number;
   estimatedDaysMax: number;
@@ -32,7 +31,6 @@ function method(overrides: Partial<MethodRow> & Pick<MethodRow, 'id'>): MethodRo
     name: overrides.id,
     requiresProductOptIn: false,
     requiresPickupPoint: false,
-    supportedCountryCodes: [],
     availableForFreeShipping: false,
     estimatedDaysMin: 2,
     estimatedDaysMax: 5,
@@ -92,22 +90,16 @@ const quotedIds = async (svc: ShippingService, country: string, productIds?: str
   (await svc.getMethodsForCountry(country, 1000, undefined, { productIds })).methods.map((m) => m.id);
 
 describe('ShippingService — method eligibility', () => {
-  describe('country narrowing', () => {
-    it('offers a method with no country list anywhere in its zone', async () => {
-      const svc = buildService([method({ id: 'standard' })]);
-      await expect(quotedIds(svc, 'MA')).resolves.toEqual(['standard']);
-    });
-
-    it('offers a country-scoped method only inside its list', async () => {
-      const svc = buildService([method({ id: 'standard' }), method({ id: 'relay', supportedCountryCodes: ['FR', 'BE'] })]);
+  describe('destination', () => {
+    // The zone owns the country list. By the time these methods are in hand
+    // the destination has already been resolved to their zone, so every one of
+    // them serves it — a method that should not reach a country belongs in a
+    // different zone, not behind a second filter.
+    it('offers every method in the resolved zone, whatever the country', async () => {
+      const svc = buildService([method({ id: 'standard' }), method({ id: 'relay' })]);
 
       await expect(quotedIds(svc, 'FR')).resolves.toEqual(['standard', 'relay']);
-      await expect(quotedIds(svc, 'MA')).resolves.toEqual(['standard']);
-    });
-
-    it('matches the country case-insensitively', async () => {
-      const svc = buildService([method({ id: 'relay', supportedCountryCodes: ['FR'] })]);
-      await expect(quotedIds(svc, 'fr')).resolves.toEqual(['relay']);
+      await expect(quotedIds(svc, 'MA')).resolves.toEqual(['standard', 'relay']);
     });
   });
 
@@ -148,9 +140,9 @@ describe('ShippingService — method eligibility', () => {
       await expect(quotedIds(svc, 'FR', ['p1', 'p2', 'p3'])).resolves.toEqual(['standard']);
     });
 
-    it('applies both gates together — opted in, but the wrong country', async () => {
-      const svc = buildService([method({ id: 'relay', requiresProductOptIn: true, supportedCountryCodes: ['FR'], optedInProductIds: ['p1'] })]);
-      await expect(quotedIds(svc, 'ES', ['p1'])).resolves.toEqual([]);
+    it('offers an opted-in method anywhere its zone reaches', async () => {
+      const svc = buildService([method({ id: 'relay', requiresProductOptIn: true, optedInProductIds: ['p1'] })]);
+      await expect(quotedIds(svc, 'ES', ['p1'])).resolves.toEqual(['relay']);
     });
   });
 
