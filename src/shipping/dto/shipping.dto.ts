@@ -28,6 +28,9 @@ export const UpsertMethodSchema = z.object({
     .refine((v) => v === null || /^[a-z0-9_]+$/.test(v), 'Use lower-case letters, digits and underscores only')
     .nullish(),
   name: z.string().min(1).max(200),
+  /** Shown under the method's name at checkout — "Delivered to a pickup point
+   *  of your choice". Translated like the name; see ET_SHIPPING_METHOD. */
+  description: z.string().max(2000).nullish(),
   carrier: z.string().max(200).nullish(),
   priceCents: z.number().int().min(0),
   freeAboveCents: z.number().int().min(0).nullish(),

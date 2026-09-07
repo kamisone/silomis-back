@@ -19,6 +19,9 @@ interface MethodRow {
   requiresProductOptIn: boolean;
   requiresPickupPoint: boolean;
   supportedCountryCodes: string[];
+  availableForFreeShipping: boolean;
+  estimatedDaysMin: number;
+  estimatedDaysMax: number;
   /** Products opted into this method, used to fake Prisma's relation _count. */
   optedInProductIds: string[];
 }
@@ -30,6 +33,9 @@ function method(overrides: Partial<MethodRow> & Pick<MethodRow, 'id'>): MethodRo
     requiresProductOptIn: false,
     requiresPickupPoint: false,
     supportedCountryCodes: [],
+    availableForFreeShipping: false,
+    estimatedDaysMin: 2,
+    estimatedDaysMax: 5,
     optedInProductIds: [],
     ...overrides,
   };
@@ -46,9 +52,6 @@ function buildService(methods: MethodRow[]): ShippingService {
     carrier: null,
     priceCents: 500,
     freeAboveCents: null,
-    estimatedDaysMin: 2,
-    estimatedDaysMax: 5,
-    availableForFreeShipping: false,
   }));
 
   const prisma = {
@@ -78,7 +81,10 @@ function buildService(methods: MethodRow[]): ShippingService {
     },
   } as unknown as PrismaService;
 
-  const translations = { maybeApply: (rowsIn: unknown[]) => Promise.resolve(rowsIn) } as unknown as TranslationsService;
+  const translations = {
+    maybeApply: (rowsIn: unknown[]) => Promise.resolve(rowsIn),
+    maybeApplyOne: (row: unknown) => Promise.resolve(row),
+  } as unknown as TranslationsService;
   return new ShippingService(prisma, translations);
 }
 
@@ -168,6 +174,39 @@ describe('ShippingService — method eligibility', () => {
       const { methods } = await svc.getMethodsForCountry('FR', 1000, undefined, { forceFree: true });
 
       expect(methods[0]).toMatchObject({ name: 'Free shipping', requiresPickupPoint: false, code: null });
+    });
+  });
+
+  describe('free-shipping delivery window', () => {
+    it('borrows the window of the zone\'s ordinary method, not an upgrade', async () => {
+      const svc = buildService([
+        method({ id: 'express', availableForFreeShipping: true, estimatedDaysMin: 1, estimatedDaysMax: 2 }),
+        method({ id: 'standard', estimatedDaysMin: 3, estimatedDaysMax: 7 }),
+      ]);
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, undefined, { forceFree: true, upgradeMethodIds: ['express'] });
+
+      expect(methods[0]).toMatchObject({ name: 'Free shipping', estimatedDaysMin: 3, estimatedDaysMax: 7 });
+    });
+
+    it('falls back to the slowest method when every method is flagged for free shipping', async () => {
+      // A misconfigured zone. Free delivery must still never be advertised as
+      // arriving sooner than the upgrade being sold beside it.
+      // The slowest method is deliberately *not* last in the list: taking the
+      // last one would pass on a shorter window and hide the regression.
+      const svc = buildService([
+        method({ id: 'priority', availableForFreeShipping: true, estimatedDaysMin: 2, estimatedDaysMax: 4 }),
+        method({ id: 'express', availableForFreeShipping: true, estimatedDaysMin: 1, estimatedDaysMax: 2 }),
+      ]);
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, undefined, { forceFree: true, upgradeMethodIds: ['express'] });
+
+      expect(methods[0]).toMatchObject({ name: 'Free shipping', estimatedDaysMax: 4 });
+    });
+
+    it('prefers the days an admin set on the product', async () => {
+      const svc = buildService([method({ id: 'standard', estimatedDaysMin: 3, estimatedDaysMax: 7 })]);
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, undefined, { forceFree: true, freeDaysMin: 5, freeDaysMax: 9 });
+
+      expect(methods[0]).toMatchObject({ estimatedDaysMin: 5, estimatedDaysMax: 9 });
     });
   });
 });

@@ -24,3 +24,9 @@ export const ET_SHOP_CATEGORY_FILTER_VALUE = 'shop_category_filter_value';
  *  listing in one language, so without this a French shopper reads whatever
  *  language the listing happened to be in. */
 export const ET_SHOP_PRODUCT_REVIEW = 'shop_product_review';
+/** A zone's `name` and `estimatedDeliveryDays` — both shown to shoppers in the
+ *  product page's delivery panel, not just to the admin. */
+export const ET_SHIPPING_ZONE = 'shop_shipping_zone';
+/** A method's `name` and `description` — shown at checkout and in the same
+ *  delivery panel. */
+export const ET_SHIPPING_METHOD = 'shop_shipping_method';

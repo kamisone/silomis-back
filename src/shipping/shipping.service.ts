@@ -1,10 +1,10 @@
 import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TranslationsService } from '../translations/translations.service';
+import { ET_SHIPPING_METHOD, ET_SHIPPING_ZONE } from '../translations/translation-entities';
 import { UpdateMethodDto, UpdateZoneDto, UpsertMethodDto, UpsertZoneDto } from './dto/shipping.dto';
 import { ShippingMethod, ShippingZone } from '../../generated/prisma/client';
 
-const ET_SHIPPING_METHOD = 'shop_shipping_method';
 
 /** Synthetic id for the free-shipping option injected into a quote — not a real ShippingMethod row. */
 export const FREE_SHIPPING_METHOD_ID = '00000000-0000-0000-0000-000000000000';
@@ -156,12 +156,13 @@ export class ShippingService implements OnModuleInit {
     const allMethods = await this.prisma.shippingMethod.findMany({ where: { zoneId: zone.id, isActive: true }, orderBy: { sortOrder: 'asc' } });
     const eligible = await this.filterEligible(allMethods, countryCode, opts.productIds ?? []);
     const translated = (await this.translations.maybeApply(eligible, ET_SHIPPING_METHOD, lang)) as ShippingMethod[];
+    const localZone = (await this.translations.maybeApplyOne(zone, ET_SHIPPING_ZONE, lang)) as ShippingZone;
 
     if (opts.forceFree) {
-      return { zone, methods: this.buildFreeShippingOptions(zone, translated, cartTotalCents, opts) };
+      return { zone: localZone, methods: this.buildFreeShippingOptions(localZone, translated, cartTotalCents, opts) };
     }
 
-    return { zone, methods: this.applyZonePricing(zone, translated, cartTotalCents) };
+    return { zone: localZone, methods: this.applyZonePricing(localZone, translated, cartTotalCents) };
   }
 
   /**
@@ -245,7 +246,12 @@ export class ShippingService implements OnModuleInit {
   private buildFreeShippingOptions(zone: ShippingZone, methods: ShippingMethod[], cartTotalCents: number, opts: FreeShippingOptions): QuotedMethod[] {
     const upgrades = methods.filter((m) => m.availableForFreeShipping && opts.upgradeMethodIds?.includes(m.id));
     const nonUpgrade = methods.filter((m) => !m.availableForFreeShipping);
-    const source = nonUpgrade[0] ?? methods[methods.length - 1] ?? null;
+    // Whose delivery window the free option borrows. Normally the zone's first
+    // ordinary method. If every method in the zone is flagged "used for free
+    // shipping" — a misconfiguration — fall back to the *slowest* one rather
+    // than whichever happened to sort last: free delivery must never be
+    // advertised as arriving sooner than the upgrade being sold beside it.
+    const source = nonUpgrade[0] ?? [...methods].sort((x, y) => y.estimatedDaysMax - x.estimatedDaysMax)[0] ?? null;
 
     const freeOption: QuotedMethod = {
       id: FREE_SHIPPING_METHOD_ID,
@@ -289,7 +295,7 @@ export class ShippingService implements OnModuleInit {
     for (const zone of zones) {
       const methods = await this.prisma.shippingMethod.findMany({ where: { zoneId: zone.id, isActive: true, availableForFreeShipping: false }, orderBy: { sortOrder: 'asc' } });
       const translated = (await this.translations.maybeApply(methods, ET_SHIPPING_METHOD, lang)) as ShippingMethod[];
-      out.push({ zone, methods: translated });
+      out.push({ zone: (await this.translations.maybeApplyOne(zone, ET_SHIPPING_ZONE, lang)) as ShippingZone, methods: translated });
     }
     return out;
   }
@@ -311,7 +317,14 @@ export class ShippingService implements OnModuleInit {
 
   async deleteZone(id: string): Promise<void> {
     await this.assertZoneExists(id);
+    // The methods go with the zone (onDelete: Cascade), so their translation
+    // rows have to go too — nothing else would ever reach them again.
+    const methods = await this.prisma.shippingMethod.findMany({ where: { zoneId: id }, select: { id: true } });
     await this.prisma.shippingZone.delete({ where: { id } });
+    await this.translations.deleteForEntity(ET_SHIPPING_ZONE, id);
+    for (const method of methods) {
+      await this.translations.deleteForEntity(ET_SHIPPING_METHOD, method.id);
+    }
   }
 
   private async assertZoneExists(id: string): Promise<void> {
@@ -358,6 +371,7 @@ export class ShippingService implements OnModuleInit {
   async deleteMethod(id: string): Promise<void> {
     await this.assertMethodExists(id);
     await this.prisma.shippingMethod.delete({ where: { id } });
+    await this.translations.deleteForEntity(ET_SHIPPING_METHOD, id);
   }
 
   private async assertMethodExists(id: string): Promise<void> {
