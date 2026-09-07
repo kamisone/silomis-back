@@ -512,12 +512,34 @@ export class CheckoutService {
 
   // ── Get snapshot for an existing order ─────────────────────────────────
 
-  async getSnapshot(orderId: string): Promise<CheckoutSnapshot> {
+  /**
+   * `lang` is the language the checkout page is actually being read in, which
+   * is not necessarily the one the order was started in — a visitor can switch
+   * language mid-checkout.
+   *
+   * When it differs, the order's own locale is moved to match rather than the
+   * override being applied to this one response. Every later snapshot (the
+   * shipping PATCH, the pickup-point PUT) builds from the stored value, so a
+   * per-response override would flip the method names back to the old language
+   * the moment the customer picked one. It is also the locale the confirmation
+   * email and the invoice are written in, and the language the customer was
+   * last reading is the right one for those too.
+   *
+   * Only while the order is still being assembled — a completed order's locale
+   * is a record of how it was placed.
+   */
+  async getSnapshot(orderId: string, lang?: string): Promise<CheckoutSnapshot> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
     if (!order) throw new NotFoundException('Order not found');
-    return this.toSnapshot(order);
+
+    const editable = order.status === 'draft' || order.status === 'awaiting_payment';
+    if (lang && editable && lang !== order.customerLocale) {
+      await this.prisma.order.update({ where: { id: order.id }, data: { customerLocale: lang } });
+      order.customerLocale = lang;
+    }
+    return this.toSnapshot(order, lang);
   }
 
   // ── Coupon preview (checkout address step) ─────────────────────────────
@@ -668,7 +690,13 @@ export class CheckoutService {
     };
   }
 
-  private async toSnapshot(order: Order): Promise<CheckoutSnapshot> {
+  /**
+   * `lang` overrides the locale stored on the order. The order's locale is set
+   * when the address step is submitted and does not follow a visitor who
+   * switches language afterwards, so a caller that knows which language the
+   * page is actually being read in says so.
+   */
+  private async toSnapshot(order: Order, lang?: string): Promise<CheckoutSnapshot> {
     const address = order.shippingAddressSnapshot as {
       country?: string;
     } | null;
@@ -683,7 +711,7 @@ export class CheckoutService {
       ? await this.shipping.getMethodsForCountry(
           country,
           order.subtotalCents,
-          order.customerLocale,
+          lang ?? order.customerLocale,
           {
             forceFree: ctx.freeShipping,
             upgradeMethodIds: ctx.upgradeMethodIds,

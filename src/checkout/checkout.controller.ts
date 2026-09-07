@@ -101,8 +101,11 @@ export class CheckoutController {
 
   /** Returns the current checkout snapshot — used on page reload / resume. */
   @Get(':orderId')
-  getSnapshot(@Param('orderId', ParseUUIDPipe) orderId: string) {
-    return this.checkoutService.getSnapshot(orderId);
+  getSnapshot(
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Query('lang') lang?: string,
+  ) {
+    return this.checkoutService.getSnapshot(orderId, lang);
   }
 
   /** Selects a shipping method for the order — editable while draft or awaiting_payment. */

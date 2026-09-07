@@ -43,7 +43,7 @@ function method(overrides: Partial<MethodRow> & Pick<MethodRow, 'id'>): MethodRo
  * Fakes only what the quoting path touches: the zone lookup, the method list,
  * and the grouped opt-in count. Keeps the rules under test rather than Prisma.
  */
-function buildService(methods: MethodRow[]): ShippingService {
+function buildService(methods: MethodRow[], overlay: Record<string, Record<string, Record<string, string>>> = {}): ShippingService {
   const rows = methods.map((m) => ({
     ...m,
     description: null,
@@ -79,8 +79,12 @@ function buildService(methods: MethodRow[]): ShippingService {
     },
   } as unknown as PrismaService;
 
+  // Stands in for the translations table: `overlay` is what it holds for the
+  // requested language, keyed by entity id. A pass-through stub would let a
+  // quote that drops the translated name pass unnoticed.
   const translations = {
-    maybeApply: (rowsIn: unknown[]) => Promise.resolve(rowsIn),
+    maybeApply: (rowsIn: Array<{ id: string }>, _entityType: string, lang?: string) =>
+      Promise.resolve(lang ? rowsIn.map((r) => ({ ...r, ...(overlay[lang]?.[r.id] ?? {}) })) : rowsIn),
     maybeApplyOne: (row: unknown) => Promise.resolve(row),
   } as unknown as TranslationsService;
   return new ShippingService(prisma, translations);
@@ -143,6 +147,36 @@ describe('ShippingService — method eligibility', () => {
     it('offers an opted-in method anywhere its zone reaches', async () => {
       const svc = buildService([method({ id: 'relay', requiresProductOptIn: true, optedInProductIds: ['p1'] })]);
       await expect(quotedIds(svc, 'ES', ['p1'])).resolves.toEqual(['relay']);
+    });
+  });
+
+  describe('language', () => {
+    const overlay = { fr: { standard: { name: 'Livraison standard' } } };
+
+    it('quotes the method name in the requested language', async () => {
+      const svc = buildService([method({ id: 'standard', name: 'Standard Shipping' })], overlay);
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, 'fr');
+
+      expect(methods[0].name).toBe('Livraison standard');
+    });
+
+    it('falls back to the base name when that language has no translation', async () => {
+      const svc = buildService([method({ id: 'standard', name: 'Standard Shipping' })], overlay);
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, 'es');
+
+      expect(methods[0].name).toBe('Standard Shipping');
+    });
+
+    it('translates the paid upgrades offered beside free shipping too', async () => {
+      // A different code path builds these — it took the untranslated rows
+      // once, so the free-shipping order was the one place still in English.
+      const svc = buildService(
+        [method({ id: 'standard', name: 'Standard Shipping' }), method({ id: 'express', name: 'Express', availableForFreeShipping: true })],
+        { fr: { express: { name: 'Express — livraison rapide' } } },
+      );
+      const { methods } = await svc.getMethodsForCountry('FR', 1000, 'fr', { forceFree: true, upgradeMethodIds: ['express'] });
+
+      expect(methods.map((m) => m.name)).toEqual(['Free shipping', 'Express — livraison rapide']);
     });
   });
 
