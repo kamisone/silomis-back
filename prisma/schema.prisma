@@ -1472,6 +1472,9 @@ enum HomeSectionType {
   separator
   seo_text
   faqs
+  /// Hand-written customer quotes the admin curates — not the product review
+  /// system, which is shopper-submitted and lives on a product.
+  testimonials
 }
 
 model CollectionProduct {

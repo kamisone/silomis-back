@@ -15,6 +15,7 @@ export const HOME_SECTION_TYPES = [
   'separator',
   'seo_text',
   'faqs',
+  'testimonials',
 ] as const;
 
 export const HomeSectionTypeSchema = z.enum(HOME_SECTION_TYPES);
