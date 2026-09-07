@@ -20,3 +20,7 @@ export const ET_SHOP_VARIATION_OPTION = 'shop_variation_option';
 export const ET_SHOP_CATEGORY = 'shop_product_category';
 export const ET_SHOP_CATEGORY_FILTER = 'shop_category_filter';
 export const ET_SHOP_CATEGORY_FILTER_VALUE = 'shop_category_filter_value';
+/** A review's `title` and `body`. Imported reviews are copied from a supplier
+ *  listing in one language, so without this a French shopper reads whatever
+ *  language the listing happened to be in. */
+export const ET_SHOP_PRODUCT_REVIEW = 'shop_product_review';

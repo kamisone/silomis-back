@@ -28,8 +28,13 @@ export class ReviewsPublicController {
   }
 
   @Get('product/:productId')
-  listForProduct(@Param('productId') productId: string, @Query('limit') limit?: string, @Query('offset') offset?: string) {
-    return this.reviews.listForProduct(productId, limit ? parseInt(limit, 10) : undefined, offset ? parseInt(offset, 10) : undefined);
+  listForProduct(
+    @Param('productId') productId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('lang') lang?: string,
+  ) {
+    return this.reviews.listForProduct(productId, limit ? parseInt(limit, 10) : undefined, offset ? parseInt(offset, 10) : undefined, lang);
   }
 
   @Get('product/:productId/stats')

@@ -5,6 +5,8 @@ import { OrdersService } from '../orders/orders.service';
 import { GcsService } from '../gcs/gcs.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { AntiSpamService } from '../common/anti-spam/anti-spam.service';
+import { TranslationsService } from '../translations/translations.service';
+import { ET_SHOP_PRODUCT_REVIEW } from '../translations/translation-entities';
 import { SubmitReviewDto, ModerateReviewDto, AdminCreateReviewDto, AdminUpdateReviewDto } from './dto/review.dto';
 import { Prisma, ReviewStatus } from '../../generated/prisma/client';
 
@@ -32,6 +34,7 @@ export class ReviewsService {
     private readonly gcs: GcsService,
     private readonly assetUrls: AssetUrlService,
     private readonly antiSpam: AntiSpamService,
+    private readonly translations: TranslationsService,
   ) {}
 
   // ── Verify order (pre-check before showing the write-review form) ──────────
@@ -209,7 +212,7 @@ export class ReviewsService {
 
   // ── Public reads ─────────────────────────────────────────────────────────
 
-  async listForProduct(productId: string, limit = 20, offset = 0) {
+  async listForProduct(productId: string, limit = 20, offset = 0, lang?: string) {
     const where = { productId, status: 'approved' as ReviewStatus };
     const [items, total] = await Promise.all([
       this.prisma.productReview.findMany({
@@ -222,7 +225,11 @@ export class ReviewsService {
       this.prisma.productReview.count({ where }),
     ]);
     const withMedia = await Promise.all(items.map(async (r) => ({ ...r, media: await this.resolveMedia(r.media as unknown as ReviewMediaItem[]) })));
-    return { items: withMedia, total };
+    // An imported review is copied from a supplier listing in whatever language
+    // that listing was written in, so the base row is not necessarily the
+    // shopper's — the overlay is what makes the wall of reviews readable.
+    const translated = await this.translations.maybeApply(withMedia, ET_SHOP_PRODUCT_REVIEW, lang);
+    return { items: translated, total };
   }
 
   async getStats(productId: string) {
