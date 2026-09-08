@@ -518,7 +518,29 @@ export class ProductsService {
         include: {
           categories: true,
           tags: true,
-          variants: { include: { inventoryItem: true } },
+          variants: {
+            include: {
+              inventoryItem: true,
+              // The card's own variation picker needs these. Selected down to
+              // the fields it renders rather than `include`d whole: this runs
+              // for every product on a listing page, and a full attribute +
+              // option-value row per option would multiply the payload for
+              // columns (slug, isActive, priceAdjustmentCents, timestamps)
+              // nothing on a card reads.
+              options: {
+                select: {
+                  attributeId: true,
+                  optionValueId: true,
+                  value: true,
+                  optionValue: {
+                    select: { id: true, value: true, displayValue: true, swatchValue: true, swatchType: true, sortOrder: true },
+                  },
+                  attribute: { select: { id: true, name: true, displayType: true, sortOrder: true } },
+                },
+              },
+            },
+            orderBy: { sortOrder: 'asc' },
+          },
         },
         orderBy,
         ...(resolvesInMemory ? { take: IN_MEMORY_SORT_CAP } : { take: limit, skip: offset }),
@@ -572,6 +594,7 @@ export class ProductsService {
     }
 
     const items = await this.translations.maybeApply(withUrls, ET_SHOP_PRODUCT, lang);
+    await this.resolveCardVariantOptionsInPlace(items as never, lang);
     // Admin-only reference links must never reach a public response.
     for (const p of items as unknown as Array<Record<string, unknown>>) delete p.privateLinks;
     return { items, total: matchedTotal };
@@ -726,6 +749,74 @@ export class ProductsService {
       if (!sorted.length) continue;
       variant.title = sorted.map((o) => ((o.optionValue?.displayValue as string) ?? o.value)).join(' / ');
     }
+  }
+
+  /**
+   * Batched counterpart of resolveOptionSwatchUrlsInPlace + variant media +
+   * option translations, for a whole page of listing cards.
+   *
+   * The per-product helpers each issue their own queries, which on a 24-card
+   * listing would be ~50 round trips. This does three, whatever the page size:
+   * one for the products' option-value images, one URL batch, and one
+   * translation pass over a synthetic product holding every card's variants.
+   *
+   * Image swatches are per-product — Product A's "Red" photo is not Product
+   * B's — so the image lookup is keyed by (productId, optionValueId), and the
+   * global `swatchValue` (a raw storage key for image types) is nulled out
+   * exactly as the product-detail path does.
+   */
+  private async resolveCardVariantOptionsInPlace(
+    products: Array<{
+      id: string;
+      variants?: Array<{
+        title: string | null;
+        featuredMediaKey?: string | null;
+        featuredMediaUrl?: string | null;
+        options?: Array<{
+          attributeId: string;
+          value: string;
+          optionValueId: string | null;
+          optionValue?: (OptionValueSwatch & Record<string, unknown>) | null;
+          attribute?: Record<string, unknown> | null;
+        }>;
+      }>;
+    }>,
+    lang?: string,
+  ): Promise<void> {
+    const allVariants = products.flatMap((p) => p.variants ?? []);
+    if (!allVariants.length) return;
+
+    const optionImages = await this.prisma.productOptionValueImage.findMany({
+      where: { productId: { in: products.map((p) => p.id) } },
+    });
+    const imageKeyFor = new Map(optionImages.map((oi) => [`${oi.productId}:${oi.optionValueId}`, oi.mediaKey]));
+
+    const variantMediaKeys = allVariants.map((v) => v.featuredMediaKey).filter((k): k is string => !!k);
+    const urlMap = await this.assetUrls.resolveBatch([...new Set([...imageKeyFor.values(), ...variantMediaKeys])]);
+
+    for (const product of products) {
+      for (const variant of product.variants ?? []) {
+        // The card swaps to this when its option is picked, so a colour that
+        // has its own photo shows that photo.
+        variant.featuredMediaUrl = variant.featuredMediaKey ? (urlMap.get(variant.featuredMediaKey) ?? null) : null;
+        delete variant.featuredMediaKey;
+
+        for (const option of variant.options ?? []) {
+          const ov = option.optionValue;
+          if (!ov) continue;
+          if (ov.swatchType === 'image') {
+            ov.swatchUrl = urlMap.get(imageKeyFor.get(`${product.id}:${ov.id}`) ?? '') ?? null;
+            ov.swatchValue = null;
+          } else {
+            ov.swatchUrl = null;
+          }
+        }
+      }
+    }
+
+    // One synthetic product carrying every card's variants, so the whole page
+    // costs the same two translation lookups a single product does.
+    await this.translateVariantOptionsInPlace({ variants: allVariants }, lang);
   }
 
   /**
