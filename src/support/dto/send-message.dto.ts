@@ -18,8 +18,6 @@ export const BootstrapSchema = z.object({
 export type BootstrapDto = z.infer<typeof BootstrapSchema>;
 
 export const UpdateSettingsSchema = z.object({
-  smsEnabled: z.boolean().optional(),
-  smsPhones: z.array(z.string().regex(/^\+?[0-9\s\-().]{7,20}$/)).optional(),
   smsCooldownMin: z.number().int().min(1).max(1440).optional(),
   inactiveCloseHours: z.number().int().min(1).max(8760).optional(),
 });

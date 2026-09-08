@@ -68,7 +68,7 @@ describe('CommerceNotificationService', () => {
         smsPhones: [],
         emailEnabled: true,
         emailAddresses: [],
-        events: ['payment_succeeded', 'payment_failed', 'order_cancelled'],
+        events: ['payment_succeeded', 'payment_failed', 'order_cancelled', 'support_message'],
       });
     });
 
@@ -151,6 +151,12 @@ describe('CommerceNotificationService', () => {
       expect(await service.resolveRecipients('order_cancelled')).toBeNull();
     });
 
+    it('lets a support message through by default — a customer is waiting on it', async () => {
+      const { service } = makeService();
+
+      expect(await service.resolveRecipients('support_message')).not.toBeNull();
+    });
+
     it('gates the new fulfilment and low-stock events off until they are ticked', async () => {
       const { service } = makeService();
 
@@ -162,5 +168,70 @@ describe('CommerceNotificationService', () => {
       expect(await service.resolveRecipients('order_shipped')).not.toBeNull();
       expect(await service.resolveRecipients('low_stock')).not.toBeNull();
     });
+  });
+});
+
+describe('CommerceNotificationService.onModuleInit backfill', () => {
+  function makeStore(settings: Record<string, string> = {}) {
+    const store = new Map(Object.entries(settings));
+    const prisma = {
+      platformSettings: {
+        findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
+          store.has(where.key) ? { key: where.key, value: store.get(where.key)! } : null,
+        ),
+        findMany: jest.fn(async ({ where }: { where: { key: { in: string[] } } }) =>
+          where.key.in.filter((k) => store.has(k)).map((k) => ({ key: k, value: store.get(k)! })),
+        ),
+        update: jest.fn(async ({ where, data }: { where: { key: string }; data: { value: string } }) => {
+          store.set(where.key, data.value);
+          return { key: where.key, value: data.value };
+        }),
+        upsert: jest.fn(async ({ where, create }: { where: { key: string }; create: { value: string } }) => {
+          store.set(where.key, create.value);
+          return { key: where.key, value: create.value };
+        }),
+      },
+      admin: { findMany: jest.fn(async () => []) },
+    };
+    const boot = async () => {
+      const service = new CommerceNotificationService(prisma as never, null as never, null as never, null as never);
+      await service.onModuleInit();
+      return service;
+    };
+    return { store, boot };
+  }
+
+  it('adds support_message to a selection saved before the event existed', async () => {
+    const { store, boot } = makeStore({ [ADMIN_NOTIF_KEYS.events]: 'payment_succeeded,order_cancelled' });
+
+    await boot();
+
+    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe('payment_succeeded,order_cancelled,support_message');
+  });
+
+  it('never re-adds it after the admin unticks it', async () => {
+    const { store, boot } = makeStore({ [ADMIN_NOTIF_KEYS.events]: 'payment_succeeded' });
+    await boot();
+    store.set(ADMIN_NOTIF_KEYS.events, 'payment_succeeded');
+
+    await boot();
+
+    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe('payment_succeeded');
+  });
+
+  it('leaves a deliberate "no events at all" alone', async () => {
+    const { store, boot } = makeStore({ [ADMIN_NOTIF_KEYS.events]: '' });
+
+    await boot();
+
+    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe('');
+  });
+
+  it('touches nothing on a fresh install, where the defaults already cover it', async () => {
+    const { store, boot } = makeStore();
+
+    await boot();
+
+    expect(store.has(ADMIN_NOTIF_KEYS.events)).toBe(false);
   });
 });

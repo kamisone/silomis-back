@@ -15,6 +15,14 @@ export const ADMIN_NOTIF_KEYS = {
   events: 'admin_notif_events',
 } as const;
 
+/**
+ * Marks the one-time backfill that added `support_message` to an events row
+ * written before that event existed. Without it, moving support alerts onto
+ * this page would silently switch them off for anyone who had already saved
+ * their event selection.
+ */
+export const ADMIN_NOTIF_SUPPORT_BACKFILL_KEY = 'admin_notif_support_event_backfilled';
+
 export const ADMIN_NOTIF_EVENTS = [
   'payment_succeeded',
   'payment_failed',
@@ -22,6 +30,7 @@ export const ADMIN_NOTIF_EVENTS = [
   'order_shipped',
   'order_delivered',
   'low_stock',
+  'support_message',
 ] as const;
 
 export type AdminNotifEvent = (typeof ADMIN_NOTIF_EVENTS)[number];
@@ -42,14 +51,15 @@ export interface AdminNotifSettings {
  * did before the recipient lists existed, so upgrading changes nothing until
  * somebody deliberately narrows the list.
  *
- * Events default to the three that fire on their own — a customer paying, a
- * payment failing, an order being cancelled. Shipped/delivered fire on the
- * admin's own click and low stock can be noisy, so those are opt-in.
+ * Events default to the four a customer triggers on their own — paying, a
+ * payment failing, cancelling, and opening a support chat. Shipped/delivered
+ * fire on the admin's own click and low stock can be noisy, so those are
+ * opt-in.
  */
 export const ADMIN_NOTIF_DEFAULTS: AdminNotifSettings = {
   smsEnabled: true,
   smsPhones: [],
   emailEnabled: true,
   emailAddresses: [],
-  events: ['payment_succeeded', 'payment_failed', 'order_cancelled'],
+  events: ['payment_succeeded', 'payment_failed', 'order_cancelled', 'support_message'],
 };

@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
 import { DlqModule } from '../dlq/dlq.module';
-import { SmsModule } from '../sms/sms.module';
+import { CommerceNotificationsModule } from '../commerce-notifications/commerce-notifications.module';
 import { SupportConversationsService } from './support-conversations.service';
 import { SupportNotificationService } from './support-notification.service';
 import { SupportLifecycleService } from './support-lifecycle.service';
@@ -24,7 +24,7 @@ import { SUPPORT_QUEUE } from './support.constants';
       },
     }),
     DlqModule,
-    SmsModule,
+    CommerceNotificationsModule,
   ],
   controllers: [SupportGuestController, SupportAdminController],
   providers: [

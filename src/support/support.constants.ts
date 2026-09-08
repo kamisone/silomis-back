@@ -1,23 +1,19 @@
 export const SUPPORT_QUEUE = 'support-notification';
 
+/**
+ * Which channels a support alert uses, and who it reaches, now live on
+ * Shop → Settings → Notifications as the `support_message` event — the same
+ * recipients every other admin alert uses. What is left here is support's own
+ * behaviour: how often one conversation may page, and when an idle
+ * conversation closes itself.
+ */
 export const SUPPORT_SETTINGS_KEYS = {
-  smsEnabled: 'support_sms_enabled',
-  smsPhones: 'support_sms_phones',
   smsCooldownMin: 'support_sms_cooldown_minutes',
   inactiveCloseHours: 'support_inactive_close_hours',
 } as const;
 
-/**
- * The reference project ships smsEnabled=false with an empty phone list, which
- * means a fresh install silently logs "skipped" for every guest message until
- * somebody opens the notification modal in Shop → Support. Silomis turns SMS on
- * by default and treats an EMPTY phone list as "every admin account that has a
- * phone on file" — the same rule the commerce admin notifications use — so the
- * first customer to open the chat widget actually reaches someone.
- */
 export const SUPPORT_DEFAULTS = {
-  smsEnabled: true,
-  smsPhones: [] as string[],
+  /** One conversation pages at most this often, however chatty the guest is. */
   smsCooldownMin: 15,
   inactiveCloseHours: 72,
 };

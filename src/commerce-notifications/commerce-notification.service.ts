@@ -1,10 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ShopEmailService } from '../email/shop-email.service';
 import { EmailTransportService } from '../email/email-transport.service';
 import { SmsService } from '../sms/sms.service';
 import {
   ADMIN_NOTIF_DEFAULTS,
+  ADMIN_NOTIF_SUPPORT_BACKFILL_KEY,
   ADMIN_NOTIF_EVENTS,
   ADMIN_NOTIF_KEYS,
   AdminNotifEvent,
@@ -38,7 +39,7 @@ export interface NotifRecipients {
  * the same recipient lists and the same log without giving up their template.
  */
 @Injectable()
-export class CommerceNotificationService {
+export class CommerceNotificationService implements OnModuleInit {
   private readonly logger = new Logger(CommerceNotificationService.name);
 
   constructor(
@@ -47,6 +48,44 @@ export class CommerceNotificationService {
     private readonly transport: EmailTransportService,
     private readonly sms: SmsService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.backfillSupportEvent();
+  }
+
+  /**
+   * Support alerts used to live behind their own `support_sms_enabled` switch
+   * in the support panel; they are now the `support_message` event on this
+   * page. An install that had already saved an event selection has a row that
+   * predates the event, so without this backfill the move would read as
+   * "support notifications turned themselves off".
+   *
+   * Runs once — the marker means a later untick is never undone.
+   */
+  private async backfillSupportEvent(): Promise<void> {
+    try {
+      const [marker, row] = await Promise.all([
+        this.prisma.platformSettings.findUnique({ where: { key: ADMIN_NOTIF_SUPPORT_BACKFILL_KEY } }),
+        this.prisma.platformSettings.findUnique({ where: { key: ADMIN_NOTIF_KEYS.events } }),
+      ]);
+      if (marker) return;
+
+      // No row at all means the defaults apply, and those already include the
+      // event — only an explicitly saved selection needs the addition.
+      if (row && row.value.length > 0 && !row.value.split(',').includes('support_message')) {
+        const value = `${row.value},support_message`;
+        await this.prisma.platformSettings.update({ where: { key: ADMIN_NOTIF_KEYS.events }, data: { value } });
+        this.logger.log('Backfilled support_message into the saved admin notification events');
+      }
+      await this.prisma.platformSettings.upsert({
+        where: { key: ADMIN_NOTIF_SUPPORT_BACKFILL_KEY },
+        create: { key: ADMIN_NOTIF_SUPPORT_BACKFILL_KEY, value: 'true' },
+        update: { value: 'true' },
+      });
+    } catch (err) {
+      this.logger.warn(`Support-event backfill skipped: ${(err as Error).message}`);
+    }
+  }
 
   // ── Settings ───────────────────────────────────────────────────────────
 

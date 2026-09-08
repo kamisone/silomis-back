@@ -12,10 +12,7 @@ import {
 import { Request } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { SupportConversationsService } from './support-conversations.service';
-import {
-  SupportNotificationService,
-  SupportNotificationSettings,
-} from './support-notification.service';
+import { SupportNotificationService } from './support-notification.service';
 import { SupportGateway } from './support.gateway';
 import {
   AssignDto,
@@ -120,28 +117,13 @@ export class SupportAdminController {
 
   @Get('settings')
   getSettings() {
-    return this.withReach(this.notifService.getSettings());
+    return this.notifService.getSettings();
   }
 
   @Patch('settings')
   updateSettings(
     @Body(new ZodValidationPipe(UpdateSettingsSchema)) dto: UpdateSettingsDto,
   ) {
-    return this.withReach(this.notifService.updateSettings(dto));
-  }
-
-  /**
-   * Adds how many numbers a guest message would actually reach, so the settings
-   * modal can say "on, but nobody is listening" instead of leaving the admin to
-   * discover it from a support_notification_logs row nothing surfaces.
-   */
-  private async withReach(
-    settings: Promise<SupportNotificationSettings>,
-  ): Promise<SupportNotificationSettings & { resolvedPhoneCount: number }> {
-    // Sequential on purpose: on the PATCH path the write has to land before
-    // the reach is counted, or the modal reports the pre-save state.
-    const value = await settings;
-    const resolved = await this.notifService.resolvePhones();
-    return { ...value, resolvedPhoneCount: resolved.length };
+    return this.notifService.updateSettings(dto);
   }
 }

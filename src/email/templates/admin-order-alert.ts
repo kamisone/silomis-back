@@ -12,6 +12,7 @@ const HEADING: Record<string, string> = {
   order_shipped: 'Order shipped',
   order_delivered: 'Order delivered',
   low_stock: 'Low stock alert',
+  support_message: 'New support message',
 };
 
 export function renderAdminOrderAlert(event: string, data: AdminOrderAlertEmailData): { subject: string; html: string } {
