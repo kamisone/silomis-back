@@ -334,4 +334,9 @@ spec:
                 secretKeyRef:
                   name: back-envs
                   key: TIKTOK_EVENTS_API_ACCESS_TOKEN
+            - name: INTEGRATION_CREDENTIALS_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: back-envs
+                  key: INTEGRATION_CREDENTIALS_MASTER_KEY
             

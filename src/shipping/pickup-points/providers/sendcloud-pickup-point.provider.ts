@@ -125,17 +125,29 @@ export class SendcloudPickupPointProvider implements PickupPointProvider {
 
   // ── Sendcloud wire format — nothing below this line escapes the adapter ──
 
+  /**
+   * Every failure here is a deployment-configuration problem, and each one is
+   * logged before it is thrown: the storefront collapses all of them into one
+   * "could not load pickup points" line, so the log is the only place the
+   * difference between "no keys saved", "no master key to decrypt them with"
+   * and "the carrier rejected them" is visible.
+   */
   private async loadCredentials(): Promise<SendcloudCredentials> {
     const raw = await this.credentials.get(SENDCLOUD_CREDENTIALS_PROVIDER);
-    if (!raw) throw new ServiceUnavailableException('Sendcloud is not configured');
+    if (!raw) {
+      this.logger.warn('No Sendcloud credentials are stored — save the key pair in Admin → Shop → Shipping → Carrier Integrations');
+      throw new ServiceUnavailableException('Sendcloud is not configured');
+    }
 
     let parsed: Partial<SendcloudCredentials>;
     try {
       parsed = JSON.parse(raw) as Partial<SendcloudCredentials>;
     } catch {
+      this.logger.warn('Stored Sendcloud credentials are not valid JSON — re-save the key pair');
       throw new ServiceUnavailableException('Sendcloud credentials are malformed');
     }
     if (!parsed.publicKey || !parsed.secretKey) {
+      this.logger.warn(`Stored Sendcloud credentials are incomplete (publicKey: ${parsed.publicKey ? 'set' : 'missing'}, secretKey: ${parsed.secretKey ? 'set' : 'missing'})`);
       throw new ServiceUnavailableException('Sendcloud credentials are incomplete');
     }
     return { publicKey: parsed.publicKey, secretKey: parsed.secretKey };

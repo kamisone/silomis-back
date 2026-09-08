@@ -112,7 +112,8 @@ jobs:
             --from-literal META_CAPI_ACCESS_TOKEN=${{ secrets.META_CAPI_ACCESS_TOKEN }} \
             --from-literal META_CAPI_API_VERSION=${{ secrets.META_CAPI_API_VERSION }} \
             --from-literal TIKTOK_EVENTS_API_ACCESS_TOKEN=${{ secrets.TIKTOK_EVENTS_API_ACCESS_TOKEN }} \
-            --from-literal TURNSTILE_SECRET_KEY=${{ secrets.TURNSTILE_SECRET_KEY }}
+            --from-literal TURNSTILE_SECRET_KEY=${{ secrets.TURNSTILE_SECRET_KEY }} \
+            --from-literal INTEGRATION_CREDENTIALS_MASTER_KEY=${{ secrets.INTEGRATION_CREDENTIALS_MASTER_KEY }}
             # Cluster-scoped and referenced by every pod spec below, so they
             # have to exist before the Deployments are applied.
             kubectl apply -f /srv/k8s/back/priority-classes.yaml
