@@ -5,6 +5,8 @@ import { COUNTRY_SEED } from './country-seed.data';
 import { Country } from '../../generated/prisma/client';
 
 const ET_SHOP_COUNTRY = 'shop_country';
+/** Which COUNTRY_SEED codes have ever been inserted — see seed(). */
+const SEEDED_CODES_KEY = 'countries_seeded_iso_codes';
 
 @Injectable()
 export class CountriesService implements OnModuleInit {
@@ -19,15 +21,55 @@ export class CountriesService implements OnModuleInit {
     await this.seed();
   }
 
+  /**
+   * Creates each seed country exactly once, ever.
+   *
+   * The previous version skipped a country only while its row existed, so a
+   * country the admin deleted in Shop → Countries came back on the next boot
+   * (a restart, a redeploy, a new replica). What has already been seeded is
+   * therefore recorded in platform_settings and never re-created, which still
+   * leaves room to extend COUNTRY_SEED later: a code newly added to the file
+   * is not in the marker yet, so it is inserted on the next boot.
+   *
+   * Installs that predate the marker are backfilled as "everything already
+   * seeded" so an upgrade never resurrects a deletion made before this fix —
+   * except on a genuinely empty table, which is a fresh install to seed.
+   */
   async seed(): Promise<void> {
-    for (const { nameEn, ...data } of COUNTRY_SEED) {
-      const exists = await this.prisma.country.findUnique({ where: { isoCode: data.isoCode } });
-      if (exists) continue;
+    const seeded = await this.readSeededCodes();
+    const isFreshInstall = seeded === null && (await this.prisma.country.count()) === 0;
+    const alreadySeeded = new Set(seeded ?? (isFreshInstall ? [] : COUNTRY_SEED.map((c) => c.isoCode)));
 
-      await this.prisma.country.create({ data: { ...data, isActive: true } });
-      await this.translations.upsert({ entityType: ET_SHOP_COUNTRY, entityId: data.isoCode, field: 'name', lang: 'en', value: nameEn });
+    const pending = COUNTRY_SEED.filter((c) => !alreadySeeded.has(c.isoCode));
+    if (pending.length > 0) {
+      // skipDuplicates: several replicas can boot at once, and a row the admin
+      // added by hand under a seeded code must not be overwritten either.
+      await this.prisma.country.createMany({
+        data: pending.map((c) => ({ isoCode: c.isoCode, name: c.name, phonePrefix: c.phonePrefix, currencyCode: c.currencyCode, isoCode3: c.isoCode3, continentCode: c.continentCode, isEuVat: c.isEuVat, isShippingEnabled: c.isShippingEnabled, isActive: true })),
+        skipDuplicates: true,
+      });
+      for (const { isoCode, nameEn } of pending) {
+        await this.translations.upsert({ entityType: ET_SHOP_COUNTRY, entityId: isoCode, field: 'name', lang: 'en', value: nameEn });
+      }
     }
-    this.logger.log('Country reference table seeded');
+
+    await this.writeSeededCodes([...alreadySeeded, ...pending.map((c) => c.isoCode)]);
+    this.logger.log(`Country reference table seeded (${pending.length} added)`);
+  }
+
+  private async readSeededCodes(): Promise<string[] | null> {
+    const row = await this.prisma.platformSettings.findUnique({ where: { key: SEEDED_CODES_KEY } });
+    if (!row) return null;
+    return row.value.split(',').map((c) => c.trim()).filter(Boolean);
+  }
+
+  private async writeSeededCodes(codes: string[]): Promise<void> {
+    const value = [...new Set(codes)].sort().join(',');
+    await this.prisma.platformSettings.upsert({
+      where: { key: SEEDED_CODES_KEY },
+      create: { key: SEEDED_CODES_KEY, value },
+      update: { value },
+    });
   }
 
   // Country's PK is isoCode, not id — TranslationsService keys off entity.id,
