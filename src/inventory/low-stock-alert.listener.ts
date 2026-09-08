@@ -37,7 +37,9 @@ export class LowStockAlertListener {
         available: event.available,
         lowStockThreshold: event.lowStockThreshold,
       };
-      const smsMessage = `[Silomis] Low stock: ${variant.product.title} (${variant.title}) — ${event.available} left (threshold ${event.lowStockThreshold})`;
+      // Same brand tag as every other admin SMS — SELLER_NAME, not a literal.
+      const seller = process.env.SELLER_NAME ?? 'Silomis';
+      const smsMessage = `[${seller}] Low stock: ${variant.product.title} (${variant.title}) — ${event.available} left (threshold ${event.lowStockThreshold})`;
 
       let sent = 0;
       for (const admin of admins) {

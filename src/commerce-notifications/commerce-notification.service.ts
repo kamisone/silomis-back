@@ -83,12 +83,30 @@ export class CommerceNotificationService {
 
     if (admin.phone) {
       try {
-        await this.sms.addMessage(admin.phone, `[Silomis] ${payload.summary}`);
+        await this.sms.addMessage(admin.phone, this.smsBody(payload));
         await this.log(payload, 'sms', admin.phone, 'sent');
       } catch (err) {
         await this.log(payload, 'sms', admin.phone, 'failed', (err as Error).message);
       }
     }
+  }
+
+  /**
+   * Brand tag + summary, then the order number and a deep link on their own
+   * lines — matching the reference project. A phone alert is only worth
+   * reading if it says which order it is and gets you there in one tap.
+   *
+   * Unlike the reference project, `detailUrl` arrives absolute here
+   * (AdminOrderAlertListener builds it from APP_URL), so it is used as-is
+   * rather than prefixed a second time. A build without APP_URL passes null
+   * and the line is simply dropped.
+   */
+  private smsBody(payload: NotifyPayload): string {
+    const seller = process.env.SELLER_NAME ?? 'Silomis';
+    const lines = [`[${seller}] ${payload.summary}`];
+    if (payload.orderNumber) lines.push(`#${payload.orderNumber}`);
+    if (payload.detailUrl) lines.push(payload.detailUrl);
+    return lines.join('\n');
   }
 
   private async log(payload: NotifyPayload, channel: 'sms' | 'email', recipient: string, status: 'sent' | 'failed' | 'skipped', error?: string): Promise<void> {
