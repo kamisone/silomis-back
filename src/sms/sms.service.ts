@@ -97,11 +97,33 @@ export class SmsService {
     return raw.replace(/\s+/g, '').replace(/^00/, '+');
   }
 
+  /**
+   * Keeps a message inside the GSM-7 alphabet. One character outside it flips
+   * the whole SMS to UCS-2, which cuts a segment from 160 characters to 70 —
+   * so a stray curly apostrophe in a product title silently doubles the cost
+   * and can truncate the message.
+   *
+   * Written with explicit code-point escapes on purpose. The previous version
+   * read `/['']/g` and `/[""]/g`, which look like curly-quote classes but are
+   * two plain ASCII characters each — every one of those replacements was a
+   * no-op, and the quotes it existed to catch went through untouched. A curly
+   * quote is indistinguishable from a straight one in source, which is exactly
+   * how that survived. (vitecamio carries the same bug.)
+   */
   private sanitizeForGsm(text: string): string {
-    return text
-      .replace(/€/g, 'EUR')
-      .replace(/[—–]/g, '-')
-      .replace(/['']/g, "'")
-      .replace(/[""]/g, '"');
+    return (
+      text
+        .replace(/\u20AC/g, 'EUR')
+        // em dash, en dash, horizontal bar
+        .replace(/[\u2014\u2013\u2015]/g, '-')
+        // ' ' ‚ ‛ and the prime often pasted in for a foot mark
+        .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+        // " " „ ‟ and double prime
+        .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+        .replace(/\u2026/g, '...')
+        // non-breaking, narrow no-break and thin spaces — common in French copy
+        .replace(/[\u00A0\u202F\u2009]/g, ' ')
+        .replace(/[\u2022\u00B7]/g, '-')
+    );
   }
 }

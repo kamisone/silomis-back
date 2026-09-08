@@ -54,4 +54,20 @@ export class SmsController {
   sendSms(@Body(new ZodValidationPipe(SmsMessageSchema)) body: SmsMessageDto) {
     return this.smsService.addMessage(body.to, body.message);
   }
+
+  /**
+   * The gateway posts replies back here, which is the only way an `inbound`
+   * row is ever created — without it `getLastConsumed` and a `type=inbound`
+   * poll can only ever come back empty.
+   *
+   * Vitecamio also hands each reply to its rent-sessions service, which is how
+   * a customer texting back drives a rental. Silomis has no such domain, so an
+   * inbound message is recorded and nothing acts on it yet; anything that wants
+   * to react to replies hooks in here.
+   */
+  @Public()
+  @Post('receive')
+  receiveFromGateway(@Body(new ZodValidationPipe(SmsMessageSchema)) body: SmsMessageDto) {
+    return this.smsService.addMessage(body.to, body.message, 'inbound');
+  }
 }
