@@ -9,6 +9,20 @@ import { UpdateMfaDto } from './dto/update-mfa.dto';
 
 type PublicAdmin = Omit<Admin, 'password'>;
 
+/**
+ * Stored the way SmsService stores a recipient — no spacing, `00` rewritten to
+ * `+` — because the device gateway polls `GET /sms?to=…` with an exact match on
+ * the stored string. A number saved as "+33 6 12 34 56 78" would queue fine and
+ * then never be picked up.
+ *
+ * A blank string clears the number rather than storing "".
+ */
+function normalizeAdminPhone(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const cleaned = raw.replace(/[\s\-().]/g, '').replace(/^00/, '+');
+  return cleaned || null;
+}
+
 @Injectable()
 export class AdminsService implements OnModuleInit {
   private readonly logger = new Logger(AdminsService.name);
@@ -57,6 +71,7 @@ export class AdminsService implements OnModuleInit {
       data: {
         name: dto.name,
         email: dto.email,
+        phone: normalizeAdminPhone(dto.phone) ?? null,
         password: await bcrypt.hash(dto.password, 10),
         role: dto.role ?? 'admin',
       },
@@ -78,7 +93,14 @@ export class AdminsService implements OnModuleInit {
     }
     const admin = await this.prisma.admin.update({
       where: { id },
-      data: { name: dto.name, email: dto.email, role: dto.role },
+      // `phone` is deliberately not spread: undefined leaves the stored number
+      // alone, while an explicit null or a blank string clears it.
+      data: {
+        name: dto.name,
+        email: dto.email,
+        role: dto.role,
+        ...(dto.phone === undefined ? {} : { phone: normalizeAdminPhone(dto.phone) }),
+      },
     });
     return this.toPublic(admin);
   }
@@ -96,7 +118,7 @@ export class AdminsService implements OnModuleInit {
       data: {
         mfaEnabled: dto.mfaEnabled,
         preferredMfaMethod: dto.preferredMfaMethod,
-        phone: dto.phone === undefined ? undefined : dto.phone,
+        phone: dto.phone === undefined ? undefined : normalizeAdminPhone(dto.phone),
       },
     });
     return this.toPublic(admin);
