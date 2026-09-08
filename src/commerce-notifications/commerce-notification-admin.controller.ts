@@ -1,5 +1,18 @@
-import { Body, Controller, Get, Put, Query } from '@nestjs/common';
-import { CommerceNotificationService, AdminNotifEvent } from './commerce-notification.service';
+import { Body, Controller, Get, Patch, Query } from '@nestjs/common';
+import { z } from 'zod';
+import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { CommerceNotificationService } from './commerce-notification.service';
+import { ADMIN_NOTIF_EVENTS } from './commerce-notification.constants';
+
+const SettingsPatchSchema = z
+  .object({
+    smsEnabled: z.boolean(),
+    smsPhones: z.array(z.string().min(1).max(32)).max(20),
+    emailEnabled: z.boolean(),
+    emailAddresses: z.array(z.string().email()).max(20),
+    events: z.array(z.enum(ADMIN_NOTIF_EVENTS)),
+  })
+  .partial();
 
 @Controller('admin/shop/notifications')
 export class CommerceNotificationAdminController {
@@ -10,9 +23,12 @@ export class CommerceNotificationAdminController {
     return this.notifications.getSettings();
   }
 
-  @Put('settings')
-  updateSettings(@Body('events') events: AdminNotifEvent[]) {
-    return this.notifications.updateSettings(events ?? []);
+  @Patch('settings')
+  updateSettings(
+    @Body(new ZodValidationPipe(SettingsPatchSchema))
+    dto: z.infer<typeof SettingsPatchSchema>,
+  ) {
+    return this.notifications.updateSettings(dto);
   }
 
   @Get('logs')
