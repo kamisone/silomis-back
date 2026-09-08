@@ -7,8 +7,16 @@ export const SUPPORT_SETTINGS_KEYS = {
   inactiveCloseHours: 'support_inactive_close_hours',
 } as const;
 
+/**
+ * The reference project ships smsEnabled=false with an empty phone list, which
+ * means a fresh install silently logs "skipped" for every guest message until
+ * somebody opens the notification modal in Shop → Support. Silomis turns SMS on
+ * by default and treats an EMPTY phone list as "every admin account that has a
+ * phone on file" — the same rule the commerce admin notifications use — so the
+ * first customer to open the chat widget actually reaches someone.
+ */
 export const SUPPORT_DEFAULTS = {
-  smsEnabled: false,
+  smsEnabled: true,
   smsPhones: [] as string[],
   smsCooldownMin: 15,
   inactiveCloseHours: 72,

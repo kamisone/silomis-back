@@ -45,9 +45,13 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
       }
     }
 
-    if (!settings.smsEnabled || settings.smsPhones.length === 0) {
+    // Empty configured list -> every admin with a phone on file, so the first
+    // customer to open the chat widget reaches someone without anyone having
+    // opened the notification modal first.
+    const phones = await this.notifService.resolvePhones();
+    if (phones.length === 0) {
       await this.log(conversationId, 'skipped', undefined, {
-        reason: 'disabled_or_no_phones',
+        reason: settings.smsEnabled ? 'no_phones' : 'disabled',
       });
       return;
     }
@@ -56,16 +60,14 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
     const message = `[Support] New customer message\n${conv.guestName ? `From: ${conv.guestName}\n` : ''}${appUrl}/admin/support?conv=${conversationId}`;
 
     try {
-      for (const phone of settings.smsPhones) {
+      for (const phone of phones) {
         await this.smsService.addMessage(phone, message);
       }
       await this.prisma.supportConversation.update({
         where: { id: conversationId },
         data: { lastNotifiedAt: new Date() },
       });
-      await this.log(conversationId, 'sent', undefined, {
-        phones: settings.smsPhones,
-      });
+      await this.log(conversationId, 'sent', undefined, { phones });
       this.logger.log(`Support SMS sent conv=${conversationId}`);
     } catch (err) {
       const error = (err as Error).message;
