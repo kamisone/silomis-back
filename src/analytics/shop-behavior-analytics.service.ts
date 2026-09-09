@@ -166,6 +166,10 @@ export class ShopBehaviorAnalyticsService {
       title: string;
       slug: string;
       status: string;
+      /** The product's flag TODAY — the row's numbers are its phase history.
+       *  A row in the live report with this true is a product that has been
+       *  put back into testing, and vice versa. */
+      isTestProduct: boolean;
       views: number;
       addsToCart: number;
       reachedShipping: number;
@@ -179,8 +183,24 @@ export class ShopBehaviorAnalyticsService {
     const codes = await this.countryCodesFor(filter);
     if (codes && codes.length === 0) return [];
 
+    const isTest = (filter.scope ?? 'test') === 'test';
+
+    // A product that was promoted from test to live still has test-phase
+    // history, so the report cannot simply list products whose flag matches
+    // today. The set is "products currently in this phase" plus "products with
+    // events recorded in this phase" — which is what puts a promoted product in
+    // both tabs, each showing only the events from its own phase.
+    const historic = await this.prisma.shopBehaviorEvent.findMany({
+      where: { productIsTest: isTest, productId: { not: null }, createdAt: { gte: window.since, lt: window.until } },
+      select: { productId: true },
+      distinct: ['productId'],
+    });
+    const historicIds = historic.map((r) => r.productId).filter((id): id is string => !!id);
+
     const where: Prisma.ProductWhereInput = {
-      isTestProduct: true,
+      // The catalogue filters below still apply to both halves — a search or a
+      // category narrows the union, it does not bypass it.
+      OR: [{ isTestProduct: isTest }, ...(historicIds.length ? [{ id: { in: historicIds } }] : [])],
       ...(filter.productId ? { id: filter.productId } : {}),
       ...(filter.productStatus ? { status: filter.productStatus as ProductStatus } : {}),
       ...(filter.brand ? { brand: filter.brand } : {}),
@@ -189,7 +209,10 @@ export class ShopBehaviorAnalyticsService {
       ...(filter.search ? { title: { contains: filter.search, mode: 'insensitive' } } : {}),
       ...(filter.categoryId ? { categories: { some: { id: filter.categoryId } } } : {}),
     };
-    const testProducts = await this.prisma.product.findMany({ where, select: { id: true, title: true, slug: true, status: true } });
+    const testProducts = await this.prisma.product.findMany({
+      where,
+      select: { id: true, title: true, slug: true, status: true, isTestProduct: true },
+    });
     if (!testProducts.length) return [];
 
     const { since, until } = window;
@@ -199,6 +222,8 @@ export class ShopBehaviorAnalyticsService {
       SELECT be."productId" AS "productId", be."eventType" AS "eventType", COUNT(be.id)::bigint AS count, ${VISITOR_KEY_COUNT}::bigint AS "distinctCarts"
       FROM shop_behavior_events be
       WHERE be."productId" IN (${Prisma.join(ids)})
+        -- The phase recorded on the event, never the product's flag today.
+        AND be."productIsTest" = ${isTest}
         AND be."eventType" IN ('product_view', 'add_to_cart', 'checkout_started', 'test_checkout_blocked')
         AND be."createdAt" >= ${since}
         AND be."createdAt" < ${until}
@@ -219,6 +244,7 @@ export class ShopBehaviorAnalyticsService {
         title: p.title,
         slug: p.slug,
         status: p.status as string,
+        isTestProduct: p.isTestProduct,
         views,
         addsToCart,
         reachedShipping,

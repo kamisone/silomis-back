@@ -34,6 +34,10 @@ export class ReplayTrackingService {
     const session = await this.prisma.replaySession.create({
       data: {
         productId: dto.productId,
+        // Always true today — the gate above only records test products — but
+        // stored rather than assumed, so a session keeps the phase it was
+        // recorded in once the product is promoted to live.
+        productIsTest: product.isTestProduct,
         cartToken: dto.cartToken ?? null,
         visitorHash: this.geoIp.visitorHash(meta.ip),
         clientIp: meta.ip,

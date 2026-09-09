@@ -16,10 +16,12 @@ export class ReplayAdminController {
     @Query('days') days?: string,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
+    @Query('scope') scope?: string,
   ) {
     return this.replayAdmin.list(resolveWindow({ days, startDate, endDate }), {
       productId,
       status,
+      scope: scope === 'test' || scope === 'live' ? scope : undefined,
       limit: intParam(limit),
       offset: intParam(offset),
     });

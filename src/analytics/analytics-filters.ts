@@ -62,6 +62,16 @@ export type TestProductSort = 'views' | 'addsToCart' | 'reachedShipping' | 'reac
 const TEST_PRODUCT_SORTS: TestProductSort[] = ['views', 'addsToCart', 'reachedShipping', 'reachedCheckout', 'viewToCartRatePct', 'cartToShippingRatePct', 'cartToCheckoutRatePct', 'viewToCheckoutRatePct'];
 
 export interface TestProductFilter extends CountryFilter {
+  /**
+   * Which phase of the catalogue to report on. 'test' is the demand-validation
+   * report; 'live' is the same funnel for products actually on sale.
+   *
+   * Not the same thing as Product.isTestProduct: a product promoted from test
+   * to live belongs to BOTH reports — its test-phase events under 'test', its
+   * live-phase events under 'live' — so the scope is matched against the state
+   * recorded on each event, not against the product's flag today.
+   */
+  scope?: 'test' | 'live';
   productId?: string;
   productStatus?: string;
   categoryId?: string;

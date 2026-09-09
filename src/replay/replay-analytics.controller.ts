@@ -13,7 +13,18 @@ export class ReplayAnalyticsController {
   constructor(private readonly replayAdmin: ReplayAdminService) {}
 
   @Get('unread-counts')
-  getUnreadCounts(@Query('productIds') productIds: string, @Query('days') days?: string, @Query('startDate') startDate?: string, @Query('endDate') endDate?: string) {
-    return this.replayAdmin.getUnreadCounts(productIds ? productIds.split(',').filter(Boolean) : [], resolveWindow({ days, startDate, endDate }));
+  getUnreadCounts(
+    @Query('productIds') productIds: string,
+    @Query('days') days?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('scope') scope?: string,
+  ) {
+    return this.replayAdmin.getUnreadCounts(
+      productIds ? productIds.split(',').filter(Boolean) : [],
+      resolveWindow({ days, startDate, endDate }),
+      // Omitted means every phase — the badge only narrows when the caller says which tab it is on.
+      scope === 'test' || scope === 'live' ? scope : undefined,
+    );
   }
 }

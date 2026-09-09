@@ -17,11 +17,19 @@ export class ReplayAdminService {
    * fetch-then-filter approach, so a product with more sessions than the
    * list's page size still counts correctly.
    */
-  async getUnreadCounts(productIds: string[], window: DateWindow): Promise<Record<string, number>> {
+  async getUnreadCounts(productIds: string[], window: DateWindow, scope?: 'test' | 'live'): Promise<Record<string, number>> {
     if (!productIds.length) return {};
     const rows = await this.prisma.replaySession.groupBy({
       by: ['productId'],
-      where: { productId: { in: productIds }, viewedAt: null, startedAt: { gte: window.since, lt: window.until } },
+      where: {
+        productId: { in: productIds },
+        // Scoped to the phase the session was recorded in, so a promoted
+        // product's test-phase recordings stay behind the test tab's badge
+        // rather than following it into the live one.
+        ...(scope ? { productIsTest: scope === 'test' } : {}),
+        viewedAt: null,
+        startedAt: { gte: window.since, lt: window.until },
+      },
       _count: { id: true },
     });
     const counts: Record<string, number> = {};
@@ -34,12 +42,13 @@ export class ReplayAdminService {
    * window the test-products table and the unread badge use, so a badge
    * count and the list it opens can never disagree.
    */
-  async list(window: DateWindow, filter: { productId?: string; status?: ReplaySessionStatus; limit?: number; offset?: number } = {}) {
-    const { productId, status, limit = 20, offset = 0 } = filter;
+  async list(window: DateWindow, filter: { productId?: string; status?: ReplaySessionStatus; scope?: 'test' | 'live'; limit?: number; offset?: number } = {}) {
+    const { productId, status, scope, limit = 20, offset = 0 } = filter;
     const where = {
       startedAt: { gte: window.since, lt: window.until },
       ...(productId ? { productId } : {}),
       ...(status ? { status } : {}),
+      ...(scope ? { productIsTest: scope === 'test' } : {}),
     };
     const [sessions, total] = await Promise.all([this.prisma.replaySession.findMany({ where, orderBy: { startedAt: 'desc' }, take: limit, skip: offset }), this.prisma.replaySession.count({ where })]);
     const items = await this.withProduct(sessions);

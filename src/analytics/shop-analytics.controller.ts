@@ -82,8 +82,12 @@ export class ShopAnalyticsController {
     @Query('reachedCheckoutOnly') reachedCheckoutOnly?: string,
     @Query('countryCode') countryCode?: string,
     @Query('continent') continent?: string,
+    @Query('scope') scope?: string,
   ) {
     return this.behaviorAnalytics.getTestProductDemand(resolveWindow({ days, startDate, endDate }), {
+      // Defaults to the test report — the endpoint's original and only
+      // behaviour, so an existing caller keeps getting what it got.
+      scope: scope === 'live' ? 'live' : 'test',
       countryCode,
       continent,
       productId,

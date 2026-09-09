@@ -2033,6 +2033,13 @@ model ShopBehaviorEvent {
   cartToken      String? @db.VarChar(100)
   shopCustomerId String?
   productId      String?
+  /// Whether the product was flagged as a test product AT THE MOMENT of this
+  /// event. Snapshotted rather than joined to Product.isTestProduct, because
+  /// flipping that toggle would otherwise rewrite history: a product promoted
+  /// from test to live would drag every one of its test-phase events into the
+  /// live report and empty the test one. NULL only for pre-existing rows the
+  /// backfill could not resolve, and for cart-level events with no product.
+  productIsTest  Boolean?
   quantity       Int?
 
   searchQuery String?
@@ -2071,6 +2078,9 @@ model ReplaySession {
   id String @id @default(uuid())
 
   productId String?
+  /// The product's test/live state when this session was recorded — see the
+  /// same field on ShopBehaviorEvent.
+  productIsTest Boolean?
   cartToken String?
 
   visitorHash String? @db.VarChar(64)
