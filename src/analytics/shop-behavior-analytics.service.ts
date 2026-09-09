@@ -96,7 +96,7 @@ export class ShopBehaviorAnalyticsService {
         AND be."createdAt" < ${until}
         AND ${EXCLUDE_TEST_PRODUCTS}
         ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
-        ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}::uuid` : Prisma.empty}
+        ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}` : Prisma.empty}
       GROUP BY be."eventType"
     `;
 
@@ -114,7 +114,7 @@ export class ShopBehaviorAnalyticsService {
         WHERE o.status::text IN (${Prisma.join(PAID_STATUSES)})
           AND o."createdAt" >= ${since}
           AND o."createdAt" < ${until}
-          AND i."productId" = ${filter.productId}::uuid
+          AND i."productId" = ${filter.productId}
           ${codes ? Prisma.sql`AND o."shippingAddressSnapshot"->>'country' IN (${Prisma.join(codes)})` : Prisma.empty}
       `;
       purchases = Number(rows[0]?.count ?? 0);
@@ -263,7 +263,7 @@ export class ShopBehaviorAnalyticsService {
         WHERE be."eventType" = 'product_view' AND be."createdAt" >= ${since} AND be."createdAt" < ${until}
           AND be."productId" IS NOT NULL AND ${EXCLUDE_TEST_PRODUCTS}
           ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
-          ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}::uuid` : Prisma.empty}
+          ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}` : Prisma.empty}
         GROUP BY be."productId"
       `,
       this.prisma.$queryRaw<Array<{ productId: string; count: bigint }>>`
@@ -272,7 +272,7 @@ export class ShopBehaviorAnalyticsService {
         WHERE be."eventType" = 'add_to_cart' AND be."createdAt" >= ${since} AND be."createdAt" < ${until}
           AND be."productId" IS NOT NULL AND ${EXCLUDE_TEST_PRODUCTS}
           ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
-          ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}::uuid` : Prisma.empty}
+          ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}` : Prisma.empty}
         GROUP BY be."productId"
       `,
       this.prisma.$queryRaw<Array<{ productId: string; count: bigint }>>`
@@ -282,7 +282,7 @@ export class ShopBehaviorAnalyticsService {
         WHERE o.status::text IN (${Prisma.join(PAID_STATUSES)}) AND o."createdAt" >= ${since} AND o."createdAt" < ${until}
           AND i."productId" IS NOT NULL
           ${codes ? Prisma.sql`AND o."shippingAddressSnapshot"->>'country' IN (${Prisma.join(codes)})` : Prisma.empty}
-          ${filter.productId ? Prisma.sql`AND i."productId" = ${filter.productId}::uuid` : Prisma.empty}
+          ${filter.productId ? Prisma.sql`AND i."productId" = ${filter.productId}` : Prisma.empty}
         GROUP BY i."productId"
       `,
     ]);
@@ -326,7 +326,7 @@ export class ShopBehaviorAnalyticsService {
         FROM shop_behavior_events be
         WHERE be."eventType" = 'product_view' AND be."createdAt" >= ${since} AND be."createdAt" < ${until}
           AND be."countryCode" IS NOT NULL AND ${EXCLUDE_TEST_PRODUCTS}
-          ${pid ? Prisma.sql`AND be."productId" = ${pid}::uuid` : Prisma.empty}
+          ${pid ? Prisma.sql`AND be."productId" = ${pid}` : Prisma.empty}
         GROUP BY be."countryCode"
       `,
       this.prisma.$queryRaw<Array<{ countryCode: string; count: bigint }>>`
@@ -334,7 +334,7 @@ export class ShopBehaviorAnalyticsService {
         FROM shop_behavior_events be
         WHERE be."eventType" = 'add_to_cart' AND be."createdAt" >= ${since} AND be."createdAt" < ${until}
           AND be."countryCode" IS NOT NULL AND ${EXCLUDE_TEST_PRODUCTS}
-          ${pid ? Prisma.sql`AND be."productId" = ${pid}::uuid` : Prisma.empty}
+          ${pid ? Prisma.sql`AND be."productId" = ${pid}` : Prisma.empty}
         GROUP BY be."countryCode"
       `,
       pid
@@ -343,7 +343,7 @@ export class ShopBehaviorAnalyticsService {
             FROM shop_orders o
             JOIN shop_order_items i ON i."orderId" = o.id
             WHERE o.status::text IN (${Prisma.join(PAID_STATUSES)}) AND o."createdAt" >= ${since} AND o."createdAt" < ${until}
-              AND o."shippingAddressSnapshot"->>'country' IS NOT NULL AND i."productId" = ${pid}::uuid
+              AND o."shippingAddressSnapshot"->>'country' IS NOT NULL AND i."productId" = ${pid}
             GROUP BY o."shippingAddressSnapshot"->>'country'
           `
         : this.prisma.$queryRaw<Array<{ countryCode: string; count: bigint }>>`
@@ -424,7 +424,7 @@ export class ShopBehaviorAnalyticsService {
       FROM shop_behavior_events be
       WHERE be."createdAt" >= ${since} AND be."createdAt" < ${until}
         ${eventTypes && eventTypes.length ? Prisma.sql`AND be."eventType" IN (${Prisma.join(eventTypes)})` : Prisma.empty}
-        ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}::uuid` : Prisma.empty}
+        ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}` : Prisma.empty}
         ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
         ${productScope === 'real' ? EXCLUDE_TEST_PRODUCTS : Prisma.empty}
         ${device ? Prisma.sql`AND be.device = ${device}` : Prisma.empty}
@@ -478,7 +478,7 @@ export class ShopBehaviorAnalyticsService {
     const baseConds = Prisma.sql`
       be."createdAt" >= ${since} AND be."createdAt" < ${until}
       ${eventTypes && eventTypes.length ? Prisma.sql`AND be."eventType" IN (${Prisma.join(eventTypes)})` : Prisma.empty}
-      ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}::uuid` : Prisma.empty}
+      ${filter.productId ? Prisma.sql`AND be."productId" = ${filter.productId}` : Prisma.empty}
       ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
       ${productScope === 'real' ? EXCLUDE_TEST_PRODUCTS : Prisma.empty}
     `;
@@ -512,7 +512,7 @@ export class ShopBehaviorAnalyticsService {
           FROM shop_orders o
           JOIN shop_order_items i ON i."orderId" = o.id
           WHERE o.status::text IN (${Prisma.join(PAID_STATUSES)}) AND o."createdAt" >= ${since} AND o."createdAt" < ${until}
-            AND i."productId" = ${filter.productId}::uuid
+            AND i."productId" = ${filter.productId}
             ${codes ? Prisma.sql`AND o."shippingAddressSnapshot"->>'country' IN (${Prisma.join(codes)})` : Prisma.empty}
           ORDER BY o."createdAt" DESC
           LIMIT ${limit}
