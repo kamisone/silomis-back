@@ -90,13 +90,40 @@ export class CollectionsService {
       where: { id },
       include: {
         productLinks: {
-          include: { product: true },
+          // Selected down to what the editor's product list renders. `include:
+          // { product: true }` returned every column of every linked product —
+          // the media JSON, the descriptions, and raw storage keys the admin UI
+          // cannot use anyway.
+          select: {
+            id: true,
+            productId: true,
+            sortOrder: true,
+            product: { select: { id: true, title: true, status: true, featuredImageKey: true } },
+          },
           orderBy: { sortOrder: 'asc' },
         },
       },
     });
     if (!collection) throw new NotFoundException('Collection not found');
-    return this.withImageUrl(collection);
+
+    // One batch for every linked product's thumbnail, so the list can show
+    // what each row actually is rather than a column of identical titles.
+    const keys = collection.productLinks.map((l) => l.product.featuredImageKey).filter((k): k is string => !!k);
+    const urlMap = keys.length ? await this.assetUrls.resolveBatch(keys) : new Map<string, string>();
+
+    const withUrls = await this.withImageUrl(collection);
+    return {
+      ...withUrls,
+      productLinks: collection.productLinks.map(({ product, ...link }) => ({
+        ...link,
+        product: {
+          id: product.id,
+          title: product.title,
+          status: product.status,
+          featuredImageUrl: product.featuredImageKey ? (urlMap.get(product.featuredImageKey) ?? null) : null,
+        },
+      })),
+    };
   }
 
   async create(dto: CreateCollectionDto) {
