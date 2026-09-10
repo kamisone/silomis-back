@@ -21,11 +21,31 @@ function rethrowAsConflict(err: unknown, label: string): never {
 export class VariantAttributesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll() {
-    return this.prisma.variantAttribute.findMany({
+  /**
+   * Admin listing, ordered by the internal label.
+   *
+   * `adminLabel` exists to tell apart attributes that share one storefront
+   * `name` ("Couleur (textile)" vs "Couleur (bois)"), so it is what an admin
+   * scans this list by — sorting by `sortOrder` put them in the storefront's
+   * picker order instead, which says nothing about which is which.
+   *
+   * Falls back to `name` for an attribute with no internal label, rather than
+   * sinking every unlabelled one to the bottom: the result is one alphabetical
+   * list where the internal label wins wherever it is set.
+   *
+   * Sorted here rather than in the query because the order is over
+   * COALESCE(adminLabel, name), which Prisma's orderBy cannot express — and
+   * localeCompare gets accents right ("Épaisseur" next to E, not after Z),
+   * which a Postgres C-collation ORDER BY would not. Safe in memory: this is a
+   * small reference table with no pagination.
+   */
+  async findAll() {
+    const attributes = await this.prisma.variantAttribute.findMany({
       include: { optionValues: { orderBy: { sortOrder: 'asc' } } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
+    const label = (a: { adminLabel: string | null; name: string }) => a.adminLabel?.trim() || a.name;
+    return attributes.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base', numeric: true }));
   }
 
   findActive() {
