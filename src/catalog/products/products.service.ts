@@ -13,7 +13,7 @@ import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSo
 import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
-import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
+import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
 
 /** Ceiling on rows pulled for a sort that has to run in memory (curated
  * order, search rank, price). Well above any realistic collection, and low
@@ -682,8 +682,47 @@ export class ProductsService {
     await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
     await this.translateVariantOptionsInPlace(translated as never, lang);
+    await this.translateCategoriesInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
     return translated;
+  }
+
+  /**
+   * Overlays category translations onto a storefront product's own category
+   * rows.
+   *
+   * Translating the product alone left every category name in the base
+   * language, which is what the product page's breadcrumb renders: a Spanish
+   * shopper saw "Inicio / Men". The category list endpoint has always applied
+   * this overlay (CategoriesService.list) — the product payload carries its own
+   * copies of those rows and was never given the same treatment.
+   *
+   * `primaryCategory` is usually also present in `categories`, but Prisma
+   * hydrates a separate object for each, so both are written back from one
+   * de-duplicated lookup rather than translated twice.
+   */
+  private async translateCategoriesInPlace(
+    product: {
+      primaryCategory?: Record<string, unknown> | null;
+      categories?: Array<Record<string, unknown>>;
+    },
+    lang?: string,
+  ): Promise<void> {
+    if (!lang) return;
+
+    const rows = [...(product.categories ?? []), ...(product.primaryCategory ? [product.primaryCategory] : [])];
+    const unique = [...new Map(rows.filter((c) => c?.id).map((c) => [c.id as string, c])).values()];
+    if (!unique.length) return;
+
+    const translated = await this.translations.maybeApply(unique, ET_SHOP_CATEGORY, lang);
+    const byId = new Map(translated.map((c) => [c.id as string, c]));
+
+    // maybeApply returns copies, so the overlaid fields are assigned back onto
+    // every instance — including the second copy of a primary category.
+    for (const row of rows) {
+      const overlay = byId.get(row.id as string);
+      if (overlay) Object.assign(row, overlay);
+    }
   }
 
   /**
