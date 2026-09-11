@@ -79,6 +79,43 @@ export class TranslationsService {
     });
   }
 
+  /**
+   * Applies translations whose field is a composite `prefix:id:property` key —
+   * the form the admin UI writes for anything inside a JSON collection
+   * ("faq:abc:question", "infoSection:def:label").
+   *
+   * applyToEntities only merges flat fields, so those keys landed on the
+   * entity as junk properties literally named "faq:abc:question" while the
+   * FAQ itself stayed in the base language. The admin has been storing these
+   * translations all along; nothing read them.
+   *
+   * `collections` maps each prefix to the entity property holding the array,
+   * e.g. `{ faq: 'faqs' }`. Items are matched on their `id`. Mutates in place,
+   * because the caller has already resolved URLs and prices onto the same
+   * object graph.
+   */
+  applyNestedInPlace(entity: Record<string, unknown>, collections: Record<string, string>): void {
+    for (const key of Object.keys(entity)) {
+      const parts = key.split(':');
+      if (parts.length !== 3) continue;
+
+      const [prefix, itemId, property] = parts;
+      const arrayField = collections[prefix];
+      // Always remove the composite key, even when it targets a collection
+      // this entity does not carry: it is an implementation detail of the
+      // translation table and has no business in a public payload.
+      const value = entity[key];
+      delete entity[key];
+      if (!arrayField || typeof value !== 'string') continue;
+
+      const items = entity[arrayField];
+      if (!Array.isArray(items)) continue;
+
+      const item = items.find((i): i is Record<string, unknown> => !!i && typeof i === 'object' && (i as Record<string, unknown>).id === itemId);
+      if (item) item[property] = value;
+    }
+  }
+
   /** Convenience: apply translations only when lang is provided. Eliminates repetitive if-guards at call sites. */
   maybeApply<T extends Record<string, unknown>>(items: T[], entityType: string, lang?: string): Promise<T[]> {
     return lang ? this.applyToEntities(items, entityType, lang) : Promise.resolve(items);

@@ -1,8 +1,10 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { Public } from '../../auth/public.decorator';
 import { ProductsService } from './products.service';
-import { RecommendationService } from '../recommendation.service';
+import { RecommendationService, type ProductSummary } from '../recommendation.service';
 import { ReviewsService } from '../../reviews/reviews.service';
+import { TranslationsService } from '../../translations/translations.service';
+import { ET_SHOP_PRODUCT } from '../../translations/translation-entities';
 import { PRODUCT_SORTS, type ProductSort } from './dto/product.dto';
 
 @Public()
@@ -12,6 +14,7 @@ export class ProductPublicController {
     private readonly products: ProductsService,
     private readonly recommendations: RecommendationService,
     private readonly reviews: ReviewsService,
+    private readonly translations: TranslationsService,
   ) {}
 
   @Get()
@@ -66,11 +69,24 @@ export class ProductPublicController {
   }
 
   @Get(':slug/recommendations')
-  async getRecommendations(@Param('slug') slug: string, @Query('limit') limit?: string) {
+  async getRecommendations(@Param('slug') slug: string, @Query('limit') limit?: string, @Query('lang') lang?: string) {
     const lim = limit ? parseInt(limit, 10) : 6;
     const product = await this.products.findBySlug(slug);
     const [frequentlyBoughtTogether, similar] = await Promise.all([this.recommendations.getFrequentlyBoughtTogether(product.id, lim), this.recommendations.getSimilarProducts(product.id, lim)]);
-    return { frequentlyBoughtTogether, similar };
+
+    // Overlaid here rather than inside RecommendationService, because that
+    // service caches its result in Redis under a key with no language in it.
+    // Translating before the cache would serve whichever locale warmed it to
+    // everyone; translating after keeps one cached similarity computation and
+    // costs one cheap lookup per request.
+    // ProductSummary is a declared interface, not an index signature, so it
+    // needs the cast maybeApply's generic constraint asks for.
+    const overlay = async (items: ProductSummary[]): Promise<ProductSummary[]> => {
+      const applied = await this.translations.maybeApply(items as unknown as Array<Record<string, unknown>>, ET_SHOP_PRODUCT, lang);
+      return applied as unknown as ProductSummary[];
+    };
+    const [fbt, sim] = await Promise.all([overlay(frequentlyBoughtTogether), overlay(similar)]);
+    return { frequentlyBoughtTogether: fbt, similar: sim };
   }
 
   @Get(':slug/reviews')

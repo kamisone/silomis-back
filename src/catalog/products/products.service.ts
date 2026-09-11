@@ -15,6 +15,22 @@ import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
 
+/**
+ * Prefix -> JSON collection, for the composite translation keys the product
+ * editor writes (see saveTranslations in admin/shop/products/[id]). Every
+ * prefix here must match the one the admin writes: a mismatch is invisible at
+ * runtime, exactly like an entityType mismatch, and the section simply stays
+ * in the base language.
+ */
+const PRODUCT_TRANSLATION_COLLECTIONS: Record<string, string> = {
+  faq: 'faqs',
+  trustBadge: 'trustBadges',
+  infoSection: 'infoSections',
+  storyItem: 'storyGallery',
+  document: 'documents',
+  socialVideo: 'socialVideos',
+};
+
 /** Ceiling on rows pulled for a sort that has to run in memory (curated
  * order, search rank, price). Well above any realistic collection, and low
  * enough that a public `?sort=price_asc` over the whole catalogue stays
@@ -681,6 +697,7 @@ export class ProductsService {
     this.resolveVariantPricesInPlace(resolved as never);
     await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
+    this.translations.applyNestedInPlace(translated as Record<string, unknown>, PRODUCT_TRANSLATION_COLLECTIONS);
     await this.translateVariantOptionsInPlace(translated as never, lang);
     await this.translateCategoriesInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
