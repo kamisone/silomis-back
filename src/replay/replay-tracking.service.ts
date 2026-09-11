@@ -5,7 +5,7 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { GeoIpService } from '../analytics-tracking/geo-ip.service';
 import { StartReplaySessionDto, IngestReplayBatchDto, ReplayMarkerDto } from './dto/replay.dto';
 import { containsLikelySensitiveData, batchByteSize } from './replay.util';
-import { MAX_BATCH_BYTES, MAX_BATCH_EVENTS, MAX_SESSION_EVENTS, chunkObjectKey } from './replay.constants';
+import { MAX_BATCH_BYTES, MAX_BATCH_EVENTS, MAX_SESSION_EVENTS, REPLAY_LIVE_SAMPLE_RATE, chunkObjectKey } from './replay.constants';
 
 @Injectable()
 export class ReplayTrackingService {
@@ -26,17 +26,28 @@ export class ReplayTrackingService {
     if (this.platformSettings.isAnalyticsExcluded(meta.ip)) return {};
     if (meta.userAgent !== undefined && this.platformSettings.isBotUserAgent(meta.userAgent)) return {};
 
-    // The client's own page context is never trusted — only ever record test products.
-    const product = await this.prisma.product.findUnique({ where: { id: dto.productId }, select: { isTestProduct: true } });
-    if (!product?.isTestProduct) return {};
+    // The client's own page context is never trusted: the product is re-read
+    // here, and a request naming one that does not exist, is not active, or is
+    // soft-deleted records nothing.
+    const product = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+      select: { isTestProduct: true, status: true, deletedAt: true },
+    });
+    if (!product || product.status !== 'active' || product.deletedAt) return {};
+
+    // Live products are sampled, test products never are — see
+    // REPLAY_LIVE_SAMPLE_RATE. Decided per session, so a session either records
+    // whole or not at all rather than losing the middle of one.
+    if (!product.isTestProduct && Math.random() >= REPLAY_LIVE_SAMPLE_RATE) return {};
 
     const now = new Date();
     const session = await this.prisma.replaySession.create({
       data: {
         productId: dto.productId,
-        // Always true today — the gate above only records test products — but
-        // stored rather than assumed, so a session keeps the phase it was
-        // recorded in once the product is promoted to live.
+        // The phase at the moment of recording. Snapshotted, never derived
+        // from the product's flag later: promoting a product to live must not
+        // drag its test-phase recordings into the live tab, and sessions
+        // recorded after the switch must land in the live one.
         productIsTest: product.isTestProduct,
         cartToken: dto.cartToken ?? null,
         visitorHash: this.geoIp.visitorHash(meta.ip),
