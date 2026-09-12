@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Patch, Query } from '@nestjs/common';
 import { resolveWindow, intParam } from '../analytics/analytics-filters';
 import { ReplayAdminService } from './replay-admin.service';
 import { ReplaySessionStatus } from '../../generated/prisma/client';
@@ -25,6 +25,12 @@ export class ReplayAdminController {
       limit: intParam(limit),
       offset: intParam(offset),
     });
+  }
+
+  /** Clears the unread badge for one session without opening it. */
+  @Patch(':id/viewed')
+  markViewed(@Param('id') id: string) {
+    return this.replayAdmin.markViewed(id);
   }
 
   @Get(':id')

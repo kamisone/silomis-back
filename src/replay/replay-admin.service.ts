@@ -65,6 +65,26 @@ export class ReplayAdminService {
     return { session, markers };
   }
 
+  /**
+   * Marks a session viewed without loading its recording.
+   *
+   * Opening a session already does this as a side effect of findOne, but a lot
+   * of sessions are identifiable as uninteresting from the list row alone — a
+   * two-second bounce with no clicks — and clearing the unread badge should not
+   * require downloading and playing them.
+   *
+   * Idempotent: an already-viewed session keeps its original timestamp, so the
+   * moment it was first looked at is not rewritten by a second click.
+   */
+  async markViewed(id: string): Promise<{ viewedAt: Date }> {
+    const session = await this.prisma.replaySession.findUnique({ where: { id }, select: { viewedAt: true } });
+    if (!session) throw new NotFoundException('Replay session not found');
+    if (session.viewedAt) return { viewedAt: session.viewedAt };
+
+    const updated = await this.prisma.replaySession.update({ where: { id }, data: { viewedAt: new Date() } });
+    return { viewedAt: updated.viewedAt! };
+  }
+
   private async withProduct<T extends { productId: string | null }>(sessions: T[]): Promise<Array<T & { product: { id: string; title: string } | null }>> {
     const productIds = [...new Set(sessions.map((s) => s.productId).filter((id): id is string => !!id))];
     const products = productIds.length ? await this.prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, title: true } }) : [];
