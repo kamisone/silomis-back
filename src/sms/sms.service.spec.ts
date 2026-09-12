@@ -71,7 +71,7 @@ describe('SmsService', () => {
     });
 
     it('leaves accented letters alone — they are copy, not punctuation', async () => {
-      await expect(sanitised('Sandale d’été')).resolves.toBe("Sandale d'été");
+      await expect(sanitised('Casquette brodée d’été')).resolves.toBe("Casquette brodée d'été");
     });
 
     it('leaves a message that is already plain ASCII untouched', async () => {

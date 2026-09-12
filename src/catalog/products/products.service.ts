@@ -1140,7 +1140,7 @@ export class ProductsService {
 
     // A category the product just gained hands it that category's filter
     // defaults; one it just lost takes its filter values for it — a product
-    // no longer in "Sandals" has no business still carrying a "Sandals"-only
+    // no longer in "Beanies" has no business still carrying a "Beanies"-only
     // filter's value.
     if (categoriesTouched) {
       const previousIds = new Set(existing.categories.map((c) => c.id));

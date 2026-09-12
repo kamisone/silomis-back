@@ -683,7 +683,7 @@ model ProductOptionValueImage {
 }
 
 /// A storefront browse-time facet scoped to one leaf category (e.g. "Material"
-/// on "Sandals") — distinct from VariantAttribute, which is a global axis a
+/// on "Beanies") — distinct from VariantAttribute, which is a global axis a
 /// shopper picks between to buy (colour/size), not something they filter a
 /// listing by.
 model CategoryFilter {
