@@ -140,9 +140,10 @@ export class PersonalizationAdminController {
   @Get('catalog')
   async catalog() {
     const [templates, fonts, threads] = await Promise.all([
+      // Positions are per product now, so they are not part of the shop-wide
+      // readout — the studio fetches them for whichever product is open.
       this.prisma.personalizationTemplate.findMany({
         include: {
-          placements: { orderBy: { sortOrder: 'asc' } },
           priceBands: { orderBy: { maxStitches: 'asc' } },
           _count: { select: { products: true } },
         },
@@ -245,61 +246,63 @@ export class PersonalizationAdminController {
   // Fully admin-managed. A shop that starts offering beanie cuffs adds the
   // position here; nothing about it is compiled in.
 
-  @Get('placements')
-  async listPlacements() {
-    const templates = await this.prisma.personalizationTemplate.findMany({
-      orderBy: { key: 'asc' },
-      include: { placements: { orderBy: { sortOrder: 'asc' } } },
+  @Get('products/:productId/placements')
+  async listPlacements(@Param('productId') productId: string) {
+    const placements = await this.prisma.personalizationPlacement.findMany({
+      where: { productId },
+      orderBy: { sortOrder: 'asc' },
     });
 
-    const urls = await this.assetUrls.resolveBatch(
-      templates.flatMap((t) => t.placements.map((p) => p.mediaKey).filter(Boolean) as string[]),
-    );
+    const urls = await this.assetUrls.resolveBatch(placements.map((p) => p.mediaKey).filter(Boolean) as string[]);
 
-    return templates.map((t) => ({
-      id: t.id,
-      key: t.key,
-      name: t.name,
-      placements: t.placements.map((p) => ({
-        id: p.id,
-        key: p.key,
-        label: p.label,
-        hint: p.hint,
-        fieldWidthMm: p.fieldWidthMm,
-        fieldHeightMm: p.fieldHeightMm,
-        maxColors: p.maxColors,
-        maxChars: p.maxChars,
-        priceCents: p.priceCents,
-        isActive: p.isActive,
-        sortOrder: p.sortOrder,
-        mediaKey: p.mediaKey,
-        imageUrl: p.mediaKey ? (urls.get(p.mediaKey) ?? null) : null,
-        isTraced: p.isTraced,
-        corners: [
-          { x: p.topLeftXPct, y: p.topLeftYPct },
-          { x: p.topRightXPct, y: p.topRightYPct },
-          { x: p.bottomRightXPct, y: p.bottomRightYPct },
-          { x: p.bottomLeftXPct, y: p.bottomLeftYPct },
-        ],
-      })),
+    return placements.map((p) => ({
+      id: p.id,
+      key: p.key,
+      label: p.label,
+      hint: p.hint,
+      fieldWidthMm: p.fieldWidthMm,
+      fieldHeightMm: p.fieldHeightMm,
+      maxColors: p.maxColors,
+      maxChars: p.maxChars,
+      priceCents: p.priceCents,
+      isActive: p.isActive,
+      sortOrder: p.sortOrder,
+      mediaKey: p.mediaKey,
+      imageUrl: p.mediaKey ? (urls.get(p.mediaKey) ?? null) : null,
+      isTraced: p.isTraced,
+      corners: [
+        { x: p.topLeftXPct, y: p.topLeftYPct },
+        { x: p.topRightXPct, y: p.topRightYPct },
+        { x: p.bottomRightXPct, y: p.bottomRightYPct },
+        { x: p.bottomLeftXPct, y: p.bottomLeftYPct },
+      ],
     }));
   }
 
-  @Post('placements')
-  async createPlacement(@Body() body: PlacementBody & { templateId?: string; key?: string }) {
-    if (!body.templateId) throw new BadRequestException('A position belongs to a template.');
+  @Post('products/:productId/placements')
+  async createPlacement(@Param('productId') productId: string, @Body() body: PlacementBody & { key?: string }) {
     const key = body.key?.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
     if (!key) throw new BadRequestException('A position needs a key.');
 
     const label = parseLocalized(body.label);
     if (!label) throw new BadRequestException('A position needs a name in at least one language.');
 
-    const count = await this.prisma.personalizationPlacement.count({ where: { templateId: body.templateId } });
+    // Only a product that can be personalised at all — a position on anything
+    // else is data nothing will ever read.
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: { personalizationTemplateId: true },
+    });
+    if (!product?.personalizationTemplateId) {
+      throw new BadRequestException('Turn personalisation on for this product first.');
+    }
+
+    const count = await this.prisma.personalizationPlacement.count({ where: { productId } });
     const numbers = this.placementNumbers(body);
 
     return this.prisma.personalizationPlacement.create({
       data: {
-        templateId: body.templateId,
+        productId,
         key,
         label,
         hint: parseLocalized(body.hint) ?? Prisma.JsonNull,
@@ -360,8 +363,9 @@ export class PersonalizationAdminController {
 
   /**
    * Removing a position takes its photograph and tracing with it, but never the
-   * designs already ordered on it — those rows keep their own frozen label and
-   * artwork, so a job on the floor survives the shop changing its mind.
+   * designs already ordered on it — those rows keep their own frozen label,
+   * hoop field and artwork, so a job on the floor survives the shop changing
+   * its mind.
    */
   @Delete('placements/:id')
   async deletePlacement(@Param('id') id: string) {

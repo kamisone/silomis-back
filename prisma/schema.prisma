@@ -568,6 +568,7 @@ model Product {
   wishlistItems     WishlistItem[]
   blogRefs          BlogProductReference[]
   filterValues      ProductFilterValue[]
+  placements        PersonalizationPlacement[]
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -2701,7 +2702,6 @@ model PersonalizationTemplate {
 
   isActive Boolean @default(true)
 
-  placements PersonalizationPlacement[]
   priceBands PersonalizationPriceBand[]
   products   Product[]
 
@@ -2724,9 +2724,14 @@ model PersonalizationTemplate {
 /// The flat preview percentages are a fallback for a product whose panel has
 /// not been traced yet — see the placement's own corners for the real thing.
 model PersonalizationPlacement {
-  id         String                  @id @default(uuid())
-  template   PersonalizationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-  templateId String
+  id String @id @default(uuid())
+
+  /// Positions belong to a product, not to the shop. They have to: each one
+  /// carries the photograph the customer places artwork on, and a cap's front
+  /// panel is that cap's photo — a beanie has no peak to be above, and a shop
+  /// selling both cannot share one list between them.
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   /// Stable machine key, referenced by every stored design. Never renamed —
   /// the label is what changes when a shop rewords a position.
@@ -2786,8 +2791,8 @@ model PersonalizationPlacement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([templateId, key])
-  @@index([templateId, isActive, sortOrder])
+  @@unique([productId, key])
+  @@index([productId, isActive, sortOrder])
   @@map("shop_personalization_placements")
 }
 
@@ -2850,6 +2855,12 @@ model CartItemPersonalization {
   offsetXMm Float @default(0)
   offsetYMm Float @default(0)
 
+  /// The hoop field this design was made against. Frozen here rather than read
+  /// back from the position: resizing a position later must not redraw a sheet
+  /// for a job that has already been quoted, sold and scheduled.
+  fieldWidthMm  Float @default(100)
+  fieldHeightMm Float @default(50)
+
   /// Angle of the embroidery in the garment's own plane. Zero is square to the
   /// traced position; the production sheet turns the frame and the lettering
   /// together, so the operator hoops at this angle.
@@ -2904,6 +2915,12 @@ model OrderItemPersonalization {
   /// wrong place, and the cap cannot be unpicked.
   offsetXMm Float @default(0)
   offsetYMm Float @default(0)
+
+  /// The hoop field this design was made against. Frozen here rather than read
+  /// back from the position: resizing a position later must not redraw a sheet
+  /// for a job that has already been quoted, sold and scheduled.
+  fieldWidthMm  Float @default(100)
+  fieldHeightMm Float @default(50)
 
   /// Angle of the embroidery in the garment's own plane. Zero is square to the
   /// traced position; the production sheet turns the frame and the lettering

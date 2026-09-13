@@ -43,6 +43,8 @@ type CartItemWithDesign = CartItem & {
     fontName: string;
     fontWeight: number;
     heightMm: number;
+    fieldWidthMm: number;
+    fieldHeightMm: number;
     offsetXMm: number;
     offsetYMm: number;
     rotationDeg: number;
@@ -302,6 +304,8 @@ export class CartService {
                     fontName: design.fontName,
                     fontWeight: design.fontWeight,
                     heightMm: design.heightMm,
+                    fieldWidthMm: design.fieldWidthMm,
+                    fieldHeightMm: design.fieldHeightMm,
                     offsetXMm: design.offsetXMm,
                     offsetYMm: design.offsetYMm,
                     rotationDeg: design.rotationDeg,

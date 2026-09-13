@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  CAP_PLACEMENT_SEED,
   DEFAULT_TEMPLATE_KEY,
   DEFAULT_TEMPLATE_NAME,
   FONT_SEED,
@@ -82,10 +81,11 @@ export class PersonalizationSeedService implements OnModuleInit {
   // ── Template, placements and bands ───────────────────────────────────
 
   /**
-   * The template is seeded once and then left alone entirely — its placements
-   * carry hoop measurements and preview coordinates that a shop is expected to
-   * tune against its own photography, and re-running the seed over edited
-   * numbers would undo that work on every deploy.
+   * The template is seeded once and then left alone entirely.
+   *
+   * It carries no positions: those belong to a product now, and each one needs
+   * a photograph of that product before it can be offered — neither of which a
+   * seed can invent. A shop creates them in the placement studio, per product.
    */
   private async seedTemplate(): Promise<void> {
     const seeded = await this.readMarker(SEEDED_TEMPLATE_KEY);
@@ -100,7 +100,6 @@ export class PersonalizationSeedService implements OnModuleInit {
         allowText: true,
         allowMonogram: true,
         allowUpload: false,
-        placements: { create: CAP_PLACEMENT_SEED },
         priceBands: { create: PRICE_BAND_SEED },
       },
     });

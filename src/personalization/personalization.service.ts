@@ -44,6 +44,9 @@ export interface ResolvedPersonalization {
   /** 1–5 as chosen; `fontWeight` is the CSS/production value it maps to. */
   weightStep: number;
   fontWeight: number;
+  /** The hoop field this design was made against, frozen with it. */
+  fieldWidthMm: number;
+  fieldHeightMm: number;
   threadColors: ResolvedThread[];
   stitchEstimate: number;
   /** Per unit. */
@@ -70,6 +73,8 @@ export interface CartLineDesign {
   fontName: string;
   fontWeight: number;
   heightMm: number;
+  fieldWidthMm: number;
+  fieldHeightMm: number;
   threadColors: unknown;
   stitchEstimate: number;
   offsetXMm: number;
@@ -108,14 +113,19 @@ export class PersonalizationService {
     });
     if (!product || product.status !== 'active' || !product.personalizationTemplateId) return null;
 
-    const template = await this.prisma.personalizationTemplate.findUnique({
-      where: { id: product.personalizationTemplateId },
-      include: {
-        placements: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } },
-        priceBands: { orderBy: { maxStitches: 'asc' } },
-      },
-    });
-    if (!template || !template.isActive || !template.placements.length) return null;
+    // The template is shop-wide policy — what may be written and what it costs
+    // per stitch band. The positions themselves belong to this product.
+    const [template, placements] = await Promise.all([
+      this.prisma.personalizationTemplate.findUnique({
+        where: { id: product.personalizationTemplateId },
+        include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
+      }),
+      this.prisma.personalizationPlacement.findMany({
+        where: { productId: product.id, isActive: true },
+        orderBy: { sortOrder: 'asc' },
+      }),
+    ]);
+    if (!template || !template.isActive || !placements.length) return null;
 
     const [fonts, threads] = await Promise.all([
       this.prisma.embroideryFont.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
@@ -123,14 +133,12 @@ export class PersonalizationService {
     ]);
     if (!fonts.length || !threads.length) return null;
 
-    const imageUrls = await this.assetUrls.resolveBatch(
-      template.placements.map((p) => p.mediaKey).filter(Boolean) as string[],
-    );
+    const imageUrls = await this.assetUrls.resolveBatch(placements.map((p) => p.mediaKey).filter(Boolean) as string[]);
 
     // A position with no photograph has nothing for a customer to place artwork
     // on, so it is not offered at all — and a product whose every position is
     // in that state cannot be personalised yet.
-    const offered = template.placements.filter((p) => p.mediaKey && imageUrls.get(p.mediaKey));
+    const offered = placements.filter((p) => p.mediaKey && imageUrls.get(p.mediaKey));
     if (!offered.length) return null;
 
     return {
@@ -211,13 +219,15 @@ export class PersonalizationService {
       fail(E.NOT_AVAILABLE, 'This product cannot be personalised.');
     }
 
-    const template = await this.prisma.personalizationTemplate.findUnique({
-      where: { id: product.personalizationTemplateId },
-      include: {
-        placements: { where: { isActive: true } },
-        priceBands: { orderBy: { maxStitches: 'asc' } },
-      },
-    });
+    const [template, placement] = await Promise.all([
+      this.prisma.personalizationTemplate.findUnique({
+        where: { id: product.personalizationTemplateId },
+        include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
+      }),
+      this.prisma.personalizationPlacement.findUnique({
+        where: { productId_key: { productId, key: input.placementKey } },
+      }),
+    ]);
     if (!template?.isActive) fail(E.NOT_AVAILABLE, 'This product cannot be personalised.');
 
     if (input.contentType === 'text' && !template.allowText) {
@@ -227,8 +237,7 @@ export class PersonalizationService {
       fail(E.CONTENT_TYPE_DISABLED, 'Monograms are not offered on this product.');
     }
 
-    const placement = template.placements.find((p) => p.key === input.placementKey);
-    if (!placement) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not available.');
+    if (!placement?.isActive) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not available.');
 
     // The same rule getConfigForProduct applies when deciding what to offer.
     // Enforced here too because the config is a convenience for the editor and
@@ -351,6 +360,8 @@ export class PersonalizationService {
       heightMm,
       weightStep: weight.step,
       fontWeight: weight.cssWeight,
+      fieldWidthMm: placement.fieldWidthMm,
+      fieldHeightMm: placement.fieldHeightMm,
       threadColors: threads,
       stitchEstimate,
       priceCents,
@@ -599,12 +610,14 @@ export class PersonalizationService {
     for (const item of items) {
       for (const design of item.personalizations ?? []) {
         try {
-          const placement = await this.placementFor(design.templateId, design.placementKey);
+          // The field comes off the design, not off the position it was made
+          // against: a shop that resizes a position tomorrow must not change
+          // the sheet for a job it sold today.
           svgs.set(
             `${item.id}:${design.placementKey}`,
             this.buildProductionSvg(design as unknown as ResolvedPersonalization, {
-              fieldWidthMm: placement.fieldWidthMm,
-              fieldHeightMm: placement.fieldHeightMm,
+              fieldWidthMm: design.fieldWidthMm,
+              fieldHeightMm: design.fieldHeightMm,
             }),
           );
         } catch (err) {
@@ -617,14 +630,6 @@ export class PersonalizationService {
     return svgs;
   }
 
-  /** Re-reads the placement a resolved design refers to, for the SVG bounds. */
-  async placementFor(templateId: string, placementKey: string) {
-    const placement = await this.prisma.personalizationPlacement.findUnique({
-      where: { templateId_key: { templateId, key: placementKey } },
-    });
-    if (!placement) throw new NotFoundException('Placement not found');
-    return placement;
-  }
 }
 
 /**

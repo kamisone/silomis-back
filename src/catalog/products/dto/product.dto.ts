@@ -221,6 +221,8 @@ export interface ProductListFilter {
   search?: string;
   featured?: boolean;
   isTestProduct?: boolean;
+  /** Only products that can (or cannot) be personalised at all. */
+  personalizable?: boolean;
   ids?: string[];
   /** Only products the storefront would badge as discounted — the /sale
    * listing. See ProductsService.onSaleWhere for what "on sale" resolves to:

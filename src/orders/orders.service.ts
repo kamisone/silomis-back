@@ -152,6 +152,8 @@ export class OrdersService {
                       fontName: d.fontName,
                       fontWeight: d.fontWeight,
                       heightMm: d.heightMm,
+                      fieldWidthMm: d.fieldWidthMm,
+                      fieldHeightMm: d.fieldHeightMm,
                       offsetXMm: d.offsetXMm,
                       offsetYMm: d.offsetYMm,
                       rotationDeg: d.rotationDeg,

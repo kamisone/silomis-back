@@ -61,6 +61,7 @@ const BANDS = [
   { maxStitches: 9000, priceCents: 1800, label: 'Large' },
 ];
 
+const PLACEMENTS = [FRONT, BACK];
 const FONTS = [BLOCK, VARSITY, SIGNATURE];
 const THREADS = [TEAL, PINK, WHITE];
 
@@ -77,6 +78,7 @@ function makeService(
       })),
     },
     personalizationTemplate: {
+      // Shop-wide policy only: what may be written, and the stitch bands.
       findUnique: jest.fn(async () => ({
         id: 'tpl-1',
         key: 'cap-standard',
@@ -85,9 +87,17 @@ function makeService(
         allowText: true,
         allowMonogram,
         allowUpload: false,
-        placements: overrides.hasView === false ? [{ ...FRONT, mediaKey: null }, BACK] : [FRONT, BACK],
         priceBands: BANDS,
       })),
+    },
+    // Positions belong to the product, and are looked up one at a time by key.
+    personalizationPlacement: {
+      findUnique: jest.fn(async ({ where }: { where: { productId_key: { key: string } } }) => {
+        const found = PLACEMENTS.find((p) => p.key === where.productId_key.key);
+        if (!found) return null;
+        return overrides.hasView === false ? { ...found, mediaKey: null } : found;
+      }),
+      findMany: jest.fn(async () => PLACEMENTS),
     },
     embroideryFont: { findUnique: jest.fn(async ({ where }: { where: { key: string } }) => FONTS.find((f) => f.key === where.key) ?? null) },
     threadColor: {

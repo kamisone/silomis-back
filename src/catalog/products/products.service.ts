@@ -400,7 +400,7 @@ export class ProductsService {
   // ── Admin list ──────────────────────────────────────────────────────────
 
   async adminList(filter: ProductListFilter = {}) {
-    const { status, search, featured, isTestProduct, onSale, limit = 20, offset = 0 } = filter;
+    const { status, search, featured, isTestProduct, onSale, personalizable, limit = 20, offset = 0 } = filter;
     // Same definition the storefront badges by, so a picker restricted to
     // "on sale" offers exactly the products that would carry the badge.
     const saleWhere = onSale ? await this.onSaleWhere() : null;
@@ -409,6 +409,13 @@ export class ProductsService {
       ...(status ? { status: status as Product['status'] } : {}),
       ...(featured !== undefined ? { featured } : {}),
       ...(isTestProduct !== undefined ? { isTestProduct } : {}),
+      // Filtered here rather than by the caller, so a picker restricted to
+      // personalisable products pages through them properly — a client-side
+      // filter would show an empty page whenever the first twenty happened to
+      // be ordinary products.
+      ...(personalizable !== undefined
+        ? { personalizationTemplateId: personalizable ? { not: null } : null }
+        : {}),
       ...(saleWhere ? { AND: [saleWhere] } : {}),
       ...(search
         ? {
