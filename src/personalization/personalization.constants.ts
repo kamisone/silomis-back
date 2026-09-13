@@ -86,6 +86,51 @@ export const MAX_TRAVEL_FACTOR = 1.5;
  */
 export const ROTATION_LIMIT_DEG = 180;
 
+/** Up to three lines. Beyond that a hoop field runs out of height long before. */
+export const MAX_TEXT_LINES = 3;
+
+/**
+ * Letter spacing, as a fraction of cap height.
+ *
+ * Tracking opens or closes every gap equally; kerning nudges one gap at a time.
+ * Both exist because a digitiser does both — a script face needs its letters
+ * touching, a block face on a curve needs them opened up, and "AV" needs
+ * closing whatever the rest of the word wants.
+ */
+export const TRACKING_MIN = -0.12;
+export const TRACKING_MAX = 0.5;
+export const KERNING_LIMIT = 0.4;
+
+/**
+ * Arc the baseline is bent along, in degrees of the circle it sits on.
+ *
+ * Positive arches up over a cap's crown, negative smiles under it. Zero is a
+ * straight line. Beyond about ±160 the ends meet and the word reads as a ring,
+ * which is a real layout but not one to reach by accident.
+ */
+export const CURVE_LIMIT_DEG = 160;
+
+/**
+ * An outline is a second pass round every glyph in a second colour. It is not
+ * free: the run length is roughly the perimeter, which on text is close to the
+ * fill itself.
+ */
+export const OUTLINE_STITCH_FACTOR = 0.55;
+
+/**
+ * 3D puff lays foam under the satin and burns the edges off. Denser, slower,
+ * and only possible on a bold flat face on a frame that can take the height —
+ * both gated in the catalogue, never assumed.
+ */
+export const PUFF_STITCH_FACTOR = 1.35;
+
+/** A curve costs travel between glyphs that a straight line does not. */
+export const CURVE_STITCH_FACTOR = 1.08;
+
+/** Motifs cost what they were digitised at, plus the usual colour changes. */
+export const MOTIF_MIN_MM = 15;
+export const MOTIF_MAX_MM = 120;
+
 /**
  * Words we will not stitch. Deliberately short and obvious: this is a backstop
  * against the worst inputs reaching a machine unattended, not a moderation
@@ -125,4 +170,11 @@ export const PERSONALIZATION_ERRORS = {
   TOO_MANY_COLORS: 'PERSONALIZATION_TOO_MANY_COLORS',
   TOO_MANY_STITCHES: 'PERSONALIZATION_TOO_MANY_STITCHES',
   CONTENT_TYPE_DISABLED: 'PERSONALIZATION_CONTENT_TYPE_DISABLED',
+  TOO_MANY_LINES: 'PERSONALIZATION_TOO_MANY_LINES',
+  TOO_TALL: 'PERSONALIZATION_TOO_TALL',
+  MOTIF_UNKNOWN: 'PERSONALIZATION_MOTIF_UNKNOWN',
+  MOTIF_SIZE: 'PERSONALIZATION_MOTIF_SIZE',
+  PUFF_UNAVAILABLE: 'PERSONALIZATION_PUFF_UNAVAILABLE',
+  CURVE_UNAVAILABLE: 'PERSONALIZATION_CURVE_UNAVAILABLE',
+  OUTLINE_NEEDS_SECOND_COLOR: 'PERSONALIZATION_OUTLINE_NEEDS_SECOND_COLOR',
 } as const;

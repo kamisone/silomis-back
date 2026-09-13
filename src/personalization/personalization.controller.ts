@@ -57,6 +57,12 @@ export class PersonalizationController {
         offsetXMm: r.offsetXMm,
         offsetYMm: r.offsetYMm,
         rotationDeg: r.rotationDeg,
+        trackingPct: r.trackingPct,
+        curveDeg: r.curveDeg,
+        lineCount: r.lineCount,
+        hasOutline: r.hasOutline,
+        isPuff: r.isPuff,
+        motif: r.motif ? { key: r.motif.key, name: r.motif.name, sizeMm: r.motif.sizeMm } : null,
       })),
     };
   }

@@ -2617,6 +2617,8 @@ model PageContent {
 enum PersonalizationContentType {
   text
   monogram
+  /// A pre-digitised shape, with no lettering.
+  motif
 }
 
 /// A pre-digitised embroidery typeface.
@@ -2653,6 +2655,12 @@ model EmbroideryFont {
   /// those rather than showing the customer letters it cannot sew.
   uppercaseOnly    Boolean @default(false)
   supportsMonogram Boolean @default(true)
+  /// Puff needs a bold face with flat, wide columns — a fine script collapses
+  /// over foam. Gated per face rather than assumed from the weight setting.
+  supportsPuff     Boolean @default(false)
+  /// A face whose letters join cannot be bent along an arc without breaking
+  /// the joins, so a shop can turn curving off for one.
+  supportsCurve    Boolean @default(true)
 
   isActive  Boolean @default(true)
   sortOrder Int     @default(0)
@@ -2674,6 +2682,12 @@ model ThreadColor {
   name  String @db.VarChar(160)
   /// Screen approximation of the spool, for the editor only.
   hex   String @db.VarChar(7)
+
+  /// matte | metallic | neon | glow. Not decoration: a metallic thread runs at
+  /// a lower machine speed and breaks more often, which is what the multiplier
+  /// below pays for.
+  finish          String @default("matte") @db.VarChar(20)
+  priceMultiplier Float  @default(1)
 
   isActive  Boolean @default(true)
   sortOrder Int     @default(0)
@@ -2716,6 +2730,39 @@ model PersonalizationTemplate {
 /// against; the preview percentages only place the artwork on the product
 /// photo, and are percentages so one set of numbers works at every rendered
 /// size.
+/// A pre-digitised shape a customer can stitch instead of, or as well as,
+/// words. The counterpart to the font list: everything offered here has been
+/// drawn once by a digitiser, which is what lets it be priced instantly.
+///
+/// `path` is the outline as SVG path data. The catalogue is admin-authored, so
+/// it is trusted markup — but it is still rendered as a `d` attribute on a
+/// `<path>` and never injected as HTML.
+model EmbroideryMotif {
+  id   String @id @default(uuid())
+  key  String @unique @db.VarChar(80)
+  /// { en: "Heart", fr: "Cœur", … } — the admin's Generate button fills it.
+  name Json
+
+  path String
+  /// The coordinate box `path` is drawn in, so it can be scaled to millimetres.
+  viewBox String @default("0 0 100 100") @db.VarChar(80)
+
+  /// Measured from a stitch-out at 30mm; the estimator scales it by area.
+  stitchesAt30mm Int @default(2200)
+  /// How many thread colours this shape needs. Most are one.
+  colorCount     Int @default(1)
+
+  category  String? @db.VarChar(80)
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("shop_embroidery_motifs")
+}
+
 /// One embroidery position the shop offers, with the machine's usable field
 /// for it. Entirely admin-managed: a shop that starts doing beanie cuffs adds
 /// the position here rather than waiting on a migration.
@@ -2780,6 +2827,10 @@ model PersonalizationPlacement {
   previewHeightPct Float @default(15)
   previewRotateDeg Float @default(0)
 
+  /// 3D puff needs a frame that can take the foam's height — a flat cap front
+  /// can, a curved side panel cannot. Off unless a shop says otherwise.
+  allowPuff Boolean @default(false)
+
   /// What this position costs to personalise, on top of the stitch-count band.
   /// A customer who embroiders two positions pays both — each one is its own
   /// hooping, its own thread change and its own run on the machine.
@@ -2829,8 +2880,12 @@ model CartItemPersonalization {
   contentType PersonalizationContentType
 
   /// Already normalised: trimmed, collapsed whitespace, upper-cased for an
-  /// uppercase-only face. What is stored is exactly what gets stitched.
-  text     String @db.VarChar(60)
+  /// uppercase-only face. Lines are separated by "\n". What is stored is
+  /// exactly what gets stitched.
+  text      String @db.VarChar(200)
+  /// Denormalised so the production queue can show "3 lines" without parsing.
+  lineCount Int    @default(1)
+
   fontKey  String @db.VarChar(80)
   fontName String @db.VarChar(200)
   /// CSS-style weight (300–900). Not a second digitised face: a satin column is
@@ -2838,6 +2893,30 @@ model CartItemPersonalization {
   /// letter is on a machine — and why it costs more stitches.
   fontWeight Int @default(400)
   heightMm Float
+
+  /// Letter spacing as a fraction of cap height. Tracking opens every gap
+  /// equally; kerning is a per-gap nudge on top, one entry per gap between
+  /// glyphs, and null when the customer never touched it.
+  trackingPct Float @default(0)
+  kerning     Json?
+
+  /// Degrees of arc the baseline is bent along. Zero is a straight line.
+  curveDeg Float @default(0)
+
+  /// A second pass round every glyph, in `outlineThread`.
+  hasOutline    Boolean @default(false)
+  outlineThread Json?
+
+  /// Foam under the satin. Only where the position and the face both allow it.
+  isPuff Boolean @default(false)
+
+  /// The shape, when one was chosen. Frozen with the design — retiring a motif
+  /// from the catalogue must not leave an ordered job with nothing to stitch.
+  motifKey     String? @db.VarChar(80)
+  motifName    String? @db.VarChar(200)
+  motifPath    String?
+  motifViewBox String? @db.VarChar(80)
+  motifSizeMm  Float?
 
   /// [{ brand, code, name, hex }] — resolved from ThreadColor at add-to-cart,
   /// then frozen, so retiring a thread never rewrites a basket.
@@ -2895,7 +2974,10 @@ model OrderItemPersonalization {
 
   contentType PersonalizationContentType
 
-  text     String @db.VarChar(60)
+  text      String @db.VarChar(200)
+  /// Denormalised so the production queue can show "3 lines" without parsing.
+  lineCount Int    @default(1)
+
   fontKey  String @db.VarChar(80)
   fontName String @db.VarChar(200)
   /// CSS-style weight (300–900). Not a second digitised face: a satin column is
@@ -2903,6 +2985,30 @@ model OrderItemPersonalization {
   /// letter is on a machine — and why it costs more stitches.
   fontWeight Int @default(400)
   heightMm Float
+
+  /// Letter spacing as a fraction of cap height. Tracking opens every gap
+  /// equally; kerning is a per-gap nudge on top, one entry per gap between
+  /// glyphs, and null when the customer never touched it.
+  trackingPct Float @default(0)
+  kerning     Json?
+
+  /// Degrees of arc the baseline is bent along. Zero is a straight line.
+  curveDeg Float @default(0)
+
+  /// A second pass round every glyph, in `outlineThread`.
+  hasOutline    Boolean @default(false)
+  outlineThread Json?
+
+  /// Foam under the satin. Only where the position and the face both allow it.
+  isPuff Boolean @default(false)
+
+  /// The shape, when one was chosen. Frozen with the design — retiring a motif
+  /// from the catalogue must not leave an ordered job with nothing to stitch.
+  motifKey     String? @db.VarChar(80)
+  motifName    String? @db.VarChar(200)
+  motifPath    String?
+  motifViewBox String? @db.VarChar(80)
+  motifSizeMm  Float?
 
   threadColors Json
 

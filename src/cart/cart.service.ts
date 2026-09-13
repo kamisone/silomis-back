@@ -45,6 +45,11 @@ type CartItemWithDesign = CartItem & {
     heightMm: number;
     fieldWidthMm: number;
     fieldHeightMm: number;
+    lineCount: number;
+    curveDeg: number;
+    hasOutline: boolean;
+    isPuff: boolean;
+    motifName: string | null;
     offsetXMm: number;
     offsetYMm: number;
     rotationDeg: number;
@@ -306,6 +311,18 @@ export class CartService {
                     heightMm: design.heightMm,
                     fieldWidthMm: design.fieldWidthMm,
                     fieldHeightMm: design.fieldHeightMm,
+                    lineCount: design.lineCount,
+                    trackingPct: design.trackingPct,
+                    kerning: (design.kerning ?? undefined) as never,
+                    curveDeg: design.curveDeg,
+                    hasOutline: design.hasOutline,
+                    outlineThread: (design.outlineThread ?? undefined) as never,
+                    isPuff: design.isPuff,
+                    motifKey: design.motif?.key ?? null,
+                    motifName: design.motif?.name ?? null,
+                    motifPath: design.motif?.path ?? null,
+                    motifViewBox: design.motif?.viewBox ?? null,
+                    motifSizeMm: design.motif?.sizeMm ?? null,
                     offsetXMm: design.offsetXMm,
                     offsetYMm: design.offsetYMm,
                     rotationDeg: design.rotationDeg,
@@ -640,6 +657,14 @@ export class CartService {
         rotationDeg: d.rotationDeg,
         threadColors: d.threadColors,
         priceCents: d.priceCents,
+        // Everything the basket has to show back: a customer checking their
+        // spelling is also checking they picked the shape and the curve they
+        // meant to.
+        lineCount: d.lineCount,
+        curveDeg: d.curveDeg,
+        hasOutline: d.hasOutline,
+        isPuff: d.isPuff,
+        motifName: d.motifName,
       })),
     }));
 

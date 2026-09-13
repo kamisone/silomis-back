@@ -19,6 +19,10 @@ export interface FontSeed {
   avgCharWidthRatio: number;
   uppercaseOnly: boolean;
   supportsMonogram: boolean;
+  /** Puff needs wide flat columns; a fine script collapses over foam. */
+  supportsPuff: boolean;
+  /** A joined face breaks at the joins when bent along an arc. */
+  supportsCurve: boolean;
   sortOrder: number;
 }
 
@@ -29,14 +33,14 @@ export interface FontSeed {
  * webfonts to every PDP visitor to be exact about it is a bad trade.
  */
 export const FONT_SEED: FontSeed[] = [
-  { key: 'block-classic', name: 'Block', webFamily: '"Helvetica Neue", Arial, sans-serif', minHeightMm: 8, maxHeightMm: 40, stitchesPerCharAt10mm: 130, avgCharWidthRatio: 0.62, uppercaseOnly: false, supportsMonogram: true, sortOrder: 10 },
-  { key: 'block-bold', name: 'Block Bold', webFamily: '"Arial Black", "Helvetica Neue", sans-serif', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 180, avgCharWidthRatio: 0.70, uppercaseOnly: false, supportsMonogram: true, sortOrder: 20 },
-  { key: 'script-classic', name: 'Script', webFamily: '"Snell Roundhand", "Brush Script MT", cursive', minHeightMm: 10, maxHeightMm: 40, stitchesPerCharAt10mm: 150, avgCharWidthRatio: 0.55, uppercaseOnly: false, supportsMonogram: true, sortOrder: 30 },
-  { key: 'script-signature', name: 'Signature', webFamily: '"Zapfino", "Segoe Script", cursive', minHeightMm: 12, maxHeightMm: 40, stitchesPerCharAt10mm: 175, avgCharWidthRatio: 0.58, uppercaseOnly: false, supportsMonogram: false, sortOrder: 40 },
-  { key: 'serif-varsity', name: 'Varsity', webFamily: '"Bookman Old Style", Georgia, serif', minHeightMm: 10, maxHeightMm: 40, stitchesPerCharAt10mm: 200, avgCharWidthRatio: 0.74, uppercaseOnly: true, supportsMonogram: true, sortOrder: 50 },
-  { key: 'serif-classic', name: 'Serif', webFamily: 'Georgia, "Times New Roman", serif', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 145, avgCharWidthRatio: 0.60, uppercaseOnly: false, supportsMonogram: true, sortOrder: 60 },
-  { key: 'sans-modern', name: 'Modern', webFamily: '"Futura", "Century Gothic", sans-serif', minHeightMm: 8, maxHeightMm: 40, stitchesPerCharAt10mm: 125, avgCharWidthRatio: 0.64, uppercaseOnly: false, supportsMonogram: true, sortOrder: 70 },
-  { key: 'mono-stencil', name: 'Stencil', webFamily: '"Courier New", ui-monospace, monospace', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 135, avgCharWidthRatio: 0.68, uppercaseOnly: true, supportsMonogram: false, sortOrder: 80 },
+  { key: 'block-classic', name: 'Block', webFamily: '"Helvetica Neue", Arial, sans-serif', minHeightMm: 8, maxHeightMm: 40, stitchesPerCharAt10mm: 130, avgCharWidthRatio: 0.62, uppercaseOnly: false, supportsMonogram: true, supportsPuff: true, supportsCurve: true, sortOrder: 10 },
+  { key: 'block-bold', name: 'Block Bold', webFamily: '"Arial Black", "Helvetica Neue", sans-serif', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 180, avgCharWidthRatio: 0.70, uppercaseOnly: false, supportsMonogram: true, supportsPuff: true, supportsCurve: true, sortOrder: 20 },
+  { key: 'script-classic', name: 'Script', webFamily: '"Snell Roundhand", "Brush Script MT", cursive', minHeightMm: 10, maxHeightMm: 40, stitchesPerCharAt10mm: 150, avgCharWidthRatio: 0.55, uppercaseOnly: false, supportsMonogram: true, supportsPuff: false, supportsCurve: true, sortOrder: 30 },
+  { key: 'script-signature', name: 'Signature', webFamily: '"Zapfino", "Segoe Script", cursive', minHeightMm: 12, maxHeightMm: 40, stitchesPerCharAt10mm: 175, avgCharWidthRatio: 0.58, uppercaseOnly: false, supportsMonogram: false, supportsPuff: false, supportsCurve: false, sortOrder: 40 },
+  { key: 'serif-varsity', name: 'Varsity', webFamily: '"Bookman Old Style", Georgia, serif', minHeightMm: 10, maxHeightMm: 40, stitchesPerCharAt10mm: 200, avgCharWidthRatio: 0.74, uppercaseOnly: true, supportsMonogram: true, supportsPuff: true, supportsCurve: true, sortOrder: 50 },
+  { key: 'serif-classic', name: 'Serif', webFamily: 'Georgia, "Times New Roman", serif', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 145, avgCharWidthRatio: 0.60, uppercaseOnly: false, supportsMonogram: true, supportsPuff: false, supportsCurve: true, sortOrder: 60 },
+  { key: 'sans-modern', name: 'Modern', webFamily: '"Futura", "Century Gothic", sans-serif', minHeightMm: 8, maxHeightMm: 40, stitchesPerCharAt10mm: 125, avgCharWidthRatio: 0.64, uppercaseOnly: false, supportsMonogram: true, supportsPuff: true, supportsCurve: true, sortOrder: 70 },
+  { key: 'mono-stencil', name: 'Stencil', webFamily: '"Courier New", ui-monospace, monospace', minHeightMm: 9, maxHeightMm: 40, stitchesPerCharAt10mm: 135, avgCharWidthRatio: 0.68, uppercaseOnly: true, supportsMonogram: false, supportsPuff: true, supportsCurve: true, sortOrder: 80 },
 ];
 
 export interface ThreadSeed {
@@ -165,3 +169,66 @@ export const PRICE_BAND_SEED: PriceBandSeed[] = [
 export const DEFAULT_TEMPLATE_KEY = 'cap-standard';
 export const DEFAULT_TEMPLATE_NAME = 'Cap — standard embroidery';
 export const THREAD_BRAND = 'Madeira Polyneon';
+
+export interface MotifSeed {
+  key: string;
+  name: Record<string, string>;
+  path: string;
+  viewBox: string;
+  stitchesAt30mm: number;
+  category: string;
+  sortOrder: number;
+}
+
+/**
+ * A starter set of shapes.
+ *
+ * Simple, solid silhouettes on purpose: a single closed path is what digitises
+ * cleanly into one satin-filled shape, and it is what a customer recognises at
+ * 25mm on a cap. Fine line art disappears at embroidery sizes.
+ *
+ * Stitch counts are measured from a 30mm stitch-out; the estimator scales them
+ * by area from there.
+ */
+export const MOTIF_SEED: MotifSeed[] = [
+  {
+    key: 'heart', name: { en: 'Heart' }, category: 'love', stitchesAt30mm: 2100, sortOrder: 10,
+    viewBox: '0 0 100 100',
+    path: 'M50 88 L14 52a21 21 0 0 1 30-30l6 6 6-6a21 21 0 0 1 30 30Z',
+  },
+  {
+    key: 'star', name: { en: 'Star' }, category: 'shapes', stitchesAt30mm: 1900, sortOrder: 20,
+    viewBox: '0 0 100 100',
+    path: 'M50 6 61 38h34L67 58l11 33-28-21-28 21 11-33L5 38h34Z',
+  },
+  {
+    key: 'crown', name: { en: 'Crown' }, category: 'shapes', stitchesAt30mm: 2400, sortOrder: 30,
+    viewBox: '0 0 100 100',
+    path: 'M10 72h80l8-44-24 16-14-28-14 28-24-16Z',
+  },
+  {
+    key: 'paw', name: { en: 'Paw print' }, category: 'animals', stitchesAt30mm: 2300, sortOrder: 40,
+    viewBox: '0 0 100 100',
+    path: 'M50 56c14 0 26 10 26 20s-12 12-26 12-26-2-26-12 12-20 26-20ZM24 34a9 12 0 1 1 0 24 9 12 0 0 1 0-24Zm52 0a9 12 0 1 1 0 24 9 12 0 0 1 0-24ZM39 14a9 13 0 1 1 0 26 9 13 0 0 1 0-26Zm22 0a9 13 0 1 1 0 26 9 13 0 0 1 0-26Z',
+  },
+  {
+    key: 'mountain', name: { en: 'Mountain' }, category: 'outdoors', stitchesAt30mm: 2000, sortOrder: 50,
+    viewBox: '0 0 100 100',
+    path: 'M6 82 38 26l18 30 10-14 28 40Z',
+  },
+  {
+    key: 'wave', name: { en: 'Wave' }, category: 'outdoors', stitchesAt30mm: 1800, sortOrder: 60,
+    viewBox: '0 0 100 100',
+    path: 'M4 62c12-18 24-18 36 0s24 18 36 0 16-12 20-6v28H4Z',
+  },
+  {
+    key: 'bolt', name: { en: 'Lightning' }, category: 'shapes', stitchesAt30mm: 1600, sortOrder: 70,
+    viewBox: '0 0 100 100',
+    path: 'M58 4 24 56h22l-8 40 36-56H52Z',
+  },
+  {
+    key: 'flower', name: { en: 'Flower' }, category: 'nature', stitchesAt30mm: 2600, sortOrder: 80,
+    viewBox: '0 0 100 100',
+    path: 'M50 40a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0-32a16 16 0 0 1 0 32 16 16 0 0 1 0-32Zm0 52a16 16 0 0 1 0 32 16 16 0 0 1 0-32ZM8 50a16 16 0 0 1 32 0 16 16 0 0 1-32 0Zm52 0a16 16 0 0 1 32 0 16 16 0 0 1-32 0Z',
+  },
+];

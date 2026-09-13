@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   DEFAULT_TEMPLATE_KEY,
+  MOTIF_SEED,
   DEFAULT_TEMPLATE_NAME,
   FONT_SEED,
   PRICE_BAND_SEED,
@@ -13,6 +14,7 @@ import {
 const SEEDED_FONTS_KEY = 'personalization_seeded_font_keys';
 const SEEDED_THREADS_KEY = 'personalization_seeded_thread_codes';
 const SEEDED_TEMPLATE_KEY = 'personalization_seeded_template_keys';
+const SEEDED_MOTIFS_KEY = 'personalization_seeded_motif_keys';
 
 /**
  * Puts the starting catalogue in place on boot, then stays out of the way.
@@ -42,6 +44,7 @@ export class PersonalizationSeedService implements OnModuleInit {
   async seed(): Promise<void> {
     await this.seedFonts();
     await this.seedThreads();
+    await this.seedMotifs();
     await this.seedTemplate();
   }
 
@@ -76,6 +79,21 @@ export class PersonalizationSeedService implements OnModuleInit {
       this.logger.log(`Seeded ${pending.length} thread colour(s)`);
     }
     await this.writeMarker(SEEDED_THREADS_KEY, [...already, ...pending.map((t) => t.code)]);
+  }
+
+  // ── Motifs ───────────────────────────────────────────────────────────
+
+  private async seedMotifs(): Promise<void> {
+    const seeded = await this.readMarker(SEEDED_MOTIFS_KEY);
+    const fresh = seeded === null && (await this.prisma.embroideryMotif.count()) === 0;
+    const already = new Set(seeded ?? (fresh ? [] : MOTIF_SEED.map((m) => m.key)));
+
+    const pending = MOTIF_SEED.filter((m) => !already.has(m.key));
+    if (pending.length) {
+      await this.prisma.embroideryMotif.createMany({ data: pending, skipDuplicates: true });
+      this.logger.log(`Seeded ${pending.length} motif(s)`);
+    }
+    await this.writeMarker(SEEDED_MOTIFS_KEY, [...already, ...pending.map((m) => m.key)]);
   }
 
   // ── Template, placements and bands ───────────────────────────────────

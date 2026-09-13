@@ -23,6 +23,7 @@ const FRONT = {
   maxChars: 14,
   priceCents: 0,
   isActive: true,
+  allowPuff: true,
 };
 const BACK = {
   ...FRONT,
@@ -46,14 +47,16 @@ const BLOCK = {
   avgCharWidthRatio: 0.62,
   uppercaseOnly: false,
   supportsMonogram: true,
+  supportsPuff: true,
+  supportsCurve: true,
   isActive: true,
 };
 const VARSITY = { ...BLOCK, key: 'serif-varsity', name: 'Varsity', uppercaseOnly: true, stitchesPerCharAt10mm: 200, avgCharWidthRatio: 0.74 };
 const SIGNATURE = { ...BLOCK, key: 'script-signature', name: 'Signature', supportsMonogram: false, minHeightMm: 12 };
 
-const TEAL = { id: 't-1', brand: 'Madeira Polyneon', code: '1791', name: 'Teal', hex: '#0d8f8c', isActive: true };
-const PINK = { id: 't-2', brand: 'Madeira Polyneon', code: '1921', name: 'Fuchsia', hex: '#c8186a', isActive: true };
-const WHITE = { id: 't-3', brand: 'Madeira Polyneon', code: '1000', name: 'White', hex: '#ffffff', isActive: true };
+const TEAL = { id: 't-1', brand: 'Madeira Polyneon', code: '1791', name: 'Teal', hex: '#0d8f8c', isActive: true, finish: 'matte', priceMultiplier: 1 };
+const PINK = { id: 't-2', brand: 'Madeira Polyneon', code: '1921', name: 'Fuchsia', hex: '#c8186a', isActive: true, finish: 'matte', priceMultiplier: 1 };
+const WHITE = { id: 't-3', brand: 'Madeira Polyneon', code: '1000', name: 'White', hex: '#ffffff', isActive: true, finish: 'matte', priceMultiplier: 1 };
 
 const BANDS = [
   { maxStitches: 3000, priceCents: 800, label: 'Small' },
@@ -91,6 +94,13 @@ function makeService(
       })),
     },
     // Positions belong to the product, and are looked up one at a time by key.
+    embroideryMotif: {
+      findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
+        where.key === 'heart'
+          ? { key: 'heart', name: { en: 'Heart' }, path: 'M0 0 L10 10', viewBox: '0 0 100 100', stitchesAt30mm: 2200, colorCount: 1, isActive: true }
+          : null,
+      ),
+    },
     personalizationPlacement: {
       findUnique: jest.fn(async ({ where }: { where: { productId_key: { key: string } } }) => {
         const found = PLACEMENTS.find((p) => p.key === where.productId_key.key);
