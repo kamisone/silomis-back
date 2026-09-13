@@ -548,6 +548,11 @@ model Product {
   primaryCategoryId String?
   primaryCategory   ProductCategory? @relation("PrimaryCategory", fields: [primaryCategoryId], references: [id], onDelete: SetNull)
 
+  /// NULL means the product cannot be personalised — the storefront hides the
+  /// whole editor entry point rather than offering an empty one.
+  personalizationTemplateId String?
+  personalizationTemplate   PersonalizationTemplate? @relation(fields: [personalizationTemplateId], references: [id], onDelete: SetNull)
+
   publishedAt DateTime?
 
   categories ProductCategory[] @relation("ProductCategoryMap")
@@ -574,6 +579,7 @@ model Product {
   @@index([freeShipping])
   @@index([primaryCategoryId])
   @@index([vendorId])
+  @@index([personalizationTemplateId])
   @@map("shop_products")
 }
 
@@ -918,10 +924,24 @@ model CartItem {
 
   compareAtPriceCentsSnapshot Int?
 
+  /// Per unit, summed across every position on this line, and ALREADY INCLUDED
+  /// in unitPriceCents — folded in so that every line-total, promotion and tax
+  /// calculation in the codebase keeps working unchanged. Held separately only
+  /// so the basket can show the breakdown.
+  personalizationCents Int @default(0)
+
+  /// Fingerprint of the design, or "" for a plain line. Part of the unique
+  /// below so two caps embroidered with different names stay two lines while
+  /// two plain adds of the same variant still collapse into one — a nullable
+  /// column could not do that, since Postgres treats every NULL as distinct.
+  personalizationHash String @default("") @db.VarChar(64)
+
+  personalizations CartItemPersonalization[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([cartId, variantId])
+  @@unique([cartId, variantId, personalizationHash])
   @@map("shop_cart_items")
 }
 
@@ -1047,10 +1067,14 @@ model OrderItem {
 
   taxRatePct Decimal @default(20) @db.Decimal(5, 2)
 
+  /// Per unit, already inside unitPriceCents — see CartItem.personalizationCents.
+  personalizationCents Int @default(0)
+
   createdAt DateTime @default(now())
 
   returnRequestLinks ReturnRequestItem[]
   reviews            ProductReview[]
+  personalizations   OrderItemPersonalization[]
 
   @@map("shop_order_items")
 }
@@ -1357,9 +1381,26 @@ model Campaign {
 /// Curated, manually-ordered product groupings — serves both homepage
 /// merchandising (isFeatured + sortOrder) and SEO landing pages (seo*/hero*
 /// fields), rather than two overlapping models for the same product-set concept.
+/// How a collection decides what is in it. Only `manual` is wired up — the
+/// `dynamic` half exists in the database from an earlier iteration and is
+/// declared here so the schema matches what Postgres actually holds; without
+/// it every `prisma migrate` run offers to drop the columns.
+enum CollectionType {
+  manual
+  dynamic
+}
+
+enum CollectionRuleMatch {
+  all
+  any
+}
+
 model Collection {
   id   String @id @default(uuid())
   slug String @unique @db.VarChar(200)
+
+  type      CollectionType      @default(manual)
+  ruleMatch CollectionRuleMatch @default(all)
 
   name        String  @db.VarChar(500)
   description String?
@@ -1383,6 +1424,7 @@ model Collection {
   publishedAt DateTime?
 
   productLinks CollectionProduct[]
+  rules        CollectionRule[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1475,6 +1517,24 @@ enum HomeSectionType {
   /// Hand-written customer quotes the admin curates — not the product review
   /// system, which is shopper-submitted and lives on a product.
   testimonials
+}
+
+/// One condition of a dynamic collection. Unused by any service today — see
+/// the note on CollectionType.
+model CollectionRule {
+  id String @id @default(uuid())
+
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  field    String @db.VarChar(50)
+  operator String @db.VarChar(50)
+  value    String @db.VarChar(200)
+
+  createdAt DateTime @default(now())
+
+  @@index([collectionId])
+  @@map("shop_collection_rules")
 }
 
 model CollectionProduct {
@@ -2059,6 +2119,8 @@ model ShopBehaviorEvent {
   @@index([cartToken])
   @@index([shopCustomerId])
   @@index([countryCode])
+  /// Every report on the Tests/Live tabs filters by phase inside one product.
+  @@index([productId, productIsTest])
   @@map("shop_behavior_events")
 }
 
@@ -2116,6 +2178,7 @@ model ReplaySession {
   @@index([status])
   @@index([productId])
   @@index([startedAt])
+  @@index([productId, productIsTest])
   @@map("shop_replay_sessions")
 }
 
@@ -2537,4 +2600,339 @@ model PageContent {
 
   @@unique([slug, locale])
   @@map("page_contents")
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// PERSONALIZATION domain (custom embroidery)
+//
+// The editor is deliberately NOT a free canvas. A machine sews a stitch path,
+// and that path is produced by digitising artwork — a manual step that cannot
+// run inside an add-to-cart request. So everything a customer can create here
+// is assembled from pieces that are already digitised (an embroidery face, a
+// thread from a real supplier range, a placement with a real hoop area), which
+// is what makes an instant price and a same-day stitch-out possible at all.
+// ═════════════════════════════════════════════════════════════════════════
+
+enum PersonalizationContentType {
+  text
+  monogram
+}
+
+/// A pre-digitised embroidery typeface.
+///
+/// `webFamily` is a visual stand-in used only to draw the editor preview; the
+/// stitch data itself lives with the digitiser, keyed by `key`. Never offer a
+/// face here that has not been digitised — the preview would promise something
+/// the machine cannot sew.
+model EmbroideryFont {
+  id   String @id @default(uuid())
+  /// Stable machine key ("script-classic"). Referenced by every stored design,
+  /// so it must outlive renames of `name`.
+  key  String @unique @db.VarChar(80)
+  name String @db.VarChar(200)
+
+  /// CSS stack the editor previews with.
+  webFamily String @db.VarChar(300)
+
+  /// Below this cap height a stitched letter's counters close up and it stops
+  /// reading. Above the max the satin stitches grow long enough to snag.
+  minHeightMm Float @default(8)
+  maxHeightMm Float @default(40)
+
+  /// Stitches for one character at 10mm cap height, taken from a sample
+  /// stitch-out rather than computed. The estimator scales it by the square of
+  /// the height, because stitch count follows the area a glyph covers.
+  stitchesPerCharAt10mm Int @default(140)
+
+  /// Mean glyph advance as a fraction of cap height — how the editor and the
+  /// validator predict a line's width without laying out the real face.
+  avgCharWidthRatio Float @default(0.62)
+
+  /// Some faces are drawn as capitals only; the editor upper-cases input for
+  /// those rather than showing the customer letters it cannot sew.
+  uppercaseOnly    Boolean @default(false)
+  supportsMonogram Boolean @default(true)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("shop_embroidery_fonts")
+}
+
+/// One thread from a real supplier range. `code` is what the operator actually
+/// loads on the machine, which is why the palette is a table and not a colour
+/// picker: a hex value the supplier does not sell cannot be stitched.
+model ThreadColor {
+  id    String @id @default(uuid())
+  brand String @default("Madeira Polyneon") @db.VarChar(120)
+  code  String @db.VarChar(40)
+  name  String @db.VarChar(160)
+  /// Screen approximation of the spool, for the editor only.
+  hex   String @db.VarChar(7)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([brand, code])
+  @@index([isActive, sortOrder])
+  @@map("shop_thread_colors")
+}
+
+/// What personalisation a product offers. Shared across products — every cap
+/// in the catalogue normally points at one template, so widening the offer is
+/// one edit rather than one per SKU.
+model PersonalizationTemplate {
+  id   String @id @default(uuid())
+  key  String @unique @db.VarChar(80)
+  name String @db.VarChar(200)
+
+  allowText     Boolean @default(true)
+  allowMonogram Boolean @default(true)
+  /// Customer-supplied artwork. Off until there is a review queue behind it —
+  /// an upload cannot be priced or scheduled without a digitiser looking at it.
+  allowUpload   Boolean @default(false)
+
+  isActive Boolean @default(true)
+
+  placements PersonalizationPlacement[]
+  priceBands PersonalizationPriceBand[]
+  products   Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_personalization_templates")
+}
+
+/// One embroidery position on the garment, with the machine's usable field for
+/// it. The millimetre fields are the hard bound every design is validated
+/// against; the preview percentages only place the artwork on the product
+/// photo, and are percentages so one set of numbers works at every rendered
+/// size.
+/// One embroidery position the shop offers, with the machine's usable field
+/// for it. Entirely admin-managed: a shop that starts doing beanie cuffs adds
+/// the position here rather than waiting on a migration.
+///
+/// The millimetre fields are the hard bound every design is validated against.
+/// The flat preview percentages are a fallback for a product whose panel has
+/// not been traced yet — see the placement's own corners for the real thing.
+model PersonalizationPlacement {
+  id         String                  @id @default(uuid())
+  template   PersonalizationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateId String
+
+  /// Stable machine key, referenced by every stored design. Never renamed —
+  /// the label is what changes when a shop rewords a position.
+  key String @db.VarChar(60)
+
+  /// { en: "Front panel", fr: "Panneau avant", … }. A map rather than a column
+  /// per language so adding a locale is not a migration, and so the admin's
+  /// Generate button can fill six of them from one.
+  label Json
+  /// Same shape — the line under the name in the picker.
+  hint  Json?
+
+  fieldWidthMm  Float
+  fieldHeightMm Float
+  maxColors     Int @default(3)
+  maxChars      Int @default(12)
+
+  /// The photograph this position is embroidered on, and the area traced onto
+  /// it. They live here rather than per product because a position IS a view of
+  /// the item — "Front panel" is the front panel, photographed once — and
+  /// asking an admin to re-upload the same shot for every cap was work with
+  /// nothing to show for it.
+  ///
+  /// NULL until a photo is chosen. A position without one is not offered: there
+  /// would be nothing for a customer to place artwork on.
+  mediaKey String? @db.VarChar(1000)
+
+  topLeftXPct     Float @default(34)
+  topLeftYPct     Float @default(42)
+  topRightXPct    Float @default(66)
+  topRightYPct    Float @default(42)
+  bottomRightXPct Float @default(66)
+  bottomRightYPct Float @default(57)
+  bottomLeftXPct  Float @default(34)
+  bottomLeftYPct  Float @default(57)
+
+  /// False until an admin has actually dragged the corners. The storefront
+  /// falls back to a flat box while it is false, rather than showing a
+  /// perspective nobody checked against the photo.
+  isTraced Boolean @default(false)
+
+  /// Flat fallback box, used only until the area above is traced.
+  previewXPct      Float @default(34)
+  previewYPct      Float @default(42)
+  previewWidthPct  Float @default(32)
+  previewHeightPct Float @default(15)
+  previewRotateDeg Float @default(0)
+
+  /// What this position costs to personalise, on top of the stitch-count band.
+  /// A customer who embroiders two positions pays both — each one is its own
+  /// hooping, its own thread change and its own run on the machine.
+  priceCents Int @default(0)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([templateId, key])
+  @@index([templateId, isActive, sortOrder])
+  @@map("shop_personalization_placements")
+}
+
+/// Stitch-count price band. The first band whose `maxStitches` the estimate
+/// does not exceed wins; the largest band is also the ceiling, and a design
+/// past it is rejected rather than quietly sold below cost.
+model PersonalizationPriceBand {
+  id         String                  @id @default(uuid())
+  templateId String
+  template   PersonalizationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  maxStitches Int
+  priceCents  Int
+  label       String? @db.VarChar(160)
+
+  @@unique([templateId, maxStitches])
+  @@map("shop_personalization_price_bands")
+}
+
+/// The design attached to one cart line.
+///
+/// Everything here is written by the server from a validated payload — the
+/// browser sends what the customer chose, never the price, the stitch estimate
+/// or the production SVG.
+model CartItemPersonalization {
+  id         String   @id @default(uuid())
+  cartItemId String
+  cartItem   CartItem @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+
+  templateId    String
+  placementKey  String @db.VarChar(60)
+  placementLabel String @db.VarChar(160)
+
+  contentType PersonalizationContentType
+
+  /// Already normalised: trimmed, collapsed whitespace, upper-cased for an
+  /// uppercase-only face. What is stored is exactly what gets stitched.
+  text     String @db.VarChar(60)
+  fontKey  String @db.VarChar(80)
+  fontName String @db.VarChar(200)
+  /// CSS-style weight (300–900). Not a second digitised face: a satin column is
+  /// laid thicker or thinner from the same outline, which is what a heavier
+  /// letter is on a machine — and why it costs more stitches.
+  fontWeight Int @default(400)
+  heightMm Float
+
+  /// [{ brand, code, name, hex }] — resolved from ThreadColor at add-to-cart,
+  /// then frozen, so retiring a thread never rewrites a basket.
+  threadColors Json
+
+  stitchEstimate Int
+  /// Per unit, and already folded into CartItem.unitPriceCents. Kept apart so
+  /// the basket can show the customer what the embroidery cost.
+  priceCents     Int
+
+  /// Where inside the hoop field the customer moved the design, in millimetres
+  /// from the field's centre. The production floor needs this: hooped centred,
+  /// a design the customer nudged to the top of the panel comes out in the
+  /// wrong place, and the cap cannot be unpicked.
+  offsetXMm Float @default(0)
+  offsetYMm Float @default(0)
+
+  /// Angle of the embroidery in the garment's own plane. Zero is square to the
+  /// traced position; the production sheet turns the frame and the lettering
+  /// together, so the operator hoops at this angle.
+  rotationDeg Float @default(0)
+
+  /// The full normalised design document. Wider than the columns above on
+  /// purpose: a phase-2 motif or a second text line lands here without a
+  /// migration, and the columns stay the fast path for listing and search.
+  designJson Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One design per position per line. A customer embroidering both the front
+  /// panel and the back strap of the same cap gets two rows on one line, and
+  /// the line's price is their sum.
+  @@unique([cartItemId, placementKey])
+  @@map("shop_cart_item_personalizations")
+}
+
+/// The design as ordered. A copy of the cart row rather than a pointer to it:
+/// the cart is deleted or expires, and a production floor must still be able
+/// to reproduce exactly what the customer approved months later.
+model OrderItemPersonalization {
+  id          String    @id @default(uuid())
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  templateId     String
+  placementKey   String @db.VarChar(60)
+  placementLabel String @db.VarChar(160)
+
+  contentType PersonalizationContentType
+
+  text     String @db.VarChar(60)
+  fontKey  String @db.VarChar(80)
+  fontName String @db.VarChar(200)
+  /// CSS-style weight (300–900). Not a second digitised face: a satin column is
+  /// laid thicker or thinner from the same outline, which is what a heavier
+  /// letter is on a machine — and why it costs more stitches.
+  fontWeight Int @default(400)
+  heightMm Float
+
+  threadColors Json
+
+  stitchEstimate Int
+  priceCents     Int
+
+  /// Where inside the hoop field the customer moved the design, in millimetres
+  /// from the field's centre. The production floor needs this: hooped centred,
+  /// a design the customer nudged to the top of the panel comes out in the
+  /// wrong place, and the cap cannot be unpicked.
+  offsetXMm Float @default(0)
+  offsetYMm Float @default(0)
+
+  /// Angle of the embroidery in the garment's own plane. Zero is square to the
+  /// traced position; the production sheet turns the frame and the lettering
+  /// together, so the operator hoops at this angle.
+  rotationDeg Float @default(0)
+
+  designJson Json
+
+  /// Vector artwork at true millimetre scale, generated server-side from the
+  /// validated design. This is the digitiser's handoff: it opens in any vector
+  /// tool at the size it will be sewn, so nobody has to re-measure anything.
+  productionSvg String?
+
+  /// pending → digitizing → ready → stitched. Plain text rather than an enum:
+  /// the production workflow is the part most likely to gain a step, and a
+  /// migration per step is a poor trade for a column only staff read.
+  productionStatus String    @default("pending") @db.VarChar(40)
+  /// Set once a digitiser has produced the stitch file.
+  stitchFileKey    String?   @db.VarChar(1000)
+  digitizedAt      DateTime?
+  productionNote   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Each position is its own job on the floor — its own hooping and its own
+  /// run — so the production queue lists them separately rather than as one
+  /// line with two designs buried in it.
+  @@unique([orderItemId, placementKey])
+  @@index([productionStatus])
+  @@map("shop_order_item_personalizations")
 }

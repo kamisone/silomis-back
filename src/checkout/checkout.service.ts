@@ -13,6 +13,7 @@ import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service'
 import { COMMERCE_EVENTS } from '../commerce-events/commerce-events.constants';
 import { TestCheckoutGuard } from '../orders/test-checkout-guard.service';
 import { OrdersService } from '../orders/orders.service';
+import { PersonalizationService } from '../personalization/personalization.service';
 import { CustomerService } from '../customers/customer.service';
 import {
   FREE_SHIPPING_METHOD_ID,
@@ -80,6 +81,7 @@ export class CheckoutService {
     private readonly shipping: ShippingService,
     private readonly pickupPoints: PickupPointsService,
     private readonly pricingEngine: PricingEngineService,
+    private readonly personalization: PersonalizationService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
   ) {}
@@ -95,7 +97,7 @@ export class CheckoutService {
   ): Promise<CheckoutSnapshot> {
     const cart = await this.prisma.cart.findFirst({
       where: { token: dto.cartToken, status: 'active' },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
     if (!cart) throw new NotFoundException('Active cart not found');
     if (!cart.items.length) throw new BadRequestException('Cart is empty');
@@ -181,6 +183,11 @@ export class CheckoutService {
       pricing.priceRuleDiscountCents -
       pricing.couponDiscountCents;
 
+    // Outside the transaction: it needs the placement rows, and holding a
+    // write transaction open for reads is how a checkout under load turns
+    // into lock contention.
+    const personalizationSvgs = await this.personalization.buildArtworkForCartItems(items);
+
     const order = await this.prisma.$transaction(async (tx) => {
       const [{ n }] = await tx.$queryRaw<
         { n: bigint }[]
@@ -234,21 +241,53 @@ export class CheckoutService {
         );
       }
 
-      await tx.orderItem.createMany({
-        data: items.map((item) => ({
-          orderId: created.id,
-          productId: item.productId,
-          variantId: item.variantId,
-          titleSnapshot: item.titleSnapshot,
-          skuSnapshot: item.skuSnapshot,
-          imageKeySnapshot: item.imageKeySnapshot,
-          optionsSnapshot: item.optionsSnapshot as Prisma.InputJsonValue,
-          compareAtPriceCentsSnapshot: item.compareAtPriceCentsSnapshot,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          totalCents: item.unitPriceCents * item.quantity,
-        })),
-      });
+      // One create per line rather than createMany — a personalised line has a
+      // nested design to write with it. Mirrors OrdersService.createFromCart;
+      // this is the path the storefront actually takes, that one is the
+      // single-step API.
+      for (const item of items) {
+        await tx.orderItem.create({
+          data: {
+            orderId: created.id,
+            productId: item.productId,
+            variantId: item.variantId,
+            titleSnapshot: item.titleSnapshot,
+            skuSnapshot: item.skuSnapshot,
+            imageKeySnapshot: item.imageKeySnapshot,
+            optionsSnapshot: item.optionsSnapshot as Prisma.InputJsonValue,
+            compareAtPriceCentsSnapshot: item.compareAtPriceCentsSnapshot,
+            quantity: item.quantity,
+            unitPriceCents: item.unitPriceCents,
+            totalCents: item.unitPriceCents * item.quantity,
+            personalizationCents: item.personalizationCents,
+            ...(item.personalizations?.length
+              ? {
+                  personalizations: {
+                    create: item.personalizations.map((d) => ({
+                      templateId: d.templateId,
+                      placementKey: d.placementKey,
+                      placementLabel: d.placementLabel,
+                      contentType: d.contentType,
+                      text: d.text,
+                      fontKey: d.fontKey,
+                      fontName: d.fontName,
+                      fontWeight: d.fontWeight,
+                      heightMm: d.heightMm,
+                      offsetXMm: d.offsetXMm,
+                      offsetYMm: d.offsetYMm,
+                      rotationDeg: d.rotationDeg,
+                      threadColors: d.threadColors as Prisma.InputJsonValue,
+                      stitchEstimate: d.stitchEstimate,
+                      priceCents: d.priceCents,
+                      designJson: d.designJson as Prisma.InputJsonValue,
+                      productionSvg: personalizationSvgs.get(`${item.id}:${d.placementKey}`) ?? null,
+                    })),
+                  },
+                }
+              : {}),
+          },
+        });
+      }
 
       await tx.orderStatusHistory.create({
         data: {
@@ -547,7 +586,7 @@ export class CheckoutService {
   async validateCoupon(code: string, cartToken: string) {
     const cart = await this.prisma.cart.findFirst({
       where: { token: cartToken, status: 'active' },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
     if (!cart) throw new NotFoundException('Active cart not found');
     const lines = await this.buildLineItems(cart.items);

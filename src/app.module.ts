@@ -33,6 +33,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { CommerceEventsModule } from './commerce-events/commerce-events.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CartModule } from './cart/cart.module';
+import { PersonalizationModule } from './personalization/personalization.module';
 import { OrdersModule } from './orders/orders.module';
 import { CheckoutModule } from './checkout/checkout.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -136,6 +137,7 @@ import { PageContentModule } from './page-content/page-content.module';
     CatalogModule,
     InventoryModule,
     CartModule,
+    PersonalizationModule,
     OrdersModule,
     CheckoutModule,
     PaymentsModule,

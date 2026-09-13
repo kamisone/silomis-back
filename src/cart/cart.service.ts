@@ -21,6 +21,8 @@ import {
 } from './cart-abandonment.constants';
 import { MetaCapiService } from '../marketing/meta-capi/meta-capi.service';
 import { TikTokEventsService } from '../marketing/tiktok-events/tiktok-events.service';
+import { PersonalizationService } from '../personalization/personalization.service';
+import { PersonalizationInput } from '../personalization/dto/personalization.dto';
 
 export interface RequestMeta {
   ip?: string | null;
@@ -30,6 +32,24 @@ export interface RequestMeta {
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
 
 const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
+
+/** A cart line as every read path loads it — the design comes along with it. */
+type CartItemWithDesign = CartItem & {
+  personalizations: {
+    placementKey: string;
+    placementLabel: string;
+    contentType: string;
+    text: string;
+    fontName: string;
+    fontWeight: number;
+    heightMm: number;
+    offsetXMm: number;
+    offsetYMm: number;
+    rotationDeg: number;
+    threadColors: unknown;
+    priceCents: number;
+  }[];
+};
 
 interface OptionSnapshot {
   attributeId: string;
@@ -46,6 +66,7 @@ export class CartService {
     private readonly assetUrls: AssetUrlService,
     private readonly translations: TranslationsService,
     private readonly behaviorTracking: BehaviorTrackingService,
+    private readonly personalization: PersonalizationService,
     private readonly metaCapi: MetaCapiService,
     private readonly tiktokEvents: TikTokEventsService,
     @InjectQueue(CART_ABANDONMENT_QUEUE)
@@ -60,7 +81,7 @@ export class CartService {
   async getOrCreate(token: string, userId?: string, lang?: string) {
     const existing = await this.prisma.cart.findUnique({
       where: { token },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
 
     if (existing && existing.status === 'active') {
@@ -87,7 +108,7 @@ export class CartService {
       items: [],
       createdAt: new Date(),
       updatedAt: new Date(),
-    } as unknown as Cart & { items: CartItem[] };
+    } as unknown as Cart & { items: CartItemWithDesign[] };
 
     return this.enrichCart(virtualCart, lang);
   }
@@ -101,6 +122,7 @@ export class CartService {
     selectedOptionValueIds?: string[],
     lang?: string,
     meta?: RequestMeta,
+    personalizationInputs?: PersonalizationInput[],
   ) {
     if (quantity < 1)
       throw new BadRequestException('Quantity must be at least 1');
@@ -126,8 +148,21 @@ export class CartService {
       });
     }
 
-    const cart = await this.getOrCreatePersistedCart(token);
     const product = variant.product;
+
+    // Re-derived here from the customer's choices — the browser sends what it
+    // picked, never the price or the stitch count. Deliberately before the
+    // cart row is created: a design that fails validation must not leave a
+    // fresh empty cart behind it.
+    const designSet = personalizationInputs?.length
+      ? await this.personalization.resolveSet(product.id, personalizationInputs, lang)
+      : null;
+    const personalizationHash = designSet?.hash ?? '';
+    // Summed across every position: two embroidered positions are two hoopings
+    // and two runs, and the customer pays for both.
+    const personalizationCents = designSet?.totalCents ?? 0;
+
+    const cart = await this.getOrCreatePersistedCart(token);
 
     // Shared with the matching browser-side pixel calls (fbq/ttq) for Meta
     // and TikTok's own dedup between their client and server events.
@@ -135,7 +170,12 @@ export class CartService {
     const tiktokEventId = randomUUID();
     let trackUnitPriceCents = 0;
 
-    const existing = cart.items.find((i) => i.variantId === variantId);
+    // Two caps with different embroidery are two lines even though they share
+    // a variant — the hash is "" for a plain line, so ordinary adds still
+    // merge exactly as they always did.
+    const existing = cart.items.find(
+      (i) => i.variantId === variantId && i.personalizationHash === personalizationHash,
+    );
     if (existing) {
       const newQty = existing.quantity + quantity;
       if (inventory.available < newQty) {
@@ -147,18 +187,19 @@ export class CartService {
       // Re-resolve at the new total quantity — a line already past an
       // upsell threshold, or one that just crossed it, must reflect the
       // tier price for its new quantity.
-      const unitPriceCents = resolveUnitPriceForQuantity(
-        {
-          variantPriceCents: variant.priceCents,
-          basePriceCents: product.basePriceCents,
-          optionAdjustmentCents: sumOptionAdjustments(variant.options),
-        },
-        newQty,
-        {
-          upsellingEnabled: product.upsellingEnabled,
-          upsellTiers: product.upsellTiers as never,
-        },
-      );
+      const unitPriceCents =
+        resolveUnitPriceForQuantity(
+          {
+            variantPriceCents: variant.priceCents,
+            basePriceCents: product.basePriceCents,
+            optionAdjustmentCents: sumOptionAdjustments(variant.options),
+          },
+          newQty,
+          {
+            upsellingEnabled: product.upsellingEnabled,
+            upsellTiers: product.upsellTiers as never,
+          },
+        ) + existing.personalizationCents;
       await this.prisma.cartItem.update({
         where: { id: existing.id },
         data: { quantity: newQty, unitPriceCents },
@@ -192,18 +233,23 @@ export class CartService {
         }));
       }
 
-      const unitPriceCents = resolveUnitPriceForQuantity(
-        {
-          variantPriceCents: variant.priceCents,
-          basePriceCents: product.basePriceCents,
-          optionAdjustmentCents: sumOptionAdjustments(variant.options),
-        },
-        quantity,
-        {
-          upsellingEnabled: product.upsellingEnabled,
-          upsellTiers: product.upsellTiers as never,
-        },
-      );
+      // The embroidery fee is folded into the unit price rather than carried
+      // beside it, so every line total, promotion, tax and receipt in the
+      // codebase keeps working untouched. personalizationCents below is the
+      // same number kept apart purely so the basket can show the breakdown.
+      const unitPriceCents =
+        resolveUnitPriceForQuantity(
+          {
+            variantPriceCents: variant.priceCents,
+            basePriceCents: product.basePriceCents,
+            optionAdjustmentCents: sumOptionAdjustments(variant.options),
+          },
+          quantity,
+          {
+            upsellingEnabled: product.upsellingEnabled,
+            upsellTiers: product.upsellTiers as never,
+          },
+        ) + personalizationCents;
 
       // Image priority mirrors the PDP hero: the variant's own featured
       // media, then the picked option value's per-product image override
@@ -238,6 +284,35 @@ export class CartService {
           imageKeySnapshot,
           optionsSnapshot: optionsSnapshot as never,
           compareAtPriceCentsSnapshot: variant.compareAtPriceCents ?? null,
+          personalizationCents,
+          personalizationHash,
+          // Nested so the line and its designs are one write: a line that
+          // claimed a personalisation fee but had no design attached would
+          // charge for embroidery nobody could produce.
+          ...(designSet
+            ? {
+                personalizations: {
+                  create: designSet.designs.map((design) => ({
+                    templateId: design.templateId,
+                    placementKey: design.placementKey,
+                    placementLabel: design.placementLabel,
+                    contentType: design.contentType,
+                    text: design.text,
+                    fontKey: design.fontKey,
+                    fontName: design.fontName,
+                    fontWeight: design.fontWeight,
+                    heightMm: design.heightMm,
+                    offsetXMm: design.offsetXMm,
+                    offsetYMm: design.offsetYMm,
+                    rotationDeg: design.rotationDeg,
+                    threadColors: design.threadColors as never,
+                    stitchEstimate: design.stitchEstimate,
+                    priceCents: design.priceCents,
+                    designJson: design.designJson as never,
+                  })),
+                },
+              }
+            : {}),
         },
       });
       trackUnitPriceCents = unitPriceCents;
@@ -359,18 +434,19 @@ export class CartService {
       );
     }
 
-    const unitPriceCents = resolveUnitPriceForQuantity(
-      {
-        variantPriceCents: variant.priceCents,
-        basePriceCents: product.basePriceCents,
-        optionAdjustmentCents: sumOptionAdjustments(variant.options),
-      },
-      quantity,
-      {
-        upsellingEnabled: product.upsellingEnabled,
-        upsellTiers: product.upsellTiers as never,
-      },
-    );
+    const unitPriceCents =
+      resolveUnitPriceForQuantity(
+        {
+          variantPriceCents: variant.priceCents,
+          basePriceCents: product.basePriceCents,
+          optionAdjustmentCents: sumOptionAdjustments(variant.options),
+        },
+        quantity,
+        {
+          upsellingEnabled: product.upsellingEnabled,
+          upsellTiers: product.upsellTiers as never,
+        },
+      ) + item.personalizationCents;
     await this.prisma.cartItem.update({
       where: { id: item.id },
       data: { quantity, unitPriceCents },
@@ -427,15 +503,19 @@ export class CartService {
         const variant = variantMap.get(line.variantId);
         if (!variant) return Promise.resolve();
 
-        const unitPriceCents = resolveUnitPriceForQuantity(
-          {
-            variantPriceCents: variant.priceCents,
-            basePriceCents: product.basePriceCents,
-            optionAdjustmentCents: sumOptionAdjustments(variant.options),
-          },
-          totalQuantity,
-          { upsellingEnabled: product.upsellingEnabled, upsellTiers: product.upsellTiers as never },
-        );
+        // Per line, not per product: two caps of the same product can carry
+        // different embroidery, so the fee has to come from the line being
+        // written rather than from anything shared across them.
+        const unitPriceCents =
+          resolveUnitPriceForQuantity(
+            {
+              variantPriceCents: variant.priceCents,
+              basePriceCents: product.basePriceCents,
+              optionAdjustmentCents: sumOptionAdjustments(variant.options),
+            },
+            totalQuantity,
+            { upsellingEnabled: product.upsellingEnabled, upsellTiers: product.upsellTiers as never },
+          ) + line.personalizationCents;
         if (unitPriceCents === line.unitPriceCents) return Promise.resolve();
         return this.prisma.cartItem.update({ where: { id: line.id }, data: { unitPriceCents } });
       }),
@@ -485,7 +565,7 @@ export class CartService {
   ): Promise<Cart & { items: CartItem[] }> {
     const cart = await this.prisma.cart.findFirst({
       where: { token, status: 'active' },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
     if (!cart) throw new NotFoundException('Active cart not found');
     return cart;
@@ -498,7 +578,7 @@ export class CartService {
   ): Promise<Cart & { items: CartItem[] }> {
     const existing = await this.prisma.cart.findUnique({
       where: { token },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
 
     if (existing) {
@@ -516,7 +596,7 @@ export class CartService {
     return { ...cart, items: [] };
   }
 
-  private async enrichCart(cart: Cart & { items: CartItem[] }, lang?: string) {
+  private async enrichCart(cart: Cart & { items: CartItemWithDesign[] }, lang?: string) {
     const items = cart.items ?? [];
     const imageKeys = items
       .map((i) => i.imageKeySnapshot)
@@ -540,6 +620,23 @@ export class CartService {
       lineTotalCents: item.quantity * item.unitPriceCents,
       productSlug: slugMap.get(item.productId) ?? null,
       freeShipping: freeShipMap.get(item.productId) ?? false,
+      // The basket has to show what is being embroidered, verbatim and for
+      // every position — it is the customer's last chance to catch a spelling
+      // mistake before an item that cannot be returned is made for them.
+      personalizations: (item.personalizations ?? []).map((d) => ({
+        placementKey: d.placementKey,
+        placementLabel: d.placementLabel,
+        contentType: d.contentType,
+        text: d.text,
+        fontName: d.fontName,
+        fontWeight: d.fontWeight,
+        heightMm: d.heightMm,
+        offsetXMm: d.offsetXMm,
+        offsetYMm: d.offsetYMm,
+        rotationDeg: d.rotationDeg,
+        threadColors: d.threadColors,
+        priceCents: d.priceCents,
+      })),
     }));
 
     // Translate optionsSnapshot attribute names / display values, and the

@@ -2,6 +2,8 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from '@ne
 import { Request } from 'express';
 import { Public } from '../auth/public.decorator';
 import { extractIp } from '../common/utils/client-ip.util';
+import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { AddCartItemDto, AddCartItemSchema } from '../personalization/dto/personalization.dto';
 import { CartService } from './cart.service';
 
 @Public()
@@ -14,9 +16,15 @@ export class CartController {
     return this.carts.getOrCreate(token, userId, lang);
   }
 
+  /**
+   * The whole body is validated here rather than pulled apart field by field,
+   * because a personalised add carries a nested design that has to be the
+   * right shape before the service starts resolving fonts and threads against
+   * it. Plain adds are unaffected — `personalization` is optional.
+   */
   @Post(':token/items')
-  addItem(@Param('token') token: string, @Body('variantId') variantId: string, @Body('quantity') quantity: number, @Body('selectedOptionValueIds') selectedOptionValueIds: string[] | undefined, @Query('lang') lang: string | undefined, @Req() req: Request) {
-    return this.carts.addItem(token, variantId, quantity, selectedOptionValueIds, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'] });
+  addItem(@Param('token') token: string, @Body(new ZodValidationPipe(AddCartItemSchema)) body: AddCartItemDto, @Query('lang') lang: string | undefined, @Req() req: Request) {
+    return this.carts.addItem(token, body.variantId, body.quantity, body.selectedOptionValueIds, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'] }, body.personalizations);
   }
 
   @Put(':token/items/:itemId')

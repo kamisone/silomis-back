@@ -8,6 +8,7 @@ import { DlqModule } from '../dlq/dlq.module';
 import { AnalyticsTrackingModule } from '../analytics-tracking/analytics-tracking.module';
 import { MetaCapiModule } from '../marketing/meta-capi/meta-capi.module';
 import { TikTokEventsModule } from '../marketing/tiktok-events/tiktok-events.module';
+import { PersonalizationModule } from '../personalization/personalization.module';
 import { CART_ABANDONMENT_QUEUE } from './cart-abandonment.constants';
 import { CartService } from './cart.service';
 import { CartController } from './cart.controller';
@@ -25,6 +26,7 @@ import { CartCheckoutCompletionListener } from './cart-checkout-completion.liste
     AnalyticsTrackingModule,
     MetaCapiModule,
     TikTokEventsModule,
+    PersonalizationModule,
     BullModule.registerQueue({ name: CART_ABANDONMENT_QUEUE }),
   ],
   controllers: [CartController, CartAdminController],

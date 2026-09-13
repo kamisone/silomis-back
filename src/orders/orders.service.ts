@@ -12,6 +12,7 @@ import { TranslationsService } from '../translations/translations.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
 import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduct } from '../pricing/variant-price.util';
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
+import { PersonalizationService } from '../personalization/personalization.service';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
 import { CartItem, Order, OrderStatus, Prisma } from '../../generated/prisma/client';
 
@@ -45,6 +46,7 @@ export class OrdersService {
     private readonly shipping: ShippingService,
     private readonly eventBus: CommerceEventBus,
     private readonly translations: TranslationsService,
+    private readonly personalization: PersonalizationService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
   ) {}
@@ -57,7 +59,7 @@ export class OrdersService {
   async createFromCart(dto: CreateOrderDto): Promise<Order> {
     const cart = await this.prisma.cart.findFirst({
       where: { token: dto.cartToken, status: 'active' },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
     if (!cart) throw new NotFoundException('Active cart not found');
     if (!cart.items.length) throw new BadRequestException('Cart is empty');
@@ -81,6 +83,12 @@ export class OrdersService {
     const subtotalCents = items.reduce((sum, i) => sum + i.unitPriceCents * i.quantity, 0);
     const shippingCents = shipsFree ? 0 : await this.resolveShippingCents(dto, subtotalCents);
     const totalCents = Math.max(0, subtotalCents + shippingCents);
+
+    // Built here rather than inside the transaction: it needs the placement
+    // rows, and holding a write transaction open for reads is how a checkout
+    // under load turns into lock contention. Failing to render artwork must
+    // also never fail an order — production can regenerate it from designJson.
+    const personalizationSvgs = await this.personalization.buildArtworkForCartItems(items);
 
     const order = await this.prisma.$transaction(async (tx) => {
       const [{ n }] = await tx.$queryRaw<{ n: bigint }[]>`SELECT nextval('shop_order_number_seq') AS n`;
@@ -111,21 +119,54 @@ export class OrdersService {
         await this.inventory.reserveForOrder(item.variantId, item.quantity, created.id, tx);
       }
 
-      await tx.orderItem.createMany({
-        data: items.map((item) => ({
-          orderId: created.id,
-          productId: item.productId,
-          variantId: item.variantId,
-          titleSnapshot: item.titleSnapshot,
-          skuSnapshot: item.skuSnapshot,
-          imageKeySnapshot: item.imageKeySnapshot,
-          optionsSnapshot: item.optionsSnapshot as Prisma.InputJsonValue,
-          compareAtPriceCentsSnapshot: item.compareAtPriceCentsSnapshot,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          totalCents: item.unitPriceCents * item.quantity,
-        })),
-      });
+      // One create per line rather than createMany: a personalised line has a
+      // nested design to write with it, and createMany cannot reach a relation.
+      // The copy is deliberate — the cart is marked completed a few lines below
+      // and eventually pruned, while production must still be able to reproduce
+      // exactly what the customer approved months later.
+      for (const item of items) {
+        await tx.orderItem.create({
+          data: {
+            orderId: created.id,
+            productId: item.productId,
+            variantId: item.variantId,
+            titleSnapshot: item.titleSnapshot,
+            skuSnapshot: item.skuSnapshot,
+            imageKeySnapshot: item.imageKeySnapshot,
+            optionsSnapshot: item.optionsSnapshot as Prisma.InputJsonValue,
+            compareAtPriceCentsSnapshot: item.compareAtPriceCentsSnapshot,
+            quantity: item.quantity,
+            unitPriceCents: item.unitPriceCents,
+            totalCents: item.unitPriceCents * item.quantity,
+            personalizationCents: item.personalizationCents,
+            ...(item.personalizations?.length
+              ? {
+                  personalizations: {
+                    create: item.personalizations.map((d) => ({
+                      templateId: d.templateId,
+                      placementKey: d.placementKey,
+                      placementLabel: d.placementLabel,
+                      contentType: d.contentType,
+                      text: d.text,
+                      fontKey: d.fontKey,
+                      fontName: d.fontName,
+                      fontWeight: d.fontWeight,
+                      heightMm: d.heightMm,
+                      offsetXMm: d.offsetXMm,
+                      offsetYMm: d.offsetYMm,
+                      rotationDeg: d.rotationDeg,
+                      threadColors: d.threadColors as Prisma.InputJsonValue,
+                      stitchEstimate: d.stitchEstimate,
+                      priceCents: d.priceCents,
+                      designJson: d.designJson as Prisma.InputJsonValue,
+                      productionSvg: personalizationSvgs.get(`${item.id}:${d.placementKey}`) ?? null,
+                    })),
+                  },
+                }
+              : {}),
+          },
+        });
+      }
 
       await tx.orderStatusHistory.create({
         data: {
@@ -497,18 +538,26 @@ export class OrdersService {
       // Quantity-aware: an upselling product's line must re-verify at the tier
       // price for the product's total quantity, not the flat variant/option
       // price and not this line's quantity alone.
-      const currentPrice = resolveUnitPriceForQuantity(
-        {
-          variantPriceCents: variant.priceCents,
-          basePriceCents: product.basePriceCents,
-          optionAdjustmentCents: sumOptionAdjustments(variant.options),
-        },
-        tierQuantities.get(item.productId) ?? item.quantity,
-        {
-          upsellingEnabled: product.upsellingEnabled,
-          upsellTiers: product.upsellTiers as never,
-        },
-      );
+      //
+      // The embroidery fee is added back rather than re-derived from the
+      // design. It was computed server-side when the line was created and
+      // frozen on the row; re-resolving it here would mean a price band edited
+      // while a basket sat open silently re-priced a design the customer had
+      // already been quoted — and would reject the checkout outright rather
+      // than honour the quote.
+      const currentPrice =
+        resolveUnitPriceForQuantity(
+          {
+            variantPriceCents: variant.priceCents,
+            basePriceCents: product.basePriceCents,
+            optionAdjustmentCents: sumOptionAdjustments(variant.options),
+          },
+          tierQuantities.get(item.productId) ?? item.quantity,
+          {
+            upsellingEnabled: product.upsellingEnabled,
+            upsellTiers: product.upsellTiers as never,
+          },
+        ) + item.personalizationCents;
 
       if (currentPrice !== item.unitPriceCents) {
         throw new BadRequestException({
