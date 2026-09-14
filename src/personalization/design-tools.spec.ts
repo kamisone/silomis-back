@@ -69,12 +69,26 @@ function makeService() {
   return new PersonalizationService(prisma as never, assetUrls as never);
 }
 
-const design = (over: Record<string, unknown> = {}) =>
-  ({
-    placementKey: 'front', contentType: 'text', text: 'Maria',
-    fontKey: 'block-classic', heightMm: 12, threadColorIds: [TEAL.id],
-    ...over,
-  }) as never;
+/**
+ * Builds a one-box design from a flat override, so a spec reads as "Maria at
+ * 20mm in teal" rather than as a nested document. Design-level keys go on the
+ * position; everything else goes on the box. `threadColorIds` keeps its old
+ * spelling — the first id is the box's spool.
+ */
+const DESIGN_KEYS = new Set(['placementKey', 'elements']);
+const design = (over: Partial<Record<string, unknown>> = {}) => {
+  const { threadColorIds, ...rest } = over as { threadColorIds?: string[] } & Record<string, unknown>;
+  const position: Record<string, unknown> = { placementKey: 'front' };
+  const box: Record<string, unknown> = {
+    contentType: 'text',
+    text: 'Maria',
+    fontKey: 'block-classic',
+    heightMm: 12,
+    threadColorId: threadColorIds?.[0] ?? TEAL.id,
+  };
+  for (const [k, v] of Object.entries(rest)) (DESIGN_KEYS.has(k) ? position : box)[k] = v;
+  return { ...position, elements: position.elements ?? [box] } as never;
+};
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -113,9 +127,10 @@ describe('multiple lines', () => {
     expect(await codeOf(makeService().resolve('p1', design({ text: 'a\nb\nc\nd' })))).toBe(E.TOO_MANY_LINES);
   });
 
-  it('refuses a stack taller than the field', async () => {
-    // Three lines at 20mm with 1.35 leading is 81mm in a 55mm field.
-    expect(await codeOf(makeService().resolve('p1', design({ text: 'a\nb\nc', heightMm: 20 })))).toBe(E.TOO_TALL);
+  it('refuses a stack taller than the machine can hoop', async () => {
+    // Three 40mm lines bent along 150° rise ~85mm on top of their ~148mm
+    // stack — past the 200mm frame.
+    expect(await codeOf(makeService().resolve('p1', design({ placementKey: 'wide', text: 'Alexandra\nAlexandra\nAlexandra', heightMm: 40, curveDeg: 150 })))).toBe(E.TOO_TALL);
   });
 
   it('stacks them on the sheet, centred on the design', async () => {
@@ -179,8 +194,11 @@ describe('curved text', () => {
     expect(arched.stitchEstimate).toBeGreaterThan(straight.stitchEstimate);
   });
 
-  it('eats height, so a deep arch overflows a shallow field', async () => {
-    expect(await codeOf(makeService().resolve('p1', design({ heightMm: 30, curveDeg: 150 })))).toBe(E.TOO_TALL);
+  it('eats height, so a deep arch on a tall stack overflows the frame', async () => {
+    const s = makeService();
+    const flat = await s.resolve('p1', design({ placementKey: 'wide', text: 'Alexandra\nAlexandra', heightMm: 20 }));
+    const arched = await s.resolve('p1', design({ placementKey: 'wide', text: 'Alexandra\nAlexandra', heightMm: 20, curveDeg: 120 }));
+    expect(arched.fieldHeightMm).toBeGreaterThan(flat.fieldHeightMm);
   });
 
   it('is refused on a face whose letters join', async () => {
@@ -196,22 +214,85 @@ describe('curved text', () => {
   });
 });
 
-describe('outline', () => {
-  it('needs a second colour to outline in', async () => {
-    expect(await codeOf(makeService().resolve('p1', design({ outline: true })))).toBe(E.OUTLINE_NEEDS_SECOND_COLOR);
+/** A second box in another spool — how a second colour is asked for now. */
+const box = (over: Record<string, unknown> = {}) => ({
+  contentType: 'text',
+  text: 'Rose',
+  fontKey: 'block-classic',
+  heightMm: 12,
+  threadColorId: PINK.id,
+  offsetXMm: 0,
+  offsetYMm: 16,
+  ...over,
+});
+
+describe('boxes', () => {
+  it('lets a position carry several boxes, each in its own spool', async () => {
+    const r = await makeService().resolve(
+      'p1',
+      design({ elements: [box({ text: 'Maria', threadColorId: TEAL.id, offsetYMm: -10 }), box({ text: 'Rose', threadColorId: PINK.id, offsetYMm: 10 })] }),
+    );
+    expect(r.elements).toHaveLength(2);
+    expect(r.elements.map((el) => el.thread.code)).toEqual(['1791', '1921']);
+    // The row's summary reads every box, in order, for anyone who never opens
+    // the document.
+    expect(r.text).toBe('Maria\nRose');
+    expect(r.threadColors.map((t) => t.code)).toEqual(['1791', '1921']);
   });
 
-  it('takes the second thread and says so on the sheet', async () => {
-    const svg = await svgOf({ outline: true, threadColorIds: [TEAL.id, PINK.id] });
-    expect(svg).toContain('stroke="#c8186a"');
-    expect(svg).toContain('outlined in Madeira 1921 Fuchsia');
-  });
-
-  it('costs a second pass round every glyph', async () => {
+  it('draws every box on the sheet, each placed and turned on its own', async () => {
     const s = makeService();
-    const plain = await s.resolve('p1', design({ threadColorIds: [TEAL.id, PINK.id] }));
-    const outlined = await s.resolve('p1', design({ outline: true, threadColorIds: [TEAL.id, PINK.id] }));
-    expect(outlined.stitchEstimate).toBeGreaterThan(plain.stitchEstimate);
+    const r = await s.resolve('p1', design({ elements: [box({ text: 'Maria', threadColorId: TEAL.id, offsetYMm: -10 }), box({ rotationDeg: 30 })] }));
+    const svg = s.buildProductionSvg(r, { fieldWidthMm: r.fieldWidthMm, fieldHeightMm: r.fieldHeightMm });
+    // Boxes are drawn from the hoop's centre; the hoop's own offset puts them
+    // back where the customer left them on the garment.
+    expect(r.elements[0].offsetYMm + r.offsetYMm).toBeCloseTo(-10, 0);
+    expect(r.elements[1].offsetYMm + r.offsetYMm).toBeCloseTo(16, 0);
+    expect(svg).toContain('rotate(30)');
+    expect(svg).toContain('fill="#0d8f8c"');
+    expect(svg).toContain('fill="#c8186a"');
+    expect(svg).toContain('2 boxes');
+  });
+
+  it('fits the hoop round the boxes, with clearance, rather than asking the customer to draw one', async () => {
+    const s = makeService();
+    const one = await s.resolve('p1', design());
+    // "Maria" at 12mm is ~37mm wide; 4mm of clearance each side.
+    expect(one.fieldWidthMm).toBeCloseTo(one.elements[0].widthMm + 8, 0);
+    expect(one.fieldHeightMm).toBe(20);
+    expect([one.offsetXMm, one.offsetYMm]).toEqual([0, 0]);
+
+    const two = await s.resolve('p1', design({ elements: [box({ text: 'Maria', threadColorId: TEAL.id, offsetYMm: -20 }), box({ offsetYMm: 20 })] }));
+    // From the top of the upper box to the bottom of the lower: 12 + 40 + 8.
+    expect(two.fieldHeightMm).toBe(60);
+    expect(two.offsetYMm).toBe(0);
+  });
+
+  it('refuses boxes spread wider than the machine can hoop, however small each is', async () => {
+    expect(
+      await codeOf(makeService().resolve('p1', design({ placementKey: 'wide', elements: [box({ offsetXMm: -140, threadColorId: TEAL.id }), box({ offsetXMm: 140 })] }))),
+    ).toBe(E.TOO_WIDE);
+  });
+
+  it('clamps a box dragged off the garment rather than refusing the drag', async () => {
+    // 1.5 × the traced panel, as the editor allows: 110 × 1.5 = 165 sideways.
+    const r = await makeService().resolve('p1', design({ elements: [box({ offsetXMm: 999, offsetYMm: -999 })] }));
+    expect([r.offsetXMm, r.offsetYMm]).toEqual([165, -82.5]);
+  });
+
+  it('names the box that is wrong, so the editor can open it', async () => {
+    try {
+      await makeService().resolve('p1', design({ elements: [box({ text: 'Maria', threadColorId: TEAL.id }), box({ text: 'a\nb\nc\nd' })] }));
+      throw new Error('resolved');
+    } catch (err) {
+      const res = (err as { response?: Record<string, unknown> }).response;
+      expect(res?.code).toBe(E.TOO_MANY_LINES);
+      expect(res?.elementIndex).toBe(1);
+    }
+  });
+
+  it('refuses an empty hoop', async () => {
+    await expect(makeService().resolve('p1', design({ elements: [] }))).rejects.toBeDefined();
   });
 });
 
@@ -285,7 +366,9 @@ describe('thread finish', () => {
   });
 
   it('takes the dearest thread on the design — the machine is as slow as its slowest pass', async () => {
-    const r = await makeService().resolve('p1', design({ threadColorIds: [TEAL.id, GOLD.id] }));
+    const r = await makeService().resolve('p1', design({ elements: [box({ threadColorId: TEAL.id }), box({ threadColorId: GOLD.id })] }));
+    // Two boxes of four letters at 12mm plus a colour change sit in the 800
+    // band; ×1.5 for the metallic spool.
     expect(r.priceCents).toBe(1200);
   });
 
@@ -346,10 +429,10 @@ describe('rendering a stored row', () => {
 
 describe('the stitch ceiling', () => {
   /**
-   * The ceiling is machine time, not space. A bold outlined name can occupy a
+   * The ceiling is machine time, not space. A bold puffed name can occupy a
    * fifth of a wide panel and still be three times the stitches of the plain
    * one, so the error has to say what is actually wrong and which switch to
-   * flip — telling someone to shorten their text when the outline is the
+   * flip — telling someone to shorten their text when the foam is the
    * problem sends them to fix the one thing that is not.
    */
   const over = async (over: Record<string, unknown>) => {
@@ -362,34 +445,51 @@ describe('the stitch ceiling', () => {
   };
 
   it('reports the estimate and the ceiling, not a vague "too large"', async () => {
-    // ~13,200 stitches against a 9,000 ceiling.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, outline: true, threadColorIds: ['t-1', 't-2'] });
+    // ~11,400 stitches against a 9,000 ceiling.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, puff: true });
     expect(res?.code).toBe(E.TOO_MANY_STITCHES);
     expect(res?.stitchEstimate).toBeGreaterThan(9000);
     expect(res?.maxStitches).toBe(9000);
     expect(String(res?.message)).toContain('stitches');
   });
 
-  it('names the outline when dropping it alone would fit', async () => {
-    // 6,386 stitches plain; 9,788 outlined, against a 9,000 ceiling.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 36, weight: 2, outline: true, threadColorIds: ['t-1', 't-2'] });
-    expect(res?.relax).toBe('outline');
+  it('names the puff when dropping it alone would fit', async () => {
+    // 7,174 stitches flat; 9,657 puffed, against a 9,000 ceiling.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 2, puff: true });
+    expect(res?.relax).toBe('puff');
   });
 
   it('names the heaviest contributor when several are on', async () => {
-    // Outline (×1.55) beats weight (×1.42), so it is the one to drop first:
-    // 13,324 outlined, 8,667 without — and dropping the weight instead would
-    // still leave 9,442, over the 9,000 only once outlined.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 35, weight: 4, outline: true, threadColorIds: ['t-1', 't-2'] });
-    expect(res?.relax).toBe('outline');
+    // Weight (×1.42) beats puff (×1.35), so it is the one to drop first:
+    // 11,510 as chosen, 8,130 at regular weight.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 35, weight: 4, puff: true });
+    expect(res?.relax).toBe('weight');
   });
 
   it('names nothing when no single switch is enough — the size has to give', async () => {
-    // 40mm is the face's own ceiling, so this is as big as it goes: ~19,110
-    // stitches. Dropping the outline still leaves ~12,400 and dropping the
-    // weight ~11,200 — both over the 9,000, so nothing short of a smaller
+    // 40mm is the face's own ceiling, so this is as big as it goes: ~16,550
+    // stitches. Dropping the puff still leaves ~12,300 and dropping the
+    // weight ~9,660 — both over the 9,000, so nothing short of a smaller
     // design will do and the error says so by naming none of them.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, outline: true, threadColorIds: ['t-1', 't-2'] });
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, puff: true });
     expect(res?.relax).toBeNull();
+  });
+
+  it('looks for the switch on the heaviest box, not on whichever box happens to have one', async () => {
+    // A 40mm bold name (~12,300) next to a tiny puffed box. The puff is the
+    // only switch on the tiny box, but dropping it saves a few hundred
+    // stitches of a 12,000 total; the weight on the big box is what brings
+    // the position back under, so that is the one named — and the error
+    // points at that box.
+    const res = await over({
+      placementKey: 'wide',
+      elements: [
+        box({ text: 'Alexandra', heightMm: 40, weight: 5, threadColorId: TEAL.id, offsetYMm: -10 }),
+        box({ text: 'Jo', heightMm: 10, puff: true, threadColorId: TEAL.id, offsetYMm: 25 }),
+      ],
+    });
+    expect(res?.code).toBe(E.TOO_MANY_STITCHES);
+    expect(res?.elementIndex).toBe(0);
+    expect(res?.relax).toBe('weight');
   });
 });

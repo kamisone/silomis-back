@@ -123,16 +123,37 @@ function makeService(
   return new PersonalizationService(prisma as never, assetUrls as never);
 }
 
-const design = (over: Partial<Record<string, unknown>> = {}) =>
-  ({
-    placementKey: 'front',
+/**
+ * Builds a one-box design from a flat override, so a spec reads as "Maria at
+ * 20mm in teal" rather than as a nested document. Design-level keys go on the
+ * position; everything else goes on the box. `threadColorIds` keeps its old
+ * spelling — the first id is the box's spool.
+ */
+const DESIGN_KEYS = new Set(['placementKey', 'elements']);
+const design = (over: Partial<Record<string, unknown>> = {}) => {
+  const { threadColorIds, ...rest } = over as { threadColorIds?: string[] } & Record<string, unknown>;
+  const position: Record<string, unknown> = { placementKey: 'front' };
+  const box: Record<string, unknown> = {
     contentType: 'text',
     text: 'Maria',
     fontKey: 'block-classic',
     heightMm: 20,
-    threadColorIds: [TEAL.id],
-    ...over,
-  }) as never;
+    threadColorId: threadColorIds?.[0] ?? TEAL.id,
+  };
+  for (const [k, v] of Object.entries(rest)) (DESIGN_KEYS.has(k) ? position : box)[k] = v;
+  return { ...position, elements: position.elements ?? [box] } as never;
+};
+
+/** A second box, in whichever spool the test names. */
+const box = (over: Record<string, unknown> = {}) => ({
+  contentType: 'text',
+  text: 'Jo',
+  fontKey: 'block-classic',
+  heightMm: 10,
+  threadColorId: PINK.id,
+  offsetYMm: 18,
+  ...over,
+});
 
 /** Reads the `code` off the coded BadRequest the service throws. */
 async function codeOf(promise: Promise<unknown>): Promise<string> {
@@ -177,10 +198,14 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
     ['a script no face covers', { text: 'Мария' }, E.TEXT_UNSTITCHABLE],
     ['profanity', { text: 'fuck off' }, E.TEXT_BLOCKED],
     ['longer than the placement allows', { placementKey: 'back', text: 'Alexandria Rose' }, E.TEXT_TOO_LONG],
-    ['wider than the hoop field', { placementKey: 'back', text: 'Alexandra', heightMm: 20 }, E.TOO_WIDE],
+    ['wider than the machine can hoop', { text: 'Alexandra Rose', heightMm: 40 }, E.TOO_WIDE],
     ['below the face’s minimum height', { fontKey: 'script-signature', heightMm: 9 }, E.HEIGHT_OUT_OF_RANGE],
-    ['above the placement’s field height', { placementKey: 'back', heightMm: 30 }, E.HEIGHT_OUT_OF_RANGE],
-    ['more colours than the position takes', { placementKey: 'back', threadColorIds: [TEAL.id, PINK.id, WHITE.id] }, E.TOO_MANY_COLORS],
+    ['above the face’s maximum height', { heightMm: 45 }, E.HEIGHT_OUT_OF_RANGE],
+    [
+      'more colours across the boxes than the position takes',
+      { placementKey: 'back', text: 'Jo', heightMm: 10, elements: [box({ threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: PINK.id, offsetYMm: 0 }), box({ threadColorId: WHITE.id, offsetYMm: 8 })] },
+      E.TOO_MANY_COLORS,
+    ],
     ['a monogram of four letters', { contentType: 'monogram', text: 'ABCD' }, E.MONOGRAM_LENGTH],
     ['a monogram on a face that cannot interlock', { contentType: 'monogram', text: 'AB', fontKey: 'script-signature' }, E.FONT_UNKNOWN],
     ['a placement that does not exist', { placementKey: 'peak' }, E.PLACEMENT_UNKNOWN],
@@ -199,8 +224,9 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
 
   it('rejects a design past the largest price band rather than inventing a price', async () => {
     // Narrow enough to clear the width check, dense enough to exceed 9000:
-    // three Varsity letters at 40mm, heaviest weight, with an outline (~9,900).
-    expect(await codeOf(makeService().resolve('p1', design({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, outline: true, threadColorIds: [TEAL.id, PINK.id] })))).toBe(
+    // three Varsity letters at 40mm, heaviest weight, in 3D puff (~8,500), next
+    // to a second box of ~700 — one hoop, one budget, over together.
+    expect(await codeOf(makeService().resolve('p1', design({ elements: [box({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, puff: true, threadColorId: TEAL.id, offsetYMm: 0 }), box({ text: 'Jo', heightMm: 18, threadColorId: TEAL.id, offsetYMm: 24 })] })))).toBe(
       E.TOO_MANY_STITCHES,
     );
   });
@@ -223,40 +249,26 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
   });
 });
 
-describe('PersonalizationService.resolve — the customer-sized area', () => {
-  it('uses the position\'s field as the starting size when none is sent', async () => {
+describe('PersonalizationService.resolve — the hoop', () => {
+  it('is fitted round the box, with clearance, and frozen on the design', async () => {
     const r = await makeService().resolve('p1', design());
-    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([110, 55]);
+    // "Maria" at 20mm is 62mm wide: 4mm of clearance each side.
+    expect(r.fieldWidthMm).toBe(70);
+    expect(r.fieldHeightMm).toBe(28);
+    expect((r.designJson as { field: unknown }).field).toEqual({ widthMm: 70, heightMm: 28 });
   });
 
-  it('lets a name through that the default area would refuse, once the area is widened', async () => {
-    // "Alexandra" at 30mm is ~170mm wide — over the front's 110mm.
-    expect(await codeOf(makeService().resolve('p1', design({ text: 'Alexandra', heightMm: 30 })))).toBe(E.TOO_WIDE);
-    const r = await makeService().resolve('p1', design({ text: 'Alexandra', heightMm: 30, fieldWidthMm: 200, fieldHeightMm: 60 }));
-    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([200, 60]);
-    expect(r.widthMm).toBeLessThanOrEqual(200);
+  it('never shrinks below what a frame can hold', async () => {
+    const r = await makeService().resolve('p1', design({ text: 'I', heightMm: 8 }));
+    expect(r.fieldWidthMm).toBeGreaterThanOrEqual(15);
+    expect(r.fieldHeightMm).toBeGreaterThanOrEqual(15);
   });
 
-  it('refuses a design the customer shrank the area around', async () => {
-    expect(await codeOf(makeService().resolve('p1', design({ heightMm: 20, fieldWidthMm: 30, fieldHeightMm: 40 })))).toBe(E.TOO_WIDE);
-    // Two 10mm lines stack to ~23mm; the area is 20mm tall.
-    expect(await codeOf(makeService().resolve('p1', design({ text: 'Max\nMo', heightMm: 10, fieldWidthMm: 60, fieldHeightMm: 20 })))).toBe(E.TOO_TALL);
-  });
-
-  it('clamps the area to the machine rather than rejecting it', async () => {
-    const r = await makeService().resolve('p1', design({ text: 'Mo', heightMm: 10, fieldWidthMm: 5000, fieldHeightMm: 2 }));
-    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([300, 15]);
-  });
-
-  it('is part of the design\'s identity — the same words in a bigger hoop hash apart', async () => {
-    const a = await makeService().resolve('p1', design());
-    const b = await makeService().resolve('p1', design({ fieldWidthMm: 120 }));
+  it('is part of the design\'s identity — the same words further apart hash apart', async () => {
+    const s = makeService();
+    const a = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -10 }), box({ offsetYMm: 10 })] }));
+    const b = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -20 }), box({ offsetYMm: 20 })] }));
     expect(a.hash).not.toBe(b.hash);
-  });
-
-  it('still lets a small area travel as far as the position allows', async () => {
-    const r = await makeService().resolve('p1', design({ fieldWidthMm: 30, fieldHeightMm: 20, text: 'Mo', heightMm: 10, offsetXMm: 150 }));
-    expect(r.offsetXMm).toBe(150);
   });
 });
 
@@ -271,28 +283,30 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     expect(big.stitchEstimate).toBe(1681);
   });
 
-  it('charges a colour change per extra spool, but not for the same spool twice', async () => {
+  it('charges a colour change per extra spool across the boxes, but not for the same spool twice', async () => {
     const s = makeService();
-    const one = await s.resolve('p1', design({ threadColorIds: [TEAL.id] }));
-    const twice = await s.resolve('p1', design({ threadColorIds: [TEAL.id, TEAL.id] }));
-    const two = await s.resolve('p1', design({ threadColorIds: [TEAL.id, PINK.id] }));
+    const one = await s.resolve('p1', design());
+    const extra = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: TEAL.id })] }));
+    const two = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: PINK.id })] }));
 
-    expect(twice.stitchEstimate).toBe(one.stitchEstimate);
-    expect(two.stitchEstimate).toBe(one.stitchEstimate + 120);
-    expect(twice.threadColors).toHaveLength(1);
+    // "Jo" at 10mm is 2 × 130 + 80 = 340 stitches of its own.
+    expect(extra.stitchEstimate).toBe(one.stitchEstimate + 340);
+    expect(two.stitchEstimate).toBe(extra.stitchEstimate + 120);
+    expect(extra.threadColors).toHaveLength(1);
+    expect(two.threadColors).toHaveLength(2);
   });
 
   it('picks the first band the estimate fits in', async () => {
     const s = makeService();
-    // 730, 1681, 4744 and 7429 stitches — one in each band. Height alone no
+    // 730, 1681, 4744 and 6377 stitches — one in each band. Height alone no
     // longer reaches the top band on a 110mm field (a longer name would be too
-    // wide), so the last two lean on weight and an outline, which is also how
-    // a real customer gets there.
+    // wide), so the last two lean on weight and 3D puff, which is also how a
+    // real customer gets there.
     expect((await s.resolve('p1', design({ heightMm: 10 }))).priceCents).toBe(800);
     expect((await s.resolve('p1', design({ heightMm: 20 }))).priceCents).toBe(800);
     expect((await s.resolve('p1', design({ heightMm: 30, weight: 5 }))).priceCents).toBe(1200);
     expect(
-      (await s.resolve('p1', design({ heightMm: 30, weight: 5, outline: true, threadColorIds: [TEAL.id, PINK.id] }))).priceCents,
+      (await s.resolve('p1', design({ heightMm: 30, weight: 5, puff: true }))).priceCents,
     ).toBe(1800);
   });
 
@@ -369,10 +383,8 @@ describe('PersonalizationService.resolve — where the design sits in the field'
     const r = await s.resolve('p1', design({ offsetXMm: 12, offsetYMm: -4 }));
     const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
 
-    // The page is the union of both rectangles plus a 4mm margin, measured
-    // rather than padded symmetrically: a 110-wide field offset 12mm right
-    // spans -55..67, so 130mm holds it with nothing wasted.
-    expect(svg).toContain('width="130mm"');
+    // The page holds the hoop where it was fitted — round the box, 12mm to
+    // the right of the traced centre — and says so.
     expect(svg).toContain('hooped 12mm, -4mm from the traced centre');
     // Two rectangles: the faint reference and the solid one being sewn.
     expect((svg.match(/<rect /g) ?? []).length).toBe(2);
@@ -435,33 +447,40 @@ describe('PersonalizationService.resolve — weight', () => {
 });
 
 describe('PersonalizationService.resolve — rotation', () => {
+  /** The angle lives on the box: the area itself is never turned. */
+  const angleOf = async (over: Record<string, unknown> = {}) => {
+    const r = await makeService().resolve('p1', design(over));
+    return r.elements[0].rotationDeg;
+  };
+
   it('is square to the traced position by default', async () => {
-    expect((await makeService().resolve('p1', design())).rotationDeg).toBe(0);
+    const r = await makeService().resolve('p1', design());
+    expect(r.elements[0].rotationDeg).toBe(0);
+    expect(r.rotationDeg).toBe(0);
   });
 
   it('keeps any angle — a machine sews a path at whatever angle the file says', async () => {
-    const s = makeService();
-    expect((await s.resolve('p1', design({ rotationDeg: 12.5 }))).rotationDeg).toBe(12.5);
-    expect((await s.resolve('p1', design({ rotationDeg: -90 }))).rotationDeg).toBe(-90);
+    expect(await angleOf({ rotationDeg: 12.5 })).toBe(12.5);
+    expect(await angleOf({ rotationDeg: -90 })).toBe(-90);
   });
 
   it('accepts an angle past a full turn — a handle dragged twice round accumulates', async () => {
     // Regression guard: the DTO capped this at ±360, so spinning the handle
     // round twice came back as a 400 instead of folding. The schema's rail must
     // stay clear of any gesture a customer can actually make.
-    expect((await makeService().resolve('p1', design({ rotationDeg: 1085 }))).rotationDeg).toBe(5);
+    expect(await angleOf({ rotationDeg: 1085 })).toBe(5);
   });
 
   it('folds a full turn away, so 370° and 10° are one design and not two cart lines', async () => {
     const s = makeService();
     const a = await s.resolve('p1', design({ rotationDeg: 10 }));
     const b = await s.resolve('p1', design({ rotationDeg: 370 }));
-    expect(b.rotationDeg).toBe(10);
+    expect(b.elements[0].rotationDeg).toBe(10);
     expect(b.hash).toBe(a.hash);
   });
 
   it('normalises past half a turn to the short way round', async () => {
-    expect((await makeService().resolve('p1', design({ rotationDeg: 270 }))).rotationDeg).toBe(-90);
+    expect(await angleOf({ rotationDeg: 270 })).toBe(-90);
   });
 
   it('is part of the design, so two angles are two cart lines', async () => {
@@ -471,26 +490,25 @@ describe('PersonalizationService.resolve — rotation', () => {
     expect(a.hash).not.toBe(b.hash);
   });
 
-  it('turns the frame and the lettering together on the production sheet', async () => {
+  it('turns the box on the production sheet, and says so', async () => {
     const s = makeService();
     const r = await s.resolve('p1', design({ rotationDeg: 20 }));
     const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
 
-    // One transform on the group: the frame and the text can never disagree.
+    // One transform on the box: its lettering and its place can never disagree.
     expect(svg).toContain('rotate(20)');
     expect(svg).toContain('turned 20°');
   });
 
-  it('grows the sheet to the turned rectangle’s real footprint', async () => {
+  it('grows the sheet when a turned box reaches past the area', async () => {
     const s = makeService();
-    const square = await s.resolve('p1', design());
-    const turned = await s.resolve('p1', design({ rotationDeg: 45 }));
+    // A 62mm-wide box at the area's right edge, turned 45°, sticks out past it.
+    const inside = await s.resolve('p1', design({ offsetXMm: 0 }));
+    const turned = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetXMm: 50, offsetYMm: 0, rotationDeg: 45 })] }));
 
     const pageOf = (svg: string) => Number(svg.match(/width="([\d.]+)mm"/)![1]);
-    // A 110×55 rectangle at 45° is about 117mm across — wider than either side,
-    // so a page sized from the sides alone would crop it.
     expect(pageOf(s.buildProductionSvg(turned, { fieldWidthMm: 110, fieldHeightMm: 55 }))).toBeGreaterThan(
-      pageOf(s.buildProductionSvg(square, { fieldWidthMm: 110, fieldHeightMm: 55 })),
+      pageOf(s.buildProductionSvg(inside, { fieldWidthMm: 110, fieldHeightMm: 55 })),
     );
   });
 });
@@ -547,8 +565,8 @@ describe('PersonalizationService — localized position names', () => {
 });
 
 describe('PersonalizationService.resolveSet — several positions on one item', () => {
-  const front = { placementKey: 'front', contentType: 'text', text: 'Maria', fontKey: 'block-classic', heightMm: 10, threadColorIds: [TEAL.id] };
-  const back = { placementKey: 'back', contentType: 'text', text: 'Leo', fontKey: 'block-classic', heightMm: 10, threadColorIds: [TEAL.id] };
+  const front = design({ placementKey: 'front', text: 'Maria', heightMm: 10 }) as Record<string, unknown>;
+  const back = design({ placementKey: 'back', text: 'Leo', heightMm: 10 }) as Record<string, unknown>;
 
   it('totals every position, because each one is its own hooping and run', async () => {
     const s = makeService();
@@ -577,7 +595,7 @@ describe('PersonalizationService.resolveSet — several positions on one item', 
 
   it('reports the first broken position rather than racing two failures', async () => {
     const s = makeService();
-    const bad = { ...back, text: 'fuck' };
+    const bad = design({ placementKey: 'back', text: 'fuck', heightMm: 10 });
     expect(await codeOf(s.resolveSet('p1', [front, bad] as never))).toBe(E.TEXT_BLOCKED);
   });
 });

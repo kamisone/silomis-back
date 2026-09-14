@@ -112,6 +112,14 @@ export const FIELD_MIN_MM = 15;
 export const FIELD_MAX_WIDTH_MM = 300;
 export const FIELD_MAX_HEIGHT_MM = 200;
 
+/**
+ * How many boxes one position may hold. Each box is its own words, face, size
+ * and spool, placed on its own; six is more than a hoop the size of a cap
+ * panel can carry legibly, and an unbounded list is a free way to make the
+ * server resolve fonts all day.
+ */
+export const MAX_ELEMENTS = 6;
+
 /** Up to three lines. Beyond that a hoop field runs out of height long before. */
 export const MAX_TEXT_LINES = 3;
 

@@ -13,6 +13,7 @@ import { containsTestProduct } from '../common/utils/test-product.util';
 import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduct } from '../pricing/variant-price.util';
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
 import { PersonalizationService } from '../personalization/personalization.service';
+import { designElementsOf } from '../personalization/design-elements';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
 import { CartItem, Order, OrderItemPersonalization, OrderStatus, Prisma } from '../../generated/prisma/client';
 
@@ -616,5 +617,15 @@ export function toCustomerDesign(d: OrderItemPersonalization) {
     motifSizeMm: d.motifSizeMm,
     threadColors: d.threadColors,
     priceCents: d.priceCents,
+    elements: designElementsOf(d).map((el) => ({
+      contentType: el.contentType,
+      text: el.text,
+      fontName: el.fontName,
+      heightMm: el.heightMm,
+      isPuff: el.isPuff,
+      motifName: el.motifName,
+      motifSizeMm: el.motifSizeMm,
+      thread: el.thread,
+    })),
   };
 }

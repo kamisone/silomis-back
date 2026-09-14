@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { pickLocalized } from './localized.util';
-import { PersonalizationInput } from './dto/personalization.dto';
+import { ElementInput, PersonalizationInput } from './dto/personalization.dto';
 import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
   CURVE_STITCH_FACTOR,
+  DEFAULT_WEIGHT_STEP,
   FIELD_MAX_HEIGHT_MM,
   FIELD_MAX_WIDTH_MM,
   FIELD_MIN_MM,
@@ -56,9 +57,46 @@ export interface ResolvedThread {
   priceMultiplier: number;
 }
 
+/** One box inside a position, checked and measured. */
+export interface ResolvedElement {
+  contentType: 'text' | 'monogram' | 'motif';
+  /** Normalised — this exact string is what gets stitched. */
+  text: string;
+  /** Lines, already split — `text` is the same thing joined by newlines. */
+  lines: string[];
+  lineCount: number;
+  fontKey: string;
+  fontName: string;
+  heightMm: number;
+  /** 1–5 as chosen; `fontWeight` is the CSS/production value it maps to. */
+  weightStep: number;
+  fontWeight: number;
+  trackingPct: number;
+  kerning: number[] | null;
+  curveDeg: number;
+  isPuff: boolean;
+  motif: ResolvedMotif | null;
+  /** The one spool this box is sewn in. */
+  thread: ResolvedThread;
+  /** Predicted width of the stitched line, for the operator and the preview. */
+  widthMm: number;
+  /** Every line stacked, curve included — what has to fit the area's height. */
+  stackMm: number;
+  /** From the area's centre, in millimetres. */
+  offsetXMm: number;
+  offsetYMm: number;
+  /** The box's own angle in the garment's plane. */
+  rotationDeg: number;
+  stitchEstimate: number;
+}
+
 /**
  * A design that has passed every check, with everything the rest of the system
  * needs already derived. Nothing downstream re-reads the customer's input.
+ *
+ * The flat fields summarise the position for readers that never open the
+ * document — the first box's face and size, every box's words joined, every
+ * spool used. `elements` is the whole design.
  */
 export interface ResolvedPersonalization {
   templateId: string;
@@ -97,6 +135,8 @@ export interface ResolvedPersonalization {
   offsetYMm: number;
   /** Angle in the garment's plane. Zero means square to the traced position. */
   rotationDeg: number;
+  /** Every box in the area, in the order the customer made them. */
+  elements: ResolvedElement[];
   designJson: Record<string, unknown>;
   /** Stable fingerprint — two cart lines with the same design share it. */
   hash: string;
@@ -216,9 +256,9 @@ export class PersonalizationService {
         label: pickLocalized(p.label, lang),
         hint: pickLocalized(p.hint, lang) || null,
         /**
-         * The starting size of the embroidery area, and the real size of the
-         * traced panel — which is what puts the customer's millimetres onto
-         * the photograph at scale. The customer resizes from here.
+         * The real size of the traced panel — what puts the customer's
+         * millimetres onto the photograph at scale, and what bounds how far
+         * a box may travel over it.
          */
         fieldWidthMm: p.fieldWidthMm,
         fieldHeightMm: p.fieldHeightMm,
@@ -283,6 +323,11 @@ export class PersonalizationService {
    * The one path every design goes through, whether it arrived from the
    * editor's live quote or from add-to-cart. Throws a coded BadRequest on the
    * first rule it breaks; the storefront turns the code into translated copy.
+   *
+   * A design is one position: the area the customer sized and moved, and the
+   * boxes inside it. Every box is checked on its own — its words, face, size
+   * and spool — and the position is then priced as a whole, because one hoop
+   * is one run on the machine however many boxes it carries.
    */
   async resolve(productId: string, input: PersonalizationInput, lang?: string): Promise<ResolvedPersonalization> {
     const product = await this.prisma.product.findUnique({
@@ -303,14 +348,6 @@ export class PersonalizationService {
       }),
     ]);
     if (!template?.isActive) fail(E.NOT_AVAILABLE, 'This product cannot be personalised.');
-
-    if (input.contentType === 'text' && !template.allowText) {
-      fail(E.CONTENT_TYPE_DISABLED, 'Text embroidery is not offered on this product.');
-    }
-    if (input.contentType === 'monogram' && !template.allowMonogram) {
-      fail(E.CONTENT_TYPE_DISABLED, 'Monograms are not offered on this product.');
-    }
-
     if (!placement?.isActive) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not available.');
 
     // The same rule getConfigForProduct applies when deciding what to offer.
@@ -319,6 +356,222 @@ export class PersonalizationService {
     // buy a position with no artwork behind it, and the job would reach the
     // floor with nothing to show the operator.
     if (!placement.mediaKey) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not set up yet.');
+
+    // Sequential rather than parallel on purpose: the first thing wrong should
+    // be the thing reported, and a Promise.all would race two rejections and
+    // surface whichever lost. The error names the box, so the editor can open
+    // the right one.
+    const elements: ResolvedElement[] = [];
+    for (let i = 0; i < input.elements.length; i++) {
+      try {
+        elements.push(await this.resolveElement(input.elements[i], { template, placement }));
+      } catch (err) {
+        if (err instanceof BadRequestException) {
+          const body = err.getResponse() as Record<string, unknown>;
+          throw new BadRequestException({ ...body, elementIndex: i });
+        }
+        throw err;
+      }
+    }
+
+    // The hoop is not something the customer draws: it is whatever rectangle
+    // holds every box they placed, plus the clearance a frame needs round the
+    // stitching. Measured on the boxes' real footprints — a turned box reaches
+    // further than its sides — so the operator's sheet holds all of it.
+    const hoop = hoopAround(elements);
+    if (hoop.widthMm > FIELD_MAX_WIDTH_MM) {
+      fail(E.TOO_WIDE, `Those boxes spread wider than we can hoop in one go (${FIELD_MAX_WIDTH_MM}mm) — bring them closer or make them smaller.`, {
+        widthMm: Math.round(hoop.widthMm),
+        fieldWidthMm: FIELD_MAX_WIDTH_MM,
+      });
+    }
+    if (hoop.heightMm > FIELD_MAX_HEIGHT_MM) {
+      fail(E.TOO_TALL, `Those boxes spread taller than we can hoop in one go (${FIELD_MAX_HEIGHT_MM}mm) — bring them closer or make them smaller.`, {
+        heightMm: Math.round(hoop.heightMm),
+        fieldHeightMm: FIELD_MAX_HEIGHT_MM,
+      });
+    }
+    const fieldWidthMm = hoop.widthMm;
+    const fieldHeightMm = hoop.heightMm;
+    // Where the hoop sits: its centre, from the position's traced centre. The
+    // boxes are then re-expressed from that centre, which is how the sheet
+    // draws them and how the operator reads them off it.
+    const offsetXMm = hoop.cxMm;
+    const offsetYMm = hoop.cyMm;
+    for (const el of elements) {
+      el.offsetXMm = round1(el.offsetXMm - offsetXMm);
+      el.offsetYMm = round1(el.offsetYMm - offsetYMm);
+    }
+
+    // Threads are de-duplicated before counting: two boxes in the same spool
+    // are one colour on the machine, so charging a colour change for the
+    // second would be wrong. Order is the order the boxes were made in, which
+    // is the order the operator loads them.
+    const threads: ResolvedThread[] = [];
+    for (const el of elements) if (!threads.some((t) => t.id === el.thread.id)) threads.push(el.thread);
+    if (threads.length > placement.maxColors) {
+      fail(E.TOO_MANY_COLORS, `This position takes at most ${placement.maxColors} thread colours across its boxes.`, {
+        maxColors: placement.maxColors,
+      });
+    }
+
+    // Each box carries its own glyph stitches and its own underlay; the
+    // colour changes belong to the position, because that is where they
+    // happen — between one box's spool and the next.
+    const stitchEstimate = elements.reduce((sum, el) => sum + el.stitchEstimate, 0) + Math.max(0, threads.length - 1) * STITCHES_PER_COLOR_CHANGE;
+
+    const band = template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
+    if (!band) {
+      // Past the largest band there is no price, and inventing one would mean
+      // selling a job whose machine time nobody has costed.
+      //
+      // This is a limit on machine time, not on space — a bold puffed name can
+      // be under a third of the panel's width and still be three times the
+      // stitches of the plain one. Saying "too large" and suggesting shorter
+      // text sends people to fix the one thing that is not the problem, so the
+      // numbers and the actual culprit go out with the error. The culprit is
+      // looked for on the heaviest box, which is where a single switch can
+      // still make the difference.
+      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
+      const heaviest = elements.reduce((a, b) => (b.stitchEstimate > a.stitchEstimate ? b : a));
+      fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
+        stitchEstimate,
+        maxStitches: ceiling,
+        elementIndex: elements.indexOf(heaviest),
+        relax: this.overBudgetCulprit({
+          stitchEstimate,
+          ceiling,
+          hasOutline: false,
+          isPuff: heaviest.isPuff,
+          curveDeg: heaviest.curveDeg,
+          weightFactor: weightForStep(heaviest.weightStep).stitchFactor,
+          share: heaviest.stitchEstimate / Math.max(1, stitchEstimate),
+        }),
+      });
+    }
+
+    // The stitch band covers machine time; the placement's own price covers the
+    // hooping and the run. A customer embroidering two positions pays both
+    // halves twice, because that is what the shop actually does twice — and a
+    // second box on the same position pays neither again, because it does not.
+    const placementLabel = pickLocalized(placement.label, lang);
+    // A metallic or glow thread runs slower and breaks more, so the spool the
+    // customer picked moves the price. The dearest one on the design decides —
+    // the machine is only as fast as its slowest pass.
+    // `?? 1` because Math.max with a single undefined is NaN, and a NaN here
+    // does not throw — it silently becomes the price of the whole design.
+    const threadMultiplier = Math.max(1, ...threads.map((t) => t.priceMultiplier ?? 1));
+    const priceCents = Math.round(band.priceCents * threadMultiplier) + placement.priceCents;
+
+    // The row keeps a flat summary of the position for everything that reads a
+    // design without opening the document — the queue's card, a search, an
+    // email — while the document carries every box in full.
+    const first = elements[0];
+    const firstText = elements.find((el) => el.contentType !== 'motif') ?? first;
+    const text = elements.map((el) => el.text).filter(Boolean).join('\n');
+    const lines = elements.flatMap((el) => el.lines);
+    const kinds = new Set(elements.map((el) => el.contentType));
+    const contentType = kinds.size === 1 ? first.contentType : 'text';
+    const firstMotif = elements.find((el) => el.motif)?.motif ?? null;
+
+    const designJson = {
+      version: 2 as const,
+      templateKey: template.key,
+      placementKey: placement.key,
+      // The label travels with the design so a basket, an order confirmation
+      // and a refund six months later all read the same words, even if the
+      // shop has since renamed or deleted the position.
+      placementLabel,
+      // Derived from the boxes, but frozen with the design: the sheet is drawn
+      // from this, and a later change to the clearance rule must not redraw a
+      // job already sold.
+      field: { widthMm: fieldWidthMm, heightMm: fieldHeightMm },
+      offsetXMm,
+      offsetYMm,
+      elements: elements.map((el) => ({
+        contentType: el.contentType,
+        text: el.text,
+        lines: el.lines,
+        font: { key: el.fontKey, name: el.fontName },
+        heightMm: el.heightMm,
+        weightStep: el.weightStep,
+        fontWeight: el.fontWeight,
+        trackingPct: el.trackingPct,
+        kerning: el.kerning,
+        curveDeg: el.curveDeg,
+        isPuff: el.isPuff,
+        // Path and viewBox travel with the document: retiring a motif from the
+        // catalogue must not leave an ordered job with nothing to redraw.
+        motif: el.motif ? { key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, path: el.motif.path, viewBox: el.motif.viewBox } : null,
+        widthMm: el.widthMm,
+        stackMm: el.stackMm,
+        offsetXMm: el.offsetXMm,
+        offsetYMm: el.offsetYMm,
+        rotationDeg: el.rotationDeg,
+        thread: { brand: el.thread.brand, code: el.thread.code, name: el.thread.name, hex: el.thread.hex },
+        stitchEstimate: el.stitchEstimate,
+      })),
+      threads: threads.map((t) => ({ brand: t.brand, code: t.code, name: t.name, hex: t.hex })),
+      stitchEstimate,
+      priceCents,
+    };
+
+    return {
+      templateId: template.id,
+      placementKey: placement.key,
+      placementLabel,
+      contentType,
+      text,
+      fontKey: firstText.fontKey,
+      fontName: firstText.fontName,
+      heightMm: firstText.heightMm,
+      weightStep: firstText.weightStep,
+      fontWeight: firstText.fontWeight,
+      lines,
+      lineCount: lines.length,
+      trackingPct: firstText.trackingPct,
+      kerning: firstText.kerning,
+      curveDeg: firstText.curveDeg,
+      hasOutline: false,
+      outlineThread: null,
+      isPuff: elements.some((el) => el.isPuff),
+      motif: firstMotif,
+      fieldWidthMm,
+      fieldHeightMm,
+      threadColors: threads,
+      stitchEstimate,
+      priceCents,
+      widthMm: round1(Math.max(...elements.map((el) => el.widthMm))),
+      offsetXMm,
+      offsetYMm,
+      // The area itself is never turned; each box carries its own angle.
+      rotationDeg: 0,
+      elements,
+      designJson,
+      hash: this.hashDesign(designJson),
+    };
+  }
+
+  /**
+   * One box, checked and measured on its own: its words against the face and
+   * the position's character limit, its size against the face and the area,
+   * its spool, and everything the tools set.
+   */
+  private async resolveElement(
+    input: ElementInput,
+    ctx: {
+      template: { allowText: boolean; allowMonogram: boolean };
+      placement: { maxChars: number; allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number };
+    },
+  ): Promise<ResolvedElement> {
+    const { template, placement } = ctx;
+
+    if (input.contentType === 'text' && !template.allowText) {
+      fail(E.CONTENT_TYPE_DISABLED, 'Text embroidery is not offered on this product.');
+    }
+    if (input.contentType === 'monogram' && !template.allowMonogram) {
+      fail(E.CONTENT_TYPE_DISABLED, 'Monograms are not offered on this product.');
+    }
 
     // A motif is stitched instead of words, so it skips the whole text path.
     const motif = input.motifKey ? await this.resolveMotif(input.motifKey, input.motifSizeMm) : null;
@@ -343,35 +596,10 @@ export class PersonalizationService {
       for (const line of lines) this.assertTextIsStitchable(line, input.contentType, placement.maxChars);
     }
 
-    // Threads are de-duplicated before counting: picking the same spool twice
-    // is one colour on the machine, so charging two colour changes for it
-    // would be wrong.
-    const threads = await this.resolveThreads(input.threadColorIds);
-
-    // The outline is the second spool. Without one there is nothing to outline
-    // in, and outlining in the fill colour would be invisible thread on thread.
-    const hasOutline = !!input.outline;
-    if (hasOutline && threads.length < 2) {
-      fail(E.OUTLINE_NEEDS_SECOND_COLOR, 'Pick a second thread colour for the outline.');
-    }
-    const outlineThread = hasOutline ? threads[1] : null;
-
-    if (threads.length > placement.maxColors) {
-      fail(E.TOO_MANY_COLORS, `This position takes at most ${placement.maxColors} thread colours.`, {
-        maxColors: placement.maxColors,
-      });
-    }
-
-    // The area is the customer's: they size the hoop the design runs in, and
-    // the position only supplies the starting size. Clamped to the machine
-    // rather than rejected, for the same reason travel is — the editor already
-    // stops the handle at the limit, so an error here would describe a
-    // gesture the customer never saw.
-    const fieldWidthMm = round1(clamp(input.fieldWidthMm ?? placement.fieldWidthMm, FIELD_MIN_MM, FIELD_MAX_WIDTH_MM));
-    const fieldHeightMm = round1(clamp(input.fieldHeightMm ?? placement.fieldHeightMm, FIELD_MIN_MM, FIELD_MAX_HEIGHT_MM));
+    const [thread] = await this.resolveThreads([input.threadColorId]);
 
     const heightMm = round1(input.heightMm);
-    const maxHeightMm = Math.min(font.maxHeightMm, fieldHeightMm);
+    const maxHeightMm = font.maxHeightMm;
     if (input.contentType !== 'motif' && (heightMm < font.minHeightMm || heightMm > maxHeightMm)) {
       fail(E.HEIGHT_OUT_OF_RANGE, `Letter height must be between ${font.minHeightMm}mm and ${maxHeightMm}mm.`, {
         minHeightMm: font.minHeightMm,
@@ -406,12 +634,17 @@ export class PersonalizationService {
     const widthMm =
       motif && input.contentType === 'motif'
         ? motif.sizeMm
-        : this.estimateWidthMm(text, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
+        : // The widest line is what has to fit. Measuring the joined text counted
+          // every line end to end — and the newlines between them — so a
+          // two-line name was refused as twice its real width.
+          this.estimateWidthMm(longest, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
           this.spacingWidthMm(longest, heightMm, trackingPct, kerning);
-    if (widthMm > fieldWidthMm) {
-      fail(E.TOO_WIDE, 'That is too wide for the embroidery area — widen the area, shorten the text or reduce the height.', {
+    // A single box has to fit the machine's largest frame on its own; the
+    // whole position is checked again once every box is placed.
+    if (widthMm > FIELD_MAX_WIDTH_MM) {
+      fail(E.TOO_WIDE, `That is wider than we can embroider in one go (${FIELD_MAX_WIDTH_MM}mm) — shorten the text or reduce the size.`, {
         widthMm: Math.round(widthMm),
-        fieldWidthMm,
+        fieldWidthMm: FIELD_MAX_WIDTH_MM,
       });
     }
 
@@ -426,22 +659,19 @@ export class PersonalizationService {
       motif,
       contentType: input.contentType,
     });
-    if (stackMm > fieldHeightMm) {
-      fail(E.TOO_TALL, 'That is too tall for the embroidery area — make the area taller, use fewer lines, less curve, or a smaller height.', {
+    if (stackMm > FIELD_MAX_HEIGHT_MM) {
+      fail(E.TOO_TALL, `That is taller than we can embroider in one go (${FIELD_MAX_HEIGHT_MM}mm) — fewer lines, less curve, or a smaller size.`, {
         heightMm: Math.round(stackMm),
-        fieldHeightMm,
+        fieldHeightMm: FIELD_MAX_HEIGHT_MM,
       });
     }
 
-    // Where the customer moved it. The hoop field travels with the lettering —
-    // outline and text together — so the field's own size is no longer the
-    // bound; MAX_TRAVEL_FACTOR is. Measured against the position's traced
-    // field, not the customer's area: the photo is the thing being travelled
-    // over, and a customer who made the area tiny must not lose the right to
-    // move it as far. Clamped rather than rejected, because a drag
-    // that ran past the limit should stop there, which is what the pointer was
-    // already being shown; an error message for a gesture the editor visibly
-    // constrained would be nonsense.
+    // Where the box sits, from the position's traced centre. The bound is how
+    // far anything may travel over the photograph — MAX_TRAVEL_FACTOR × the
+    // traced panel, the same rule the editor applies. Clamped rather than
+    // rejected, because a drag that ran past the limit should stop there,
+    // which is what the pointer was already being shown; an error message for
+    // a gesture the editor visibly constrained would be nonsense.
     //
     // Rounded *after* clamping, not before: the bound is a product of measured
     // numbers and lands on values like 164.99999999999997, which would reach
@@ -460,117 +690,36 @@ export class PersonalizationService {
       heightMm,
       contentType: input.contentType,
       stitchesPerCharAt10mm: font.stitchesPerCharAt10mm,
-      colorCount: threads.length,
+      colorCount: 1,
       weightFactor: weight.stitchFactor,
       curveDeg,
-      hasOutline,
+      hasOutline: false,
       isPuff,
       motif,
     });
 
-    const band = template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
-    if (!band) {
-      // Past the largest band there is no price, and inventing one would mean
-      // selling a job whose machine time nobody has costed.
-      //
-      // This is a limit on machine time, not on space — a bold outlined name
-      // can be under a third of the panel's width and still be three times the
-      // stitches of the plain one. Saying "too large" and suggesting shorter
-      // text sends people to fix the one thing that is not the problem, so the
-      // numbers and the actual culprit go out with the error.
-      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
-      fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
-        stitchEstimate,
-        maxStitches: ceiling,
-        // Which single switch, turned off, would bring it back under.
-        relax: this.overBudgetCulprit({
-          stitchEstimate,
-          ceiling,
-          hasOutline,
-          isPuff,
-          curveDeg,
-          weightFactor: weight.stitchFactor,
-        }),
-      });
-    }
-
-    // The stitch band covers machine time; the placement's own price covers the
-    // hooping and the run. A customer embroidering two positions pays both
-    // halves twice, because that is what the shop actually does twice.
-    const placementLabel = pickLocalized(placement.label, lang);
-    // A metallic or glow thread runs slower and breaks more, so the spool the
-    // customer picked moves the price. The dearest one on the design decides —
-    // the machine is only as fast as its slowest pass.
-    // `?? 1` because Math.max with a single undefined is NaN, and a NaN here
-    // does not throw — it silently becomes the price of the whole design.
-    const threadMultiplier = Math.max(1, ...threads.map((t) => t.priceMultiplier ?? 1));
-    const priceCents = Math.round(band.priceCents * threadMultiplier) + placement.priceCents;
-
-    const designJson = {
-      version: 1 as const,
-      templateKey: template.key,
-      placementKey: placement.key,
-      // The label travels with the design so a basket, an order confirmation
-      // and a refund six months later all read the same words, even if the
-      // shop has since renamed or deleted the position.
-      placementLabel,
-      contentType: input.contentType,
-      text,
-      font: { key: font.key, name: font.name },
-      heightMm,
-      // Part of the design's identity: the same words in a bigger hoop is a
-      // different job on the floor, so it hashes apart.
-      field: { widthMm: fieldWidthMm, heightMm: fieldHeightMm },
-      weightStep: weight.step,
-      fontWeight: weight.cssWeight,
-      lines,
-      trackingPct,
-      kerning,
-      curveDeg,
-      hasOutline,
-      outline: outlineThread ? { brand: outlineThread.brand, code: outlineThread.code, name: outlineThread.name, hex: outlineThread.hex } : null,
-      isPuff,
-      motif: motif ? { key: motif.key, name: motif.name, sizeMm: motif.sizeMm } : null,
-      widthMm: round1(widthMm),
-      offsetXMm,
-      offsetYMm,
-      rotationDeg,
-      threads: threads.map((t) => ({ brand: t.brand, code: t.code, name: t.name, hex: t.hex })),
-      stitchEstimate,
-      priceCents,
-    };
-
     return {
-      templateId: template.id,
-      placementKey: placement.key,
-      placementLabel,
       contentType: input.contentType,
       text,
+      lines,
+      lineCount: lines.length,
       fontKey: font.key,
       fontName: font.name,
       heightMm,
       weightStep: weight.step,
       fontWeight: weight.cssWeight,
-      lines,
-      lineCount: lines.length,
       trackingPct,
       kerning,
       curveDeg,
-      hasOutline,
-      outlineThread,
       isPuff,
       motif,
-      fieldWidthMm,
-      fieldHeightMm,
-      threadColors: threads,
-      stitchEstimate,
-      priceCents,
+      thread,
       widthMm: round1(widthMm),
+      stackMm: round1(stackMm),
       offsetXMm,
       offsetYMm,
       rotationDeg,
-      designJson,
-      hash: this.hashDesign(designJson),
+      stitchEstimate,
     };
   }
 
@@ -818,6 +967,12 @@ export class PersonalizationService {
     isPuff: boolean;
     curveDeg: number;
     weightFactor: number;
+    /**
+     * How much of the total the box being relaxed accounts for, 0–1. A switch
+     * on one box only shrinks that box's stitches; the rest of the position is
+     * unchanged, so the saving has to be scaled by the box's share.
+     */
+    share?: number;
   }): 'outline' | 'puff' | 'weight' | 'curve' | null {
     const candidates: [Exclude<ReturnType<typeof this.overBudgetCulprit>, null>, number][] = [
       ['outline', args.hasOutline ? 1 + OUTLINE_STITCH_FACTOR : 1],
@@ -825,12 +980,13 @@ export class PersonalizationService {
       ['weight', args.weightFactor > 1 ? args.weightFactor : 1],
       ['curve', args.curveDeg ? CURVE_STITCH_FACTOR : 1],
     ];
+    const share = args.share ?? 1;
 
     return (
       candidates
         .filter(([, factor]) => factor > 1)
         .sort((a, b) => b[1] - a[1])
-        .find(([, factor]) => args.stitchEstimate / factor <= args.ceiling)?.[0] ?? null
+        .find(([, factor]) => args.stitchEstimate - args.stitchEstimate * share * (1 - 1 / factor) <= args.ceiling)?.[0] ?? null
     );
   }
 
@@ -865,7 +1021,7 @@ export class PersonalizationService {
    * turn and offset it — the frame and the stitching can never end up
    * disagreeing about where they are.
    */
-  private artworkBody(r: ResolvedPersonalization, fontSizeMm: number, color: string): string[] {
+  private artworkBody(r: ResolvedElement, fontSizeMm: number, color: string, idPrefix: string): string[] {
     if (r.motif) {
       // The path is authored in its own viewBox, so it is scaled to the size
       // the customer chose and centred on the origin.
@@ -894,10 +1050,7 @@ export class PersonalizationService {
 
     const attrs =
       `font-family="${escapeXml(r.fontName)}" font-size="${fontSizeMm.toFixed(2)}" ` +
-      `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"` +
-      (r.hasOutline && r.outlineThread
-        ? ` stroke="${escapeXml(r.outlineThread.hex)}" stroke-width="${(fontSizeMm * 0.06).toFixed(2)}" paint-order="stroke"`
-        : '');
+      `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"`;
 
     return lines.map((line, i) => {
       const y = round1(firstY + i * lead);
@@ -912,7 +1065,7 @@ export class PersonalizationService {
       const radius = chord / (2 * Math.sin(half));
       const sweep = r.curveDeg > 0 ? 1 : 0;
       const dy = r.curveDeg > 0 ? radius - radius * Math.cos(half) : -(radius - radius * Math.cos(half));
-      const pathId = `arc-${i}`;
+      const pathId = `${idPrefix}-arc-${i}`;
       const d =
         `M ${round1(-chord / 2)} ${round1(y + dy)} ` +
         `A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} ${round1(chord / 2)} ${round1(y + dy)}`;
@@ -928,38 +1081,46 @@ export class PersonalizationService {
   buildProductionSvg(r: ResolvedPersonalization, placement: { fieldWidthMm: number; fieldHeightMm: number }): string {
     const w = placement.fieldWidthMm;
     const h = placement.fieldHeightMm;
-    const color = r.threadColors[0]?.hex ?? '#000000';
-    // Cap height is the em-square's cap, not its full body; 0.72 is the usual
-    // ratio and keeps the rendered text at the millimetre height quoted.
-    const fontSizeMm = r.heightMm / 0.72;
 
-    // The customer moves the hoop field itself, not the lettering inside it, so
-    // the sheet has to show two things: where the position was traced, and
-    // where this job is actually stitched. The operator hoops on the second.
+    // The hoop was fitted round wherever the customer put the boxes, so the
+    // sheet has to show two things: where the position was traced, and where
+    // this job is actually hooped. The operator hoops on the second.
     const dx = r.offsetXMm;
     const dy = r.offsetYMm;
-    const deg = r.rotationDeg;
     const moved = dx !== 0 || dy !== 0;
 
     // The page has to hold the reference rectangle AND the job's own, which may
-    // be both offset and turned — a rotated rectangle's footprint is wider than
-    // its sides, so the corners are measured rather than guessed. Without this
-    // an angled design is simply cropped off a printed sheet.
-    const rad = (deg * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const corners = [
+    // be offset — plus every box, which may be turned and sit near an edge.
+    // A rotated box's footprint is wider than its sides, so the corners are
+    // measured rather than guessed; without this an angled box is simply
+    // cropped off a printed sheet.
+    const points: [number, number][] = [
       [-w / 2, -h / 2],
-      [w / 2, -h / 2],
       [w / 2, h / 2],
-      [-w / 2, h / 2],
-    ].map(([x, y]) => [dx + x * cos - y * sin, dy + x * sin + y * cos]);
+      [dx - w / 2, dy - h / 2],
+      [dx + w / 2, dy + h / 2],
+    ];
+    for (const el of r.elements) {
+      const rad = (el.rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const bw = Math.max(el.widthMm, 1) / 2;
+      const bh = Math.max(el.stackMm, el.heightMm) / 2;
+      for (const [x, y] of [
+        [-bw, -bh],
+        [bw, -bh],
+        [bw, bh],
+        [-bw, bh],
+      ]) {
+        points.push([dx + el.offsetXMm + x * cos - y * sin, dy + el.offsetYMm + x * sin + y * cos]);
+      }
+    }
 
     const MARGIN = 4;
-    const minX = Math.min(-w / 2, ...corners.map((c) => c[0])) - MARGIN;
-    const maxX = Math.max(w / 2, ...corners.map((c) => c[0])) + MARGIN;
-    const minY = Math.min(-h / 2, ...corners.map((c) => c[1])) - MARGIN;
-    const maxY = Math.max(h / 2, ...corners.map((c) => c[1])) + MARGIN;
+    const minX = Math.min(...points.map((p) => p[0])) - MARGIN;
+    const maxX = Math.max(...points.map((p) => p[0])) + MARGIN;
+    const minY = Math.min(...points.map((p) => p[1])) - MARGIN;
+    const maxY = Math.max(...points.map((p) => p[1])) + MARGIN;
 
     const pageW = round1(maxX - minX);
     const pageH = round1(maxY - minY);
@@ -970,41 +1131,49 @@ export class PersonalizationService {
     const originY = round1(cy0 - h / 2);
 
     const offsetNote = moved ? ` · hooped ${dx}mm, ${dy}mm from the traced centre` : ' · centred on the traced position';
-    const rotationNote = deg !== 0 ? ` · turned ${deg}°` : '';
-    const weightNote = r.fontWeight !== 400 ? ` · weight ${r.fontWeight}` : '';
     // Every setting that changes what the machine does has to reach the sheet,
-    // or the operator produces something the customer did not buy.
-    const extras = [
-      r.lineCount > 1 ? `${r.lineCount} lines` : null,
-      r.curveDeg ? `curved ${r.curveDeg}°` : null,
-      r.trackingPct ? `tracking ${r.trackingPct > 0 ? '+' : ''}${Math.round(r.trackingPct * 100)}%` : null,
-      r.kerning?.some((k) => k !== 0) ? 'kerned' : null,
-      r.hasOutline && r.outlineThread
-        ? `outlined in ${r.outlineThread.brand} ${r.outlineThread.code} ${r.outlineThread.name}`
-        : null,
-      r.isPuff ? '3D PUFF — foam under satin' : null,
-      r.motif ? `motif "${r.motif.name}" at ${r.motif.sizeMm}mm` : null,
-      r.threadColors.some((t) => t.finish && t.finish !== 'matte')
-        ? `finish: ${[...new Set(r.threadColors.map((t) => t.finish))].join(', ')}`
-        : null,
-    ].filter(Boolean);
-    const extrasNote = extras.length ? ` · ${extras.join(' · ')}` : '';
+    // or the operator produces something the customer did not buy. One line
+    // per box, because each is its own words, face, spool and place.
+    const boxNotes = r.elements.map((el, i) => {
+      const extras = [
+        el.fontWeight !== 400 ? `weight ${el.fontWeight}` : null,
+        el.lineCount > 1 ? `${el.lineCount} lines` : null,
+        el.curveDeg ? `curved ${el.curveDeg}°` : null,
+        el.trackingPct ? `tracking ${el.trackingPct > 0 ? '+' : ''}${Math.round(el.trackingPct * 100)}%` : null,
+        el.kerning?.some((k) => k !== 0) ? 'kerned' : null,
+        el.isPuff ? '3D PUFF — foam under satin' : null,
+        el.motif ? `motif "${el.motif.name}" at ${el.motif.sizeMm}mm` : null,
+        el.thread.finish && el.thread.finish !== 'matte' ? `finish: ${el.thread.finish}` : null,
+        el.offsetXMm || el.offsetYMm ? `at ${el.offsetXMm}mm, ${el.offsetYMm}mm from the hoop's centre` : 'centred in the hoop',
+        el.rotationDeg ? `turned ${el.rotationDeg}°` : null,
+      ].filter(Boolean);
+      const subject = el.motif ? el.motif.name : `"${el.text.replace(/\n/g, ' / ')}"`;
+      return `box ${i + 1}: ${subject} · ${el.fontName} ${el.heightMm}mm · ${el.thread.brand} ${el.thread.code} ${el.thread.name} · ~${el.stitchEstimate} stitches · ${extras.join(' · ')}`;
+    });
+
+    const boxes = r.elements.flatMap((el, i) => [
+      // Each box is placed and turned by one transform, so its lettering and
+      // its own frame can never disagree about where it is.
+      `<g transform="translate(${round1(el.offsetXMm)} ${round1(el.offsetYMm)}) rotate(${el.rotationDeg})">`,
+      // Cap height is the em-square's cap, not its full body; 0.72 is the
+      // usual ratio and keeps the rendered text at the millimetre height quoted.
+      ...this.artworkBody(el, el.heightMm / 0.72, el.thread.hex, `b${i}`),
+      `</g>`,
+    ]);
 
     return [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`,
       `<title>${escapeXml(r.placementLabel)} — ${escapeXml(r.text || r.motif?.name || '')}</title>`,
-      `<desc>${escapeXml(r.fontName)} · ${r.heightMm}mm${weightNote} · ${r.threadColors.map((t) => `${t.brand} ${t.code} ${t.name}`).join(', ')} · ~${r.stitchEstimate} stitches${offsetNote}${rotationNote}${escapeXml(extrasNote)}</desc>`,
+      `<desc>${escapeXml(`${r.elements.length} ${r.elements.length === 1 ? 'box' : 'boxes'} · ~${r.stitchEstimate} stitches${offsetNote}\n${boxNotes.join('\n')}`)}</desc>`,
       // Where the position was traced — faint, square to the page, for reference.
       `<rect x="${originX}" y="${originY}" width="${w}" height="${h}" fill="none" stroke="#e4e8ed" stroke-width="0.25" stroke-dasharray="1 2"/>`,
       `<path d="M${cx0} ${originY} V${originY + h} M${originX} ${cy0} H${originX + w}" stroke="#e4e8ed" stroke-width="0.2" stroke-dasharray="1 3"/>`,
-      // Where this job is hooped, offset and turned. Solid where the reference
-      // is dotted, so the two are never confused on a printed sheet. One
-      // transform for the group means the lettering and its frame can never
-      // disagree about the angle.
-      `<g transform="translate(${round1(cx0 + dx)} ${round1(cy0 + dy)}) rotate(${deg})">`,
+      // Where this job is hooped. Solid where the reference is dotted, so the
+      // two are never confused on a printed sheet.
+      `<g transform="translate(${round1(cx0 + dx)} ${round1(cy0 + dy)})">`,
       `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" fill="none" stroke="#c0c6cf" stroke-width="0.4" stroke-dasharray="2 2"/>`,
       `<path d="M0 ${-h / 2} v${h} M${-w / 2} 0 h${w}" stroke="#dfe4ea" stroke-width="0.2" stroke-dasharray="1 3"/>`,
-      ...this.artworkBody(r, fontSizeMm, color),
+      ...boxes,
       `</g>`,
       `</svg>`,
     ].join('\n');
@@ -1062,28 +1231,185 @@ export class PersonalizationService {
  * threw on `lines.length` and the catch swallowed it.
  */
 function rowToResolved(row: CartLineDesign): ResolvedPersonalization {
+  const threads = (row.threadColors as ResolvedThread[]) ?? [];
+  const motif = row.motifKey
+    ? {
+        key: row.motifKey,
+        name: row.motifName ?? row.motifKey,
+        path: row.motifPath ?? '',
+        viewBox: row.motifViewBox ?? '0 0 100 100',
+        sizeMm: row.motifSizeMm ?? 30,
+        stitchesAt30mm: 0,
+        colorCount: 1,
+      }
+    : null;
+  const widthMm = widthFromRow(row);
+
   return {
     ...(row as unknown as ResolvedPersonalization),
     lines: row.text ? String(row.text).split('\n') : [],
     outlineThread: (row.outlineThread as ResolvedThread | null) ?? null,
-    threadColors: (row.threadColors as ResolvedThread[]) ?? [],
-    motif: row.motifKey
-      ? {
-          key: row.motifKey,
-          name: row.motifName ?? row.motifKey,
-          path: row.motifPath ?? '',
-          viewBox: row.motifViewBox ?? '0 0 100 100',
-          sizeMm: row.motifSizeMm ?? 30,
-          stitchesAt30mm: 0,
-          colorCount: 1,
-        }
-      : null,
+    threadColors: threads,
+    motif,
     kerning: (row.kerning as number[] | null) ?? null,
     // Derived at resolve time and never given a column of its own, so it comes
     // back out of the frozen design document. Without it the arc's radius is a
     // division by undefined and every curved sheet renders as `M NaN NaN`.
-    widthMm: widthFromRow(row),
+    widthMm,
+    elements: elementsFromRow(row, threads, motif, widthMm),
   };
+}
+
+/**
+ * The boxes of a stored design.
+ *
+ * A version-2 document carries them in full. A row written before boxes
+ * existed is one box: its columns are that box, and it sat at the area's
+ * centre turned by the row's own angle — which is what the old sheet drew.
+ */
+export function elementsFromRow(
+  row: CartLineDesign,
+  threads: ResolvedThread[],
+  motif: ResolvedMotif | null,
+  widthMm: number,
+): ResolvedElement[] {
+  const doc = row.designJson as { version?: number; elements?: StoredElement[] } | null;
+  if (doc?.version === 2 && Array.isArray(doc.elements) && doc.elements.length) {
+    return doc.elements.map((el) => ({
+      contentType: el.contentType,
+      text: el.text ?? '',
+      lines: el.lines ?? (el.text ? el.text.split('\n') : []),
+      lineCount: (el.lines ?? []).length,
+      fontKey: el.font?.key ?? row.fontName,
+      fontName: el.font?.name ?? row.fontName,
+      heightMm: el.heightMm,
+      weightStep: el.weightStep ?? DEFAULT_WEIGHT_STEP,
+      fontWeight: el.fontWeight ?? 400,
+      trackingPct: el.trackingPct ?? 0,
+      kerning: el.kerning ?? null,
+      curveDeg: el.curveDeg ?? 0,
+      isPuff: !!el.isPuff,
+      motif: el.motif
+        ? {
+            key: el.motif.key,
+            name: el.motif.name,
+            sizeMm: el.motif.sizeMm,
+            // Older v2 documents carried no path; the row's own motif columns
+            // hold the first one, which is the best that can be done for them.
+            path: el.motif.path ?? (motif?.key === el.motif.key ? motif.path : ''),
+            viewBox: el.motif.viewBox ?? motif?.viewBox ?? '0 0 100 100',
+            stitchesAt30mm: 0,
+            colorCount: 1,
+          }
+        : null,
+      thread: (el.thread as ResolvedThread) ?? threads[0],
+      widthMm: el.widthMm ?? 0,
+      stackMm: el.stackMm ?? el.heightMm,
+      offsetXMm: el.offsetXMm ?? 0,
+      offsetYMm: el.offsetYMm ?? 0,
+      rotationDeg: el.rotationDeg ?? 0,
+      stitchEstimate: el.stitchEstimate ?? 0,
+    }));
+  }
+  const lines = row.text ? String(row.text).split('\n') : [];
+  return [
+    {
+      contentType: row.contentType,
+      text: row.text,
+      lines,
+      lineCount: lines.length,
+      fontKey: row.fontName,
+      fontName: row.fontName,
+      heightMm: row.heightMm,
+      weightStep: DEFAULT_WEIGHT_STEP,
+      fontWeight: row.fontWeight,
+      trackingPct: row.trackingPct,
+      kerning: (row.kerning as number[] | null) ?? null,
+      curveDeg: row.curveDeg,
+      isPuff: row.isPuff,
+      motif,
+      thread: threads[0] ?? { id: '', brand: '', code: '', name: '', hex: '#000000', finish: 'matte', priceMultiplier: 1 },
+      widthMm,
+      stackMm: row.heightMm,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      rotationDeg: row.rotationDeg,
+      stitchEstimate: row.stitchEstimate,
+    },
+  ];
+}
+
+/**
+ * The clearance a frame needs round the stitching, each side. Underlay and
+ * the frame's own bite both need fabric that carries no thread.
+ */
+const HOOP_MARGIN_MM = 4;
+
+/**
+ * The smallest rectangle, square to the garment, that holds every box with
+ * its clearance — measured on each box's real footprint, turned as it is.
+ * Centred on the boxes, so a design nudged to one side is hooped there rather
+ * than in a frame twice the size.
+ */
+export function hoopAround(elements: { offsetXMm: number; offsetYMm: number; rotationDeg: number; widthMm: number; stackMm: number; heightMm: number }[]): {
+  widthMm: number;
+  heightMm: number;
+  cxMm: number;
+  cyMm: number;
+} {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const el of elements) {
+    const rad = (el.rotationDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const bw = Math.max(el.widthMm, 1) / 2;
+    const bh = Math.max(el.stackMm, el.heightMm, 1) / 2;
+    for (const [x, y] of [
+      [-bw, -bh],
+      [bw, -bh],
+      [bw, bh],
+      [-bw, bh],
+    ]) {
+      const px = el.offsetXMm + x * cos - y * sin;
+      const py = el.offsetYMm + x * sin + y * cos;
+      minX = Math.min(minX, px);
+      maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py);
+      maxY = Math.max(maxY, py);
+    }
+  }
+  return {
+    widthMm: round1(Math.max(FIELD_MIN_MM, maxX - minX + 2 * HOOP_MARGIN_MM)),
+    heightMm: round1(Math.max(FIELD_MIN_MM, maxY - minY + 2 * HOOP_MARGIN_MM)),
+    cxMm: round1((minX + maxX) / 2),
+    cyMm: round1((minY + maxY) / 2),
+  };
+}
+
+/** A box as the version-2 design document stores it. */
+interface StoredElement {
+  contentType: 'text' | 'monogram' | 'motif';
+  text?: string;
+  lines?: string[];
+  font?: { key: string; name: string };
+  heightMm: number;
+  weightStep?: number;
+  fontWeight?: number;
+  trackingPct?: number;
+  kerning?: number[] | null;
+  curveDeg?: number;
+  isPuff?: boolean;
+  motif?: { key: string; name: string; sizeMm: number; path?: string; viewBox?: string } | null;
+  widthMm?: number;
+  stackMm?: number;
+  offsetXMm?: number;
+  offsetYMm?: number;
+  rotationDeg?: number;
+  thread?: { brand: string; code: string; name: string; hex: string };
+  stitchEstimate?: number;
 }
 
 /** The design's measured width, from the document it was frozen into. */

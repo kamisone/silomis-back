@@ -23,6 +23,7 @@ import { MetaCapiService } from '../marketing/meta-capi/meta-capi.service';
 import { TikTokEventsService } from '../marketing/tiktok-events/tiktok-events.service';
 import { PersonalizationService } from '../personalization/personalization.service';
 import { PersonalizationInput } from '../personalization/dto/personalization.dto';
+import { designElementsOf } from '../personalization/design-elements';
 
 export interface RequestMeta {
   ip?: string | null;
@@ -36,9 +37,11 @@ const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
 /** A cart line as every read path loads it — the design comes along with it. */
 type CartItemWithDesign = CartItem & {
   personalizations: {
+    designJson: unknown;
+    stitchEstimate: number;
     placementKey: string;
     placementLabel: string;
-    contentType: string;
+    contentType: 'text' | 'monogram' | 'motif';
     text: string;
     fontName: string;
     fontWeight: number;
@@ -667,6 +670,8 @@ export class CartService {
         isPuff: d.isPuff,
         motifName: d.motifName,
         motifSizeMm: d.motifSizeMm,
+        // Every box, so the basket shows each one in its own spool.
+        elements: designElementsOf(d),
       })),
     }));
 

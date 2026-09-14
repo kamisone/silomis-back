@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { OrderStatus, Prisma } from '../../generated/prisma/client';
 import { PersonalizationService } from './personalization.service';
+import { designElementsOf } from './design-elements';
 import { parseLocalized } from './localized.util';
 
 /** Order in which the floor works a job. Anything else is rejected. */
@@ -82,6 +83,8 @@ function toJob(r: JobRow) {
     digitizedAt: r.digitizedAt,
     hasArtwork: r.productionSvg != null,
     updatedAt: r.updatedAt,
+    /** Every box in the hoop — what the operator actually sews, one by one. */
+    elements: designElementsOf(r),
   };
 }
 

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { ShopEmailService } from './shop-email.service';
+import { designElementsOf } from '../personalization/design-elements';
 import {
   COMMERCE_EVENTS,
   PaymentSucceededEvent,
@@ -72,16 +73,19 @@ export class OrderEmailListener {
           // The confirmation is the customer's written record of what they
           // asked to have sewn — the one place a spelling mistake can still
           // be caught before the machine runs.
-          personalizations: i.personalizations.map((d) => ({
-            placementLabel: d.placementLabel,
-            contentType: d.contentType,
-            text: d.text,
-            motifName: d.motifName,
-            motifSizeMm: d.motifSizeMm,
-            fontName: d.fontName,
-            heightMm: d.heightMm,
-            threadNames: ((d.threadColors as { name: string }[] | null) ?? []).map((t) => t.name),
-          })),
+          personalizations: i.personalizations.flatMap((d) =>
+            // One line per box: each is its own words, face, size and spool.
+            designElementsOf(d).map((el) => ({
+              placementLabel: d.placementLabel,
+              contentType: el.contentType,
+              text: el.text,
+              motifName: el.motifName,
+              motifSizeMm: el.motifSizeMm,
+              fontName: el.fontName,
+              heightMm: el.heightMm,
+              threadNames: el.thread.name ? [el.thread.name] : [],
+            })),
+          ),
         })),
         subtotalCents: order.subtotalCents,
         shippingCents: order.shippingCents,
