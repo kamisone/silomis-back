@@ -1,7 +1,8 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
-import { Prisma } from '../../generated/prisma/client';
+import { OrderStatus, Prisma } from '../../generated/prisma/client';
+import { PersonalizationService } from './personalization.service';
 import { parseLocalized } from './localized.util';
 
 /** Order in which the floor works a job. Anything else is rejected. */
@@ -9,19 +10,94 @@ const PRODUCTION_STATUSES = ['pending', 'digitizing', 'ready', 'stitched'] as co
 type ProductionStatus = (typeof PRODUCTION_STATUSES)[number];
 
 /**
+ * Only a paid order is a job. A draft is a checkout someone may never finish,
+ * an awaiting_payment order is a card that may still be declined, and a
+ * cancelled or refunded one is a cap nobody is paying for — none of them
+ * belong in front of an operator, who would otherwise digitise, and possibly
+ * stitch, work that has no customer.
+ */
+const PRODUCTION_ORDER_STATUSES: OrderStatus[] = ['paid', 'processing', 'shipped', 'delivered'];
+
+const JOB_INCLUDE = {
+  orderItem: {
+    select: {
+      id: true,
+      quantity: true,
+      titleSnapshot: true,
+      skuSnapshot: true,
+      optionsSnapshot: true,
+      order: { select: { id: true, orderNumber: true, status: true, createdAt: true, customerName: true } },
+    },
+  },
+} satisfies Prisma.OrderItemPersonalizationInclude;
+
+type JobRow = Prisma.OrderItemPersonalizationGetPayload<{ include: typeof JOB_INCLUDE }>;
+
+/**
+ * One job as the floor sees it. Everything here was frozen at order time —
+ * nothing re-reads the live catalogue, because a thread retired last week
+ * must not change a job already on the floor. The production SVG is left
+ * out: it is large, and the list never needs it.
+ */
+function toJob(r: JobRow) {
+  return {
+    id: r.id,
+    orderId: r.orderItem.order.id,
+    orderItemId: r.orderItem.id,
+    orderNumber: r.orderItem.order.orderNumber,
+    orderStatus: r.orderItem.order.status,
+    orderedAt: r.orderItem.order.createdAt,
+    customerName: r.orderItem.order.customerName,
+    productTitle: r.orderItem.titleSnapshot,
+    sku: r.orderItem.skuSnapshot,
+    options: (r.orderItem.optionsSnapshot as { attributeName: string; value: string; displayValue: string | null }[] | null) ?? [],
+    quantity: r.orderItem.quantity,
+    placementKey: r.placementKey,
+    placementLabel: r.placementLabel,
+    contentType: r.contentType,
+    text: r.text,
+    fontName: r.fontName,
+    fontWeight: r.fontWeight,
+    heightMm: r.heightMm,
+    fieldWidthMm: r.fieldWidthMm,
+    fieldHeightMm: r.fieldHeightMm,
+    offsetXMm: r.offsetXMm,
+    offsetYMm: r.offsetYMm,
+    rotationDeg: r.rotationDeg,
+    lineCount: r.lineCount,
+    curveDeg: r.curveDeg,
+    trackingPct: r.trackingPct,
+    hasOutline: r.hasOutline,
+    outlineThread: r.outlineThread,
+    isPuff: r.isPuff,
+    motifKey: r.motifKey,
+    motifName: r.motifName,
+    motifSizeMm: r.motifSizeMm,
+    threadColors: r.threadColors,
+    stitchEstimate: r.stitchEstimate,
+    priceCents: r.priceCents,
+    productionStatus: r.productionStatus,
+    productionNote: r.productionNote,
+    stitchFileKey: r.stitchFileKey,
+    digitizedAt: r.digitizedAt,
+    hasArtwork: r.productionSvg != null,
+    updatedAt: r.updatedAt,
+  };
+}
+
+/**
  * The production queue.
  *
  * This is the screen an operator lives in, so it answers the questions asked
  * at a machine rather than the ones asked at a desk: what is waiting, what
- * exactly gets sewn, on what, and in which threads. Everything it shows was
- * frozen at order time — nothing here re-reads the live catalogue, because a
- * thread retired last week must not change a job already on the floor.
+ * exactly gets sewn, on what, and in which threads.
  */
 @Controller('admin/shop/personalization')
 export class PersonalizationAdminController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly assetUrls: AssetUrlService,
+    private readonly personalization: PersonalizationService,
   ) {}
 
   @Get('queue')
@@ -31,93 +107,102 @@ export class PersonalizationAdminController {
     @Query('limit') limit = '50',
     @Query('offset') offset = '0',
   ) {
+    const paidOnly: Prisma.OrderItemPersonalizationWhereInput = {
+      orderItem: { order: { status: { in: PRODUCTION_ORDER_STATUSES } } },
+    };
+    const searchFilter: Prisma.OrderItemPersonalizationWhereInput = search
+      ? {
+          OR: [
+            { text: { contains: search, mode: 'insensitive' } },
+            { orderItem: { order: { orderNumber: { contains: search, mode: 'insensitive' } } } },
+            { orderItem: { order: { customerName: { contains: search, mode: 'insensitive' } } } },
+            { orderItem: { titleSnapshot: { contains: search, mode: 'insensitive' } } },
+          ],
+        }
+      : {};
     const where: Prisma.OrderItemPersonalizationWhereInput = {
-      ...(status && status !== 'all' ? { productionStatus: status } : {}),
-      ...(search
-        ? {
-            OR: [
-              { text: { contains: search, mode: 'insensitive' } },
-              { orderItem: { order: { orderNumber: { contains: search, mode: 'insensitive' } } } },
-              { orderItem: { titleSnapshot: { contains: search, mode: 'insensitive' } } },
-            ],
-          }
-        : {}),
+      AND: [paidOnly, searchFilter, status && status !== 'all' ? { productionStatus: status } : {}],
     };
 
-    const [rows, total, counts] = await Promise.all([
+    const [rows, total, counts, unpaidJobs] = await Promise.all([
       this.prisma.orderItemPersonalization.findMany({
         where,
         orderBy: { createdAt: 'asc' },
         take: Math.min(Number(limit) || 50, 200),
         skip: Number(offset) || 0,
-        include: {
-          orderItem: {
-            select: {
-              id: true,
-              quantity: true,
-              titleSnapshot: true,
-              skuSnapshot: true,
-              order: { select: { id: true, orderNumber: true, status: true, createdAt: true, customerName: true } },
-            },
-          },
-        },
+        include: JOB_INCLUDE,
       }),
       this.prisma.orderItemPersonalization.count({ where }),
-      this.prisma.orderItemPersonalization.groupBy({ by: ['productionStatus'], _count: { _all: true } }),
+      // Counts follow the search but not the tab, so the strip says how much
+      // of *this* search sits in each state.
+      this.prisma.orderItemPersonalization.groupBy({
+        by: ['productionStatus'],
+        where: { AND: [paidOnly, searchFilter] },
+        _count: { _all: true },
+      }),
+      // Jobs on orders still waiting for a card to clear. Not work yet — but
+      // an operator wondering where a customer's job went deserves the answer.
+      this.prisma.orderItemPersonalization.count({
+        where: { AND: [{ orderItem: { order: { status: { in: ['draft', 'pending', 'awaiting_payment'] } } } }, searchFilter] },
+      }),
     ]);
 
     return {
       total,
+      unpaidJobs,
       // Every status is present even at zero, so the tab strip does not
       // reflow as the queue drains.
       counts: Object.fromEntries(
         PRODUCTION_STATUSES.map((s) => [s, counts.find((c) => c.productionStatus === s)?._count._all ?? 0]),
       ),
-      items: rows.map((r) => ({
-        id: r.id,
-        orderId: r.orderItem.order.id,
-        orderNumber: r.orderItem.order.orderNumber,
-        orderStatus: r.orderItem.order.status,
-        orderedAt: r.orderItem.order.createdAt,
-        customerName: r.orderItem.order.customerName,
-        productTitle: r.orderItem.titleSnapshot,
-        sku: r.orderItem.skuSnapshot,
-        quantity: r.orderItem.quantity,
-        placementLabel: r.placementLabel,
-        contentType: r.contentType,
-        text: r.text,
-        fontName: r.fontName,
-        fontWeight: r.fontWeight,
-        heightMm: r.heightMm,
-        rotationDeg: r.rotationDeg,
-        lineCount: r.lineCount,
-        curveDeg: r.curveDeg,
-        trackingPct: r.trackingPct,
-        hasOutline: r.hasOutline,
-        outlineThread: r.outlineThread,
-        isPuff: r.isPuff,
-        motifName: r.motifName,
-        motifSizeMm: r.motifSizeMm,
-        threadColors: r.threadColors,
-        stitchEstimate: r.stitchEstimate,
-        priceCents: r.priceCents,
-        productionStatus: r.productionStatus,
-        productionNote: r.productionNote,
-        stitchFileKey: r.stitchFileKey,
-        digitizedAt: r.digitizedAt,
-      })),
+      items: rows.map(toJob),
     };
   }
 
-  /** The production SVG on its own — it is large, so the list never carries it. */
+  /**
+   * Every job on one order, for the order page. Unlike the queue this does
+   * not hide unpaid or cancelled orders: someone looking at a cancelled order
+   * still needs to see what was going to be embroidered on it.
+   */
+  @Get('orders/:orderId/jobs')
+  async jobsForOrder(@Param('orderId') orderId: string) {
+    const rows = await this.prisma.orderItemPersonalization.findMany({
+      where: { orderItem: { orderId } },
+      orderBy: [{ orderItem: { createdAt: 'asc' } }, { placementKey: 'asc' }],
+      include: JOB_INCLUDE,
+    });
+    return { items: rows.map(toJob) };
+  }
+
+  /**
+   * The production SVG on its own — it is large, so the list never carries it.
+   *
+   * A row without one (a render that failed at checkout, or a design older
+   * than the renderer) is rebuilt here from the frozen design and saved, so
+   * the operator never has to know it was missing.
+   */
   @Get('queue/:id/artwork')
   async artwork(@Param('id') id: string) {
-    const row = await this.prisma.orderItemPersonalization.findUnique({
-      where: { id },
-      select: { productionSvg: true, text: true, placementLabel: true, heightMm: true, threadColors: true, stitchEstimate: true },
-    });
-    if (!row) throw new BadRequestException('Design not found');
-    return row;
+    const row = await this.prisma.orderItemPersonalization.findUnique({ where: { id } });
+    if (!row) throw new NotFoundException('Design not found');
+
+    let productionSvg = row.productionSvg;
+    if (!productionSvg) {
+      const built = await this.personalization.buildArtworkForCartItems([{ id: row.orderItemId, personalizations: [row] }]);
+      productionSvg = built.get(`${row.orderItemId}:${row.placementKey}`) ?? null;
+      if (productionSvg) {
+        await this.prisma.orderItemPersonalization.update({ where: { id }, data: { productionSvg } });
+      }
+    }
+
+    return {
+      productionSvg,
+      text: row.text,
+      placementLabel: row.placementLabel,
+      heightMm: row.heightMm,
+      threadColors: row.threadColors,
+      stitchEstimate: row.stitchEstimate,
+    };
   }
 
   @Patch('queue/:id')
@@ -133,15 +218,22 @@ export class PersonalizationAdminController {
       }
       data.productionStatus = body.productionStatus;
     }
-    if (body.productionNote !== undefined) data.productionNote = body.productionNote;
+    if (body.productionNote !== undefined) {
+      const note = body.productionNote?.trim() ?? '';
+      if (note.length > 2000) throw new BadRequestException('Note is too long (2000 characters max).');
+      data.productionNote = note || null;
+    }
     if (body.stitchFileKey !== undefined) {
-      data.stitchFileKey = body.stitchFileKey;
+      const key = body.stitchFileKey?.trim() ?? '';
+      if (key.length > 1000) throw new BadRequestException('Stitch file reference is too long.');
+      data.stitchFileKey = key || null;
       // Arriving stitch file is what "digitised" means; stamping it here keeps
       // the two from drifting apart the way a separate button would let them.
-      data.digitizedAt = body.stitchFileKey ? new Date() : null;
+      data.digitizedAt = key ? new Date() : null;
     }
 
-    return this.prisma.orderItemPersonalization.update({ where: { id }, data });
+    const updated = await this.prisma.orderItemPersonalization.update({ where: { id }, data, include: JOB_INCLUDE });
+    return toJob(updated);
   }
 
   /** Catalogue readout — what the editor is currently offering. */
@@ -160,6 +252,63 @@ export class PersonalizationAdminController {
       this.prisma.threadColor.findMany({ orderBy: { sortOrder: 'asc' } }),
     ]);
     return { templates, fonts, threads };
+  }
+
+  // ── Price bands ──────────────────────────────────────────────────────
+  // Shop-wide, and the least visible setting in the whole feature: the largest
+  // band is also the hard ceiling, so a shop that adds outline and puff without
+  // raising it will start refusing designs that fit the panel easily.
+
+  @Get('templates')
+  async listTemplates() {
+    return this.prisma.personalizationTemplate.findMany({
+      orderBy: { key: 'asc' },
+      include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
+    });
+  }
+
+  /**
+   * Replaces the whole ladder at once.
+   *
+   * A band only means anything relative to the ones either side of it, so they
+   * are edited as a set rather than one at a time — there is no coherent
+   * intermediate state where a shop has deleted the middle band and not yet
+   * decided what replaces it.
+   */
+  @Put('templates/:id/bands')
+  async saveBands(@Param('id') templateId: string, @Body() body: { bands?: { maxStitches: number; priceCents: number; label?: string | null }[] }) {
+    const bands = body.bands ?? [];
+    if (!bands.length) throw new BadRequestException('There has to be at least one price band.');
+
+    for (const b of bands) {
+      if (!Number.isFinite(b.maxStitches) || b.maxStitches <= 0) {
+        throw new BadRequestException('Every band needs a stitch limit above zero.');
+      }
+      if (!Number.isFinite(b.priceCents) || b.priceCents < 0) {
+        throw new BadRequestException('Every band needs a price.');
+      }
+    }
+
+    const limits = bands.map((b) => Math.round(b.maxStitches));
+    if (new Set(limits).size !== limits.length) {
+      throw new BadRequestException('Two bands cannot share the same stitch limit.');
+    }
+
+    // Replace inside a transaction: a half-written ladder would price designs
+    // wrongly for however long it lasted.
+    await this.prisma.$transaction([
+      this.prisma.personalizationPriceBand.deleteMany({ where: { templateId } }),
+      this.prisma.personalizationPriceBand.createMany({
+        data: bands.map((b) => ({
+          templateId,
+          maxStitches: Math.round(b.maxStitches),
+          priceCents: Math.round(b.priceCents),
+          label: b.label?.trim() || null,
+        })),
+      }),
+    ]);
+
+    return this.prisma.personalizationPriceBand.findMany({ where: { templateId }, orderBy: { maxStitches: 'asc' } });
   }
 
   // ── Thread colours ───────────────────────────────────────────────────

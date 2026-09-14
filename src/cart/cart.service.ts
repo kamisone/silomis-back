@@ -50,6 +50,7 @@ type CartItemWithDesign = CartItem & {
     hasOutline: boolean;
     isPuff: boolean;
     motifName: string | null;
+    motifSizeMm: number | null;
     offsetXMm: number;
     offsetYMm: number;
     rotationDeg: number;
@@ -665,6 +666,7 @@ export class CartService {
         hasOutline: d.hasOutline,
         isPuff: d.isPuff,
         motifName: d.motifName,
+        motifSizeMm: d.motifSizeMm,
       })),
     }));
 

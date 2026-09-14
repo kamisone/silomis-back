@@ -36,7 +36,10 @@ export class DocumentCreationListener {
   // (relocated as-is from ShopPaymentService.scheduleReceipt())
 
   private async buildOrderDocumentInput(orderId: string, paymentIntentId: string): Promise<DocumentInput> {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { personalizations: { select: { placementLabel: true, contentType: true, text: true, motifName: true } } } } },
+    });
     if (!order) throw new Error(`Order ${orderId} not found`);
 
     const sellerAddress: Record<string, string> = {
@@ -66,7 +69,15 @@ export class DocumentCreationListener {
       tax: { ratePct: tax.ratePct, country: tax.country },
       deliveryAddress: order.shippingAddressSnapshot as Record<string, string>,
       lines: order.items.map((i, idx) => ({
-        description: i.titleSnapshot,
+        // The embroidery fee is inside the unit price, so the receipt has to
+        // say what was embroidered — a line that reads "Cap €32" when the cap
+        // is €24 is a document the customer cannot reconcile.
+        description: [
+          i.titleSnapshot,
+          ...i.personalizations.map(
+            (d) => `${d.placementLabel}: ${d.contentType === 'motif' ? (d.motifName ?? 'motif') : `"${d.text.replace(/\n/g, ' / ')}"`}`,
+          ),
+        ].join(' — '),
         sku: i.skuSnapshot,
         quantity: i.quantity,
         unitPriceCents: i.unitPriceCents,

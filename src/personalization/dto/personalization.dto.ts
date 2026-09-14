@@ -24,6 +24,13 @@ export const PersonalizationInputSchema = z.object({
   heightMm: z.number().min(1).max(200),
   /** ThreadColor ids, in the order they are used. */
   threadColorIds: z.array(z.string().uuid()).min(1).max(6),
+  /**
+   * The embroidery area the customer sized, in millimetres. Absent means the
+   * position's default. Rails only — the service clamps to the machine's
+   * FIELD_MIN_MM / FIELD_MAX_*_MM, the same way it clamps travel.
+   */
+  fieldWidthMm: z.number().min(1).max(1000).optional(),
+  fieldHeightMm: z.number().min(1).max(1000).optional(),
   /** How heavy the lettering is stitched, 1 (light) to 5 (extra bold). */
   weight: z.number().int().min(1).max(5).optional(),
 

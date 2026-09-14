@@ -8,6 +8,9 @@ import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
   CURVE_STITCH_FACTOR,
+  FIELD_MAX_HEIGHT_MM,
+  FIELD_MAX_WIDTH_MM,
+  FIELD_MIN_MM,
   KERNING_LIMIT,
   MAX_TEXT_LINES,
   MAX_TRAVEL_FACTOR,
@@ -24,6 +27,7 @@ import {
   STITCHABLE_TEXT,
   STITCHES_PER_COLOR_CHANGE,
   STITCH_BASE_OVERHEAD,
+  STITCH_HEIGHT_EXPONENT,
   TRACKING_MAX,
   TRACKING_MIN,
   weightForStep,
@@ -205,10 +209,17 @@ export class PersonalizationService {
        * has nothing for the customer to place artwork on, so offering it would
        * be selling a position nobody has set up.
        */
+      /** How large the customer may make the embroidery area — the machine's limits. */
+      fieldLimits: { minMm: FIELD_MIN_MM, maxWidthMm: FIELD_MAX_WIDTH_MM, maxHeightMm: FIELD_MAX_HEIGHT_MM },
       placements: offered.map((p) => ({
         key: p.key,
         label: pickLocalized(p.label, lang),
         hint: pickLocalized(p.hint, lang) || null,
+        /**
+         * The starting size of the embroidery area, and the real size of the
+         * traced panel — which is what puts the customer's millimetres onto
+         * the photograph at scale. The customer resizes from here.
+         */
         fieldWidthMm: p.fieldWidthMm,
         fieldHeightMm: p.fieldHeightMm,
         maxColors: p.maxColors,
@@ -351,8 +362,16 @@ export class PersonalizationService {
       });
     }
 
+    // The area is the customer's: they size the hoop the design runs in, and
+    // the position only supplies the starting size. Clamped to the machine
+    // rather than rejected, for the same reason travel is — the editor already
+    // stops the handle at the limit, so an error here would describe a
+    // gesture the customer never saw.
+    const fieldWidthMm = round1(clamp(input.fieldWidthMm ?? placement.fieldWidthMm, FIELD_MIN_MM, FIELD_MAX_WIDTH_MM));
+    const fieldHeightMm = round1(clamp(input.fieldHeightMm ?? placement.fieldHeightMm, FIELD_MIN_MM, FIELD_MAX_HEIGHT_MM));
+
     const heightMm = round1(input.heightMm);
-    const maxHeightMm = Math.min(font.maxHeightMm, placement.fieldHeightMm);
+    const maxHeightMm = Math.min(font.maxHeightMm, fieldHeightMm);
     if (input.contentType !== 'motif' && (heightMm < font.minHeightMm || heightMm > maxHeightMm)) {
       fail(E.HEIGHT_OUT_OF_RANGE, `Letter height must be between ${font.minHeightMm}mm and ${maxHeightMm}mm.`, {
         minHeightMm: font.minHeightMm,
@@ -389,10 +408,10 @@ export class PersonalizationService {
         ? motif.sizeMm
         : this.estimateWidthMm(text, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
           this.spacingWidthMm(longest, heightMm, trackingPct, kerning);
-    if (widthMm > placement.fieldWidthMm) {
-      fail(E.TOO_WIDE, 'That is too wide for this position — shorten the text or reduce the height.', {
+    if (widthMm > fieldWidthMm) {
+      fail(E.TOO_WIDE, 'That is too wide for the embroidery area — widen the area, shorten the text or reduce the height.', {
         widthMm: Math.round(widthMm),
-        fieldWidthMm: placement.fieldWidthMm,
+        fieldWidthMm,
       });
     }
 
@@ -407,16 +426,19 @@ export class PersonalizationService {
       motif,
       contentType: input.contentType,
     });
-    if (stackMm > placement.fieldHeightMm) {
-      fail(E.TOO_TALL, 'That is too tall for this position — fewer lines, less curve, or a smaller height.', {
+    if (stackMm > fieldHeightMm) {
+      fail(E.TOO_TALL, 'That is too tall for the embroidery area — make the area taller, use fewer lines, less curve, or a smaller height.', {
         heightMm: Math.round(stackMm),
-        fieldHeightMm: placement.fieldHeightMm,
+        fieldHeightMm,
       });
     }
 
     // Where the customer moved it. The hoop field travels with the lettering —
     // outline and text together — so the field's own size is no longer the
-    // bound; MAX_TRAVEL_FACTOR is. Clamped rather than rejected, because a drag
+    // bound; MAX_TRAVEL_FACTOR is. Measured against the position's traced
+    // field, not the customer's area: the photo is the thing being travelled
+    // over, and a customer who made the area tiny must not lose the right to
+    // move it as far. Clamped rather than rejected, because a drag
     // that ran past the limit should stop there, which is what the pointer was
     // already being shown; an error message for a gesture the editor visibly
     // constrained would be nonsense.
@@ -450,8 +472,25 @@ export class PersonalizationService {
     if (!band) {
       // Past the largest band there is no price, and inventing one would mean
       // selling a job whose machine time nobody has costed.
-      fail(E.TOO_MANY_STITCHES, 'That design is too large to embroider — try shorter text or a smaller height.', {
+      //
+      // This is a limit on machine time, not on space — a bold outlined name
+      // can be under a third of the panel's width and still be three times the
+      // stitches of the plain one. Saying "too large" and suggesting shorter
+      // text sends people to fix the one thing that is not the problem, so the
+      // numbers and the actual culprit go out with the error.
+      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
+      fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
         stitchEstimate,
+        maxStitches: ceiling,
+        // Which single switch, turned off, would bring it back under.
+        relax: this.overBudgetCulprit({
+          stitchEstimate,
+          ceiling,
+          hasOutline,
+          isPuff,
+          curveDeg,
+          weightFactor: weight.stitchFactor,
+        }),
       });
     }
 
@@ -479,6 +518,9 @@ export class PersonalizationService {
       text,
       font: { key: font.key, name: font.name },
       heightMm,
+      // Part of the design's identity: the same words in a bigger hoop is a
+      // different job on the floor, so it hashes apart.
+      field: { widthMm: fieldWidthMm, heightMm: fieldHeightMm },
       weightStep: weight.step,
       fontWeight: weight.cssWeight,
       lines,
@@ -518,8 +560,8 @@ export class PersonalizationService {
       outlineThread,
       isPuff,
       motif,
-      fieldWidthMm: placement.fieldWidthMm,
-      fieldHeightMm: placement.fieldHeightMm,
+      fieldWidthMm,
+      fieldHeightMm,
       threadColors: threads,
       stitchEstimate,
       priceCents,
@@ -717,10 +759,10 @@ export class PersonalizationService {
    * Stitch count, which is what the price is actually based on — machine time
    * is stitches, not characters.
    *
-   * Glyph stitches scale with the square of the height because a letter grows
-   * in both directions at once: doubling the height of a name roughly
-   * quadruples the thread laid down, which is why a 25mm name costs several
-   * times a 10mm one rather than 2.5x.
+   * Glyph stitches grow with height to the STITCH_HEIGHT_EXPONENT power —
+   * faster than linear, since a taller letter also has longer strokes, but
+   * well short of the square, because a satin column widens with the letter
+   * instead of adding stitches. A 25mm name costs about 3x a 10mm one.
    */
   private estimateStitches(args: {
     lines: string[];
@@ -747,7 +789,7 @@ export class PersonalizationService {
     }
 
     const glyphs = args.lines.join('').split('').filter((ch) => ch !== ' ').length;
-    const heightFactor = (args.heightMm / 10) ** 2;
+    const heightFactor = (args.heightMm / 10) ** STITCH_HEIGHT_EXPONENT;
     const typeFactor = args.contentType === 'monogram' ? MONOGRAM_STITCH_FACTOR : 1;
 
     let glyphStitches = glyphs * args.stitchesPerCharAt10mm * heightFactor * typeFactor * args.weightFactor;
@@ -760,6 +802,36 @@ export class PersonalizationService {
     if (args.hasOutline) glyphStitches *= 1 + OUTLINE_STITCH_FACTOR;
 
     return Math.ceil(glyphStitches + colorStitches + STITCH_BASE_OVERHEAD);
+  }
+
+  /**
+   * The one option that, on its own, would bring an over-budget design back.
+   *
+   * Tried heaviest-first: a customer who has turned on three things wants to be
+   * told which single one to drop, not handed a list. Null when no single
+   * change is enough — then the size or the wording genuinely has to give.
+   */
+  private overBudgetCulprit(args: {
+    stitchEstimate: number;
+    ceiling: number;
+    hasOutline: boolean;
+    isPuff: boolean;
+    curveDeg: number;
+    weightFactor: number;
+  }): 'outline' | 'puff' | 'weight' | 'curve' | null {
+    const candidates: [Exclude<ReturnType<typeof this.overBudgetCulprit>, null>, number][] = [
+      ['outline', args.hasOutline ? 1 + OUTLINE_STITCH_FACTOR : 1],
+      ['puff', args.isPuff ? PUFF_STITCH_FACTOR : 1],
+      ['weight', args.weightFactor > 1 ? args.weightFactor : 1],
+      ['curve', args.curveDeg ? CURVE_STITCH_FACTOR : 1],
+    ];
+
+    return (
+      candidates
+        .filter(([, factor]) => factor > 1)
+        .sort((a, b) => b[1] - a[1])
+        .find(([, factor]) => args.stitchEstimate / factor <= args.ceiling)?.[0] ?? null
+    );
   }
 
   // ── Fingerprint ──────────────────────────────────────────────────────
@@ -815,12 +887,14 @@ export class PersonalizationService {
     const lead = fontSizeMm * 0.72 * 1.35;
     const firstY = -((lines.length - 1) * lead) / 2;
 
+    // The width the design was quoted, validated and previewed at. Forcing it
+    // here too means the sheet, the editor and the fit check all show one
+    // number — whatever font the viewer happens to render this file with.
+    const lengthAttrs = r.widthMm > 0 ? ` textLength="${round1(r.widthMm)}" lengthAdjust="spacingAndGlyphs"` : '';
+
     const attrs =
       `font-family="${escapeXml(r.fontName)}" font-size="${fontSizeMm.toFixed(2)}" ` +
       `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"` +
-      // Tracking is a real SVG attribute, so the sheet spaces exactly as the
-      // preview did rather than approximating it.
-      (r.trackingPct ? ` letter-spacing="${round2(r.trackingPct * r.heightMm)}"` : '') +
       (r.hasOutline && r.outlineThread
         ? ` stroke="${escapeXml(r.outlineThread.hex)}" stroke-width="${(fontSizeMm * 0.06).toFixed(2)}" paint-order="stroke"`
         : '');
@@ -828,7 +902,7 @@ export class PersonalizationService {
     return lines.map((line, i) => {
       const y = round1(firstY + i * lead);
       if (!r.curveDeg) {
-        return `<text x="0" y="${y}" ${attrs} fill="${escapeXml(color)}">${escapeXml(line)}</text>`;
+        return `<text x="0" y="${y}" ${attrs}${lengthAttrs} fill="${escapeXml(color)}">${escapeXml(line)}</text>`;
       }
       // A curved line rides a circular arc. The radius comes from the chord the
       // straight version would have occupied, so bending a word does not also
@@ -845,7 +919,7 @@ export class PersonalizationService {
       return (
         `<path id="${pathId}" d="${d}" fill="none"/>` +
         `<text ${attrs} fill="${escapeXml(color)}">` +
-        `<textPath href="#${pathId}" startOffset="50%">${escapeXml(line)}</textPath>` +
+        `<textPath href="#${pathId}" startOffset="50%"${lengthAttrs}>${escapeXml(line)}</textPath>` +
         `</text>`
       );
     });

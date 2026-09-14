@@ -14,7 +14,7 @@ import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduc
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
 import { PersonalizationService } from '../personalization/personalization.service';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
-import { CartItem, Order, OrderStatus, Prisma } from '../../generated/prisma/client';
+import { CartItem, Order, OrderItemPersonalization, OrderStatus, Prisma } from '../../generated/prisma/client';
 
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
 
@@ -339,35 +339,35 @@ export class OrdersService {
     const [items, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
-        include: { items: true },
+        include: { items: { include: { _count: { select: { personalizations: true } } } } },
         orderBy: { createdAt: 'desc' },
         take: limit,
         skip: offset,
       }),
       this.prisma.order.count({ where }),
     ]);
-    return { items, total };
+    return {
+      items: items.map((o) => ({
+        ...o,
+        // The list only needs to know which orders carry embroidery — the
+        // floor's queue is a different screen, but a picker should not have
+        // to open every order to find the ones that need it.
+        personalizedItemCount: o.items.filter((i) => i._count.personalizations > 0).length,
+      })),
+      total,
+    };
   }
 
   async findById(id: string) {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
-        items: true,
+        // The design rows minus their artwork and document: the order page
+        // needs to show what is being embroidered on each line, and the
+        // production endpoints carry the heavy parts on demand.
+        items: { include: { personalizations: { omit: { productionSvg: true, designJson: true } } } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
         shippingMethod: true,
-      },
-    });
-    if (!order) throw new NotFoundException('Order not found');
-    return order;
-  }
-
-  async findByNumber(orderNumber: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { orderNumber },
-      include: {
-        items: true,
-        statusHistory: { orderBy: { createdAt: 'asc' } },
       },
     });
     if (!order) throw new NotFoundException('Order not found');
@@ -404,7 +404,7 @@ export class OrdersService {
     const order = await this.prisma.order.findUnique({
       where: { orderNumber },
       include: {
-        items: true,
+        items: { include: { personalizations: true } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
       },
     });
@@ -490,6 +490,9 @@ export class OrdersService {
         })),
         productId: i.productId,
         variantId: i.variantId,
+        // What the customer asked to have embroidered, verbatim. This is what
+        // they check the confirmation against, so it is not abbreviated.
+        personalizations: i.personalizations.map(toCustomerDesign),
       })),
       // Shipment tracking is populated once the Shipping domain exists.
       shipping: null,
@@ -497,12 +500,16 @@ export class OrdersService {
     };
   }
 
-  customerOrders(email: string) {
-    return this.prisma.order.findMany({
+  async customerOrders(email: string) {
+    const orders = await this.prisma.order.findMany({
       where: { customerEmail: email },
       orderBy: { createdAt: 'desc' },
-      include: { items: true },
+      include: { items: { include: { personalizations: true } } },
     });
+    return orders.map((o) => ({
+      ...o,
+      items: o.items.map((i) => ({ ...i, personalizations: i.personalizations.map(toCustomerDesign) })),
+    }));
   }
 
   // ── Shipping resolution ────────────────────────────────────────────────
@@ -584,4 +591,30 @@ export class OrdersService {
       }
     }
   }
+}
+
+/**
+ * A stored design as the customer sees it back: the words, where they go,
+ * the face, the height and the threads. The production fields — artwork,
+ * offsets, the frozen document, the floor's status — stay inside.
+ */
+export function toCustomerDesign(d: OrderItemPersonalization) {
+  return {
+    placementKey: d.placementKey,
+    placementLabel: d.placementLabel,
+    contentType: d.contentType,
+    text: d.text,
+    lineCount: d.lineCount,
+    fontName: d.fontName,
+    fontWeight: d.fontWeight,
+    heightMm: d.heightMm,
+    curveDeg: d.curveDeg,
+    hasOutline: d.hasOutline,
+    outlineThread: d.outlineThread,
+    isPuff: d.isPuff,
+    motifName: d.motifName,
+    motifSizeMm: d.motifSizeMm,
+    threadColors: d.threadColors,
+    priceCents: d.priceCents,
+  };
 }

@@ -198,8 +198,9 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
   });
 
   it('rejects a design past the largest price band rather than inventing a price', async () => {
-    // Narrow enough to clear the width check, dense enough to exceed 9000.
-    expect(await codeOf(makeService().resolve('p1', design({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40 })))).toBe(
+    // Narrow enough to clear the width check, dense enough to exceed 9000:
+    // three Varsity letters at 40mm, heaviest weight, with an outline (~9,900).
+    expect(await codeOf(makeService().resolve('p1', design({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, outline: true, threadColorIds: [TEAL.id, PINK.id] })))).toBe(
       E.TOO_MANY_STITCHES,
     );
   });
@@ -222,15 +223,52 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
   });
 });
 
+describe('PersonalizationService.resolve — the customer-sized area', () => {
+  it('uses the position\'s field as the starting size when none is sent', async () => {
+    const r = await makeService().resolve('p1', design());
+    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([110, 55]);
+  });
+
+  it('lets a name through that the default area would refuse, once the area is widened', async () => {
+    // "Alexandra" at 30mm is ~170mm wide — over the front's 110mm.
+    expect(await codeOf(makeService().resolve('p1', design({ text: 'Alexandra', heightMm: 30 })))).toBe(E.TOO_WIDE);
+    const r = await makeService().resolve('p1', design({ text: 'Alexandra', heightMm: 30, fieldWidthMm: 200, fieldHeightMm: 60 }));
+    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([200, 60]);
+    expect(r.widthMm).toBeLessThanOrEqual(200);
+  });
+
+  it('refuses a design the customer shrank the area around', async () => {
+    expect(await codeOf(makeService().resolve('p1', design({ heightMm: 20, fieldWidthMm: 30, fieldHeightMm: 40 })))).toBe(E.TOO_WIDE);
+    // Two 10mm lines stack to ~23mm; the area is 20mm tall.
+    expect(await codeOf(makeService().resolve('p1', design({ text: 'Max\nMo', heightMm: 10, fieldWidthMm: 60, fieldHeightMm: 20 })))).toBe(E.TOO_TALL);
+  });
+
+  it('clamps the area to the machine rather than rejecting it', async () => {
+    const r = await makeService().resolve('p1', design({ text: 'Mo', heightMm: 10, fieldWidthMm: 5000, fieldHeightMm: 2 }));
+    expect([r.fieldWidthMm, r.fieldHeightMm]).toEqual([300, 15]);
+  });
+
+  it('is part of the design\'s identity — the same words in a bigger hoop hash apart', async () => {
+    const a = await makeService().resolve('p1', design());
+    const b = await makeService().resolve('p1', design({ fieldWidthMm: 120 }));
+    expect(a.hash).not.toBe(b.hash);
+  });
+
+  it('still lets a small area travel as far as the position allows', async () => {
+    const r = await makeService().resolve('p1', design({ fieldWidthMm: 30, fieldHeightMm: 20, text: 'Mo', heightMm: 10, offsetXMm: 150 }));
+    expect(r.offsetXMm).toBe(150);
+  });
+});
+
 describe('PersonalizationService.resolve — stitches and price', () => {
-  it('scales stitches with the square of the height, not linearly', async () => {
+  it('scales stitches faster than the height but well short of its square', async () => {
     const s = makeService();
     const small = await s.resolve('p1', design({ heightMm: 10 }));
     const big = await s.resolve('p1', design({ heightMm: 20 }));
 
-    // 5 glyphs × 130 × 1 + 80 overhead = 730; at 20mm the factor is 4.
+    // 5 glyphs × 130 × 1 + 80 overhead = 730; at 20mm the factor is 2^1.3 ≈ 2.46.
     expect(small.stitchEstimate).toBe(730);
-    expect(big.stitchEstimate).toBe(2680);
+    expect(big.stitchEstimate).toBe(1681);
   });
 
   it('charges a colour change per extra spool, but not for the same spool twice', async () => {
@@ -246,12 +284,16 @@ describe('PersonalizationService.resolve — stitches and price', () => {
 
   it('picks the first band the estimate fits in', async () => {
     const s = makeService();
-    // 730, 2680, 5930 and 8042 stitches — one in each band, and the last one
-    // just under the 9000 ceiling.
+    // 730, 1681, 4744 and 7429 stitches — one in each band. Height alone no
+    // longer reaches the top band on a 110mm field (a longer name would be too
+    // wide), so the last two lean on weight and an outline, which is also how
+    // a real customer gets there.
     expect((await s.resolve('p1', design({ heightMm: 10 }))).priceCents).toBe(800);
     expect((await s.resolve('p1', design({ heightMm: 20 }))).priceCents).toBe(800);
-    expect((await s.resolve('p1', design({ heightMm: 30 }))).priceCents).toBe(1200);
-    expect((await s.resolve('p1', design({ heightMm: 35 }))).priceCents).toBe(1800);
+    expect((await s.resolve('p1', design({ heightMm: 30, weight: 5 }))).priceCents).toBe(1200);
+    expect(
+      (await s.resolve('p1', design({ heightMm: 30, weight: 5, outline: true, threadColorIds: [TEAL.id, PINK.id] }))).priceCents,
+    ).toBe(1800);
   });
 
   it('adds the position’s own price on top of the band', async () => {
@@ -362,9 +404,9 @@ describe('PersonalizationService.resolve — weight', () => {
 
   it('can push a design into a higher price band', async () => {
     const s = makeService();
-    // 2680 stitches regular, ~4610 at the heaviest — across the 3000 boundary.
-    expect((await s.resolve('p1', design({ heightMm: 20, weight: 2 }))).priceCents).toBe(800);
-    expect((await s.resolve('p1', design({ heightMm: 20, weight: 5 }))).priceCents).toBe(1200);
+    // 2792 stitches regular, ~4745 at the heaviest — across the 3000 boundary.
+    expect((await s.resolve('p1', design({ heightMm: 30, weight: 2 }))).priceCents).toBe(800);
+    expect((await s.resolve('p1', design({ heightMm: 30, weight: 5 }))).priceCents).toBe(1200);
   });
 
   it('widens the line only slightly — a satin column grows mostly inward', async () => {

@@ -14,11 +14,6 @@ export class OrdersPublicController {
     return this.orders.createFromCart(dto);
   }
 
-  @Get(':orderNumber')
-  getByNumber(@Param('orderNumber') orderNumber: string) {
-    return this.orders.findByNumber(orderNumber);
-  }
-
   @Get(':orderNumber/track')
   track(@Param('orderNumber') orderNumber: string, @Query('token') token?: string, @Query('email') email?: string, @Query('lang') lang?: string) {
     if (!token && !email) throw new NotFoundException('Order not found');

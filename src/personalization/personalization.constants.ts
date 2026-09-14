@@ -38,6 +38,18 @@ export const STITCHES_PER_COLOR_CHANGE = 120;
 export const STITCH_BASE_OVERHEAD = 80;
 
 /**
+ * How glyph stitches grow with letter height: stitches = base × (h / 10) ^ exp.
+ *
+ * Not 2. Doubling a letter's height quadruples the *thread* laid down, but a
+ * satin column gets wider with the letter rather than adding stitches — each
+ * zig-zag just spans more fabric — so the stitch *count* rises far slower than
+ * the area. Digitised lettering lands around the 1.2–1.4 power in practice.
+ * At 2 a six-letter name at 35mm was pushed past the top band, which is not a
+ * quote-worthy job; at 1.3 it sits in the middle one.
+ */
+export const STITCH_HEIGHT_EXPONENT = 1.3;
+
+/**
  * How heavy the lettering is stitched.
  *
  * Not a second digitised face — a satin column can be laid down thicker or
@@ -85,6 +97,20 @@ export const MAX_TRAVEL_FACTOR = 1.5;
  * with a pointer, and it would make two visually identical designs hash apart.
  */
 export const ROTATION_LIMIT_DEG = 180;
+
+/**
+ * How large a customer may make the embroidery area, in millimetres.
+ *
+ * The area is the customer's to size — it is the hoop the design is run in,
+ * drawn on the photo at true scale, and they drag its edges to whatever suits
+ * the words. The position's own field is only the starting size and the scale
+ * of the photograph. These bounds are the machine's: a flat hoop of 300×200 is
+ * as large a single run as the floor does, and below 15mm there is no room for
+ * a stitch path to turn round.
+ */
+export const FIELD_MIN_MM = 15;
+export const FIELD_MAX_WIDTH_MM = 300;
+export const FIELD_MAX_HEIGHT_MM = 200;
 
 /** Up to three lines. Beyond that a hoop field runs out of height long before. */
 export const MAX_TEXT_LINES = 3;

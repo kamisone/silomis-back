@@ -20,13 +20,19 @@ export class AdminOrderAlertListener {
   @OnEvent(COMMERCE_EVENTS.PAYMENT_SUCCEEDED)
   async onPaymentSucceeded(event: PaymentSucceededEvent): Promise<void> {
     try {
-      const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true } });
+      const order = await this.prisma.order.findUnique({
+        where: { id: event.orderId },
+        select: { orderNumber: true, customerEmail: true, items: { select: { _count: { select: { personalizations: true } } } } },
+      });
       if (!order) return;
+      // An order with embroidery is also a job for the floor; the alert says
+      // so, because the person reading it decides who to tell.
+      const jobs = order.items.reduce((n, i) => n + i._count.personalizations, 0);
       await this.notifications.notify({
         event: 'payment_succeeded',
         orderId: event.orderId,
         orderNumber: order.orderNumber,
-        summary: `Order ${order.orderNumber} paid by ${order.customerEmail} — ${fmtCents(event.amountCents)}`,
+        summary: `Order ${order.orderNumber} paid by ${order.customerEmail} — ${fmtCents(event.amountCents)}${jobs ? ` — ${jobs} embroidery ${jobs === 1 ? 'job' : 'jobs'} to produce` : ''}`,
         detailUrl: this.detailUrl(event.orderId),
       });
     } catch (err) {

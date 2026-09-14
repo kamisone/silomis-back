@@ -12,7 +12,21 @@ import { PickupPointEmailData, pickupPointBlock } from './pickup-point-block';
 export interface OrderConfirmedEmailData {
   orderNumber: string;
   customerName: string;
-  items: Array<{ title: string; quantity: number; unitPriceCents: number }>;
+  items: Array<{
+    title: string;
+    quantity: number;
+    unitPriceCents: number;
+    personalizations?: Array<{
+      placementLabel: string;
+      contentType: 'text' | 'monogram' | 'motif';
+      text: string;
+      motifName: string | null;
+      motifSizeMm: number | null;
+      fontName: string;
+      heightMm: number;
+      threadNames: string[];
+    }>;
+  }>;
   subtotalCents: number;
   shippingCents: number;
   discountCents: number;
@@ -22,6 +36,34 @@ export interface OrderConfirmedEmailData {
   /** Present only for a pickup-point method — the customer's only record of which point they chose. */
   pickupPoint?: PickupPointEmailData | null;
   locale?: string | null;
+}
+
+/**
+ * One embroidered position under its item. The text is set large and quoted
+ * so it reads as *the thing being sewn* rather than as a product option — and
+ * the spelling is the customer's to check here, before the needle moves.
+ */
+function embroideryLine(
+  d: NonNullable<OrderConfirmedEmailData['items'][number]['personalizations']>[number],
+  c: { embroidery: string; embroideryThread: string },
+): string {
+  const subject =
+    d.contentType === 'motif'
+      ? esc(d.motifName ?? '')
+      : `&ldquo;${esc(d.text).replace(/\n/g, '<br>')}&rdquo;`;
+  const details = [esc(d.placementLabel)];
+  if (d.contentType === 'motif') {
+    if (d.motifSizeMm) details.push(`${d.motifSizeMm}&nbsp;mm`);
+  } else {
+    details.push(`${esc(d.fontName)} &middot; ${d.heightMm}&nbsp;mm`);
+  }
+  if (d.threadNames.length) details.push(`${c.embroideryThread} ${esc(d.threadNames.join(', '))}`);
+  return `
+        <div style="margin-top:6px;padding:8px 10px;border-left:3px solid #0d8f8c;background:#f0fafa;border-radius:0 6px 6px 0;">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#0d8f8c;">${c.embroidery}</div>
+          <div style="font-size:15px;font-weight:700;color:#0f172a;margin:2px 0;">${subject}</div>
+          <div style="font-size:12px;color:#475569;">${details.join(' &middot; ')}</div>
+        </div>`;
 }
 
 function summaryRow(label: string, value: string): string {
@@ -43,7 +85,10 @@ export function renderOrderConfirmed(data: OrderConfirmedEmailData): {
     .map(
       (i) => `
     <tr>
-      <td style="padding:10px 12px;border-bottom:1px solid #f1f5f9;font-size:14px;color:#1e293b;">${esc(i.title)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f1f5f9;font-size:14px;color:#1e293b;">
+        ${esc(i.title)}
+        ${(i.personalizations ?? []).map((d) => embroideryLine(d, c)).join('')}
+      </td>
       <td style="padding:10px 12px;border-bottom:1px solid #f1f5f9;text-align:center;font-size:14px;color:#475569;">${i.quantity}</td>
       <td style="padding:10px 12px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:14px;color:#475569;">${fmtCents(i.unitPriceCents)}</td>
       <td style="padding:10px 12px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:14px;font-weight:600;color:#0f172a;">${fmtCents(i.unitPriceCents * i.quantity)}</td>

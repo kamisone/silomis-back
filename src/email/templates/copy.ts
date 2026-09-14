@@ -35,6 +35,8 @@ export const COPY = {
       discountCode: (code: string) => `Réduction (code : ${code})`,
       grandTotal: 'Total',
       orderRef: 'Référence commande',
+      embroidery: 'Broderie',
+      embroideryThread: 'Fil :',
       trackOrder: 'Suivre ma commande',
       helpText:
         "Si vous avez la moindre question, n'hésitez pas à contacter notre service client.",
@@ -137,6 +139,8 @@ export const COPY = {
       discountCode: (code: string) => `Discount (code: ${code})`,
       grandTotal: 'Total',
       orderRef: 'Order reference',
+      embroidery: 'Embroidery',
+      embroideryThread: 'Thread:',
       trackOrder: 'Track my order',
       helpText:
         'If you have any questions, feel free to reach out to our support team.',

@@ -31,7 +31,8 @@ function makeController(overrides: { activeOthers?: number; createError?: unknow
     },
   };
   const assetUrls = { resolveBatch: jest.fn(async () => new Map<string, string>()) };
-  const controller = new PersonalizationAdminController(prisma as never, assetUrls as never);
+  const personalization = { buildArtworkForCartItems: jest.fn(async () => new Map<string, string>()) };
+  const controller = new PersonalizationAdminController(prisma as never, assetUrls as never, personalization as never);
   return { controller, created, updated, deleted, prisma };
 }
 

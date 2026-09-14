@@ -14,6 +14,8 @@ const FRONT = {
   priceCents: 0, isActive: true, allowPuff: true, mediaKey: 'm/front.jpg',
 };
 const NO_PUFF = { ...FRONT, id: 'pl-side', key: 'side', allowPuff: false };
+/** A generous panel, so the stitch ceiling is reached long before the edges. */
+const WIDE = { ...FRONT, id: 'pl-wide', key: 'wide', fieldWidthMm: 300, fieldHeightMm: 80, maxChars: 30 };
 
 const BLOCK = {
   key: 'block-classic', name: 'Block', webFamily: 'sans-serif',
@@ -29,7 +31,7 @@ const GOLD = { id: 't-3', brand: 'Madeira', code: '9842', name: 'Gold', hex: '#c
 const BANDS = [
   { maxStitches: 3000, priceCents: 800 },
   { maxStitches: 6000, priceCents: 1200 },
-  { maxStitches: 20000, priceCents: 1800 },
+  { maxStitches: 9000, priceCents: 1800 },
 ];
 
 const MOTIF = {
@@ -48,7 +50,7 @@ function makeService() {
     },
     personalizationPlacement: {
       findUnique: jest.fn(async ({ where }: { where: { productId_key: { key: string } } }) =>
-        where.productId_key.key === 'side' ? NO_PUFF : FRONT,
+        where.productId_key.key === 'side' ? NO_PUFF : where.productId_key.key === 'wide' ? WIDE : FRONT,
       ),
     },
     embroideryFont: {
@@ -148,8 +150,17 @@ describe('tracking and kerning', () => {
     expect(r.kerning).toEqual([0.4, -0.4, 0, 0]);
   });
 
-  it('puts the spacing on the sheet so it is stitched as previewed', async () => {
-    expect(await svgOf({ trackingPct: 0.2 })).toContain('letter-spacing=');
+  it('draws the sheet at the width the design was measured and quoted at', async () => {
+    // One number across the fit check, the preview and the sheet. Letting each
+    // use its own font's metrics is what made the editor warn about text that
+    // visibly fitted: "Lilli" measures 62mm by the model and draws 40mm in
+    // Helvetica.
+    const s = makeService();
+    const r = await s.resolve('p1', design({ trackingPct: 0.2 }));
+    const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
+
+    expect(svg).toContain(`textLength="${r.widthMm}"`);
+    expect(svg).toContain('lengthAdjust="spacingAndGlyphs"');
   });
 
   it('is part of the design — two spacings are two cart lines', async () => {
@@ -330,5 +341,55 @@ describe('rendering a stored row', () => {
     const svg = (await s.buildArtworkForCartItems([{ id: 'ci-2', personalizations: [row as never] }])).get('ci-2:front');
     expect(svg).toContain('<path d="M10 30');
     expect(svg).not.toContain('NaN');
+  });
+});
+
+describe('the stitch ceiling', () => {
+  /**
+   * The ceiling is machine time, not space. A bold outlined name can occupy a
+   * fifth of a wide panel and still be three times the stitches of the plain
+   * one, so the error has to say what is actually wrong and which switch to
+   * flip — telling someone to shorten their text when the outline is the
+   * problem sends them to fix the one thing that is not.
+   */
+  const over = async (over: Record<string, unknown>) => {
+    try {
+      await makeService().resolve('p1', design(over));
+      return null;
+    } catch (err) {
+      return (err as { response?: Record<string, unknown> }).response ?? null;
+    }
+  };
+
+  it('reports the estimate and the ceiling, not a vague "too large"', async () => {
+    // ~13,200 stitches against a 9,000 ceiling.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, outline: true, threadColorIds: ['t-1', 't-2'] });
+    expect(res?.code).toBe(E.TOO_MANY_STITCHES);
+    expect(res?.stitchEstimate).toBeGreaterThan(9000);
+    expect(res?.maxStitches).toBe(9000);
+    expect(String(res?.message)).toContain('stitches');
+  });
+
+  it('names the outline when dropping it alone would fit', async () => {
+    // 6,386 stitches plain; 9,788 outlined, against a 9,000 ceiling.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 36, weight: 2, outline: true, threadColorIds: ['t-1', 't-2'] });
+    expect(res?.relax).toBe('outline');
+  });
+
+  it('names the heaviest contributor when several are on', async () => {
+    // Outline (×1.55) beats weight (×1.42), so it is the one to drop first:
+    // 13,324 outlined, 8,667 without — and dropping the weight instead would
+    // still leave 9,442, over the 9,000 only once outlined.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 35, weight: 4, outline: true, threadColorIds: ['t-1', 't-2'] });
+    expect(res?.relax).toBe('outline');
+  });
+
+  it('names nothing when no single switch is enough — the size has to give', async () => {
+    // 40mm is the face's own ceiling, so this is as big as it goes: ~19,110
+    // stitches. Dropping the outline still leaves ~12,400 and dropping the
+    // weight ~11,200 — both over the 9,000, so nothing short of a smaller
+    // design will do and the error says so by naming none of them.
+    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, outline: true, threadColorIds: ['t-1', 't-2'] });
+    expect(res?.relax).toBeNull();
   });
 });

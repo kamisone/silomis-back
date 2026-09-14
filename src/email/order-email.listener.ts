@@ -54,7 +54,7 @@ export class OrderEmailListener {
     try {
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
-        include: { items: true },
+        include: { items: { include: { personalizations: true } } },
       });
       if (!order) return;
 
@@ -69,6 +69,19 @@ export class OrderEmailListener {
           title: i.titleSnapshot,
           quantity: i.quantity,
           unitPriceCents: i.unitPriceCents,
+          // The confirmation is the customer's written record of what they
+          // asked to have sewn — the one place a spelling mistake can still
+          // be caught before the machine runs.
+          personalizations: i.personalizations.map((d) => ({
+            placementLabel: d.placementLabel,
+            contentType: d.contentType,
+            text: d.text,
+            motifName: d.motifName,
+            motifSizeMm: d.motifSizeMm,
+            fontName: d.fontName,
+            heightMm: d.heightMm,
+            threadNames: ((d.threadColors as { name: string }[] | null) ?? []).map((t) => t.name),
+          })),
         })),
         subtotalCents: order.subtotalCents,
         shippingCents: order.shippingCents,
