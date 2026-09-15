@@ -64,7 +64,10 @@ const BANDS = [
   { maxStitches: 9000, priceCents: 1800, label: 'Large' },
 ];
 
-const PLACEMENTS = [FRONT, BACK];
+/** A send-in side: the customer's photo stands in for the position's own. */
+const SIDE = { ...BACK, key: 'side-1', mediaKey: null, usesCustomerPhoto: true, priceCents: 0, allowPuff: true };
+
+const PLACEMENTS = [FRONT, BACK, SIDE];
 const FONTS = [BLOCK, VARSITY, SIGNATURE];
 const THREADS = [TEAL, PINK, WHITE];
 
@@ -115,6 +118,7 @@ function makeService(
         THREADS.filter((t) => where.id.in.includes(t.id)),
       ),
     },
+    sendInItemType: { findUnique: jest.fn(async () => ({ isActive: true, priceCents: 990 })) },
     // (the position's own photo is on the placement fixture below)
   };
   // The asset resolver is only reached by getConfigForProduct, which these
@@ -129,7 +133,7 @@ function makeService(
  * position; everything else goes on the box. `threadColorIds` keeps its old
  * spelling — the first id is the box's spool.
  */
-const DESIGN_KEYS = new Set(['placementKey', 'elements']);
+const DESIGN_KEYS = new Set(['placementKey', 'elements', 'customerItem']);
 const design = (over: Partial<Record<string, unknown>> = {}) => {
   const { threadColorIds, ...rest } = over as { threadColorIds?: string[] } & Record<string, unknown>;
   const position: Record<string, unknown> = { placementKey: 'front' };
@@ -316,6 +320,22 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     const back = await s.resolve('p1', design({ placementKey: 'back', heightMm: 10 }));
 
     expect(back.priceCents).toBe(front.priceCents + 150);
+  });
+
+  it('charges a send-in side its flat fee whatever is drawn on it', async () => {
+    const s = makeService();
+    const customerItem = {
+      itemType: 'cap',
+      photoKeys: ['send-in/a.jpg'],
+      corners: [{ x: 30, y: 30 }, { x: 70, y: 30 }, { x: 70, y: 70 }, { x: 30, y: 70 }],
+    };
+    const small = await s.resolve('p1', design({ placementKey: 'side-1', heightMm: 10, customerItem }));
+    const heavy = await s.resolve('p1', design({ placementKey: 'side-1', heightMm: 30, weight: 5, puff: true, customerItem }));
+
+    // Small and Large bands on a catalogue cap — one price on the customer's own.
+    expect(small.priceCents).toBe(990);
+    expect(heavy.priceCents).toBe(990);
+    expect(heavy.stitchEstimate).toBeGreaterThan(small.stitchEstimate);
   });
 
   it('counts a monogram denser than the same letters set as text', async () => {

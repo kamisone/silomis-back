@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { MAX_ELEMENTS } from '../personalization.constants';
+import {
+  SEND_IN_NOTE_MAX,
+  SEND_IN_PHOTO_PREFIX,
+} from '../../send-in/send-in.constants';
 
 /**
  * One text box (or shape) inside a position's embroidery area.
@@ -79,10 +83,31 @@ export type ElementInput = z.infer<typeof ElementInputSchema>;
  * one hoop is one job on the floor — and the hoop itself is not the
  * customer's to draw: the service fits it round the boxes.
  */
+/**
+ * The customer's own item, for a send-in design: their photograph, the panel
+ * it is framed on, and their note. The position's own photo and tracing are
+ * replaced by these; the panel's real size is the position's field.
+ */
+export const CustomerItemSchema = z.object({
+  /** The key of an item type the shop offers — checked against the list when the design is resolved. */
+  itemType: z.string().min(1).max(60),
+  /** The photo of this side — one storage key handed back by the upload; nothing else is accepted. */
+  photoKeys: z
+    .array(z.string().min(1).max(300).refine((k) => k.startsWith(SEND_IN_PHOTO_PREFIX), { message: 'Not an uploaded photo' }))
+    .length(1),
+  /** The panel, as % of the first photo's box, four corners clockwise from top-left. */
+  corners: z.array(z.object({ x: z.number().min(-50).max(150), y: z.number().min(-50).max(150) })).length(4),
+  note: z.string().max(SEND_IN_NOTE_MAX).optional(),
+});
+
+export type CustomerItemInput = z.infer<typeof CustomerItemSchema>;
+
 export const PersonalizationInputSchema = z.object({
   placementKey: z.string().min(1).max(60),
   /** At least one box — an empty hoop is not a design. */
   elements: z.array(ElementInputSchema).min(1).max(MAX_ELEMENTS),
+  /** Present only on a send-in design — the position's photo is the customer's. */
+  customerItem: CustomerItemSchema.optional(),
 });
 
 export type PersonalizationInput = z.infer<typeof PersonalizationInputSchema>;

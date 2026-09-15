@@ -137,7 +137,7 @@ export class ProductSearchService implements OnModuleInit {
     if (!this.meili.isEnabled) return { indexed: 0 };
 
     const products = await this.prisma.product.findMany({
-      where: { status: 'active', deletedAt: null },
+      where: { status: 'active', deletedAt: null, isService: false },
       include: { categories: { select: { id: true, name: true } }, tags: { select: { id: true, name: true } } },
     });
 
@@ -400,7 +400,7 @@ export class ProductSearchService implements OnModuleInit {
     if (!ids.length) return [];
 
     const products = await this.prisma.product.findMany({
-      where: { id: { in: ids }, status: 'active', deletedAt: null },
+      where: { id: { in: ids }, status: 'active', deletedAt: null, isService: false },
       select: {
         id: true,
         slug: true,

@@ -75,6 +75,24 @@ async function bootstrap() {
   // every in-flight request on a scaled-down pod is dropped.
   app.enableShutdownHooks();
 
+  // Drain with a deadline. Nest's hook closes the HTTP server, and Node only
+  // closes a server once every connection is gone — a browser's keep-alive
+  // or an in-flight upload can hold it for a long time. Idle connections are
+  // dropped at once; whatever is still busy after ten seconds is not worth
+  // the process staying up (Kubernetes would SIGKILL it at thirty anyway,
+  // and `nest --watch` would never restart).
+  const httpServer = app.getHttpServer() as import('node:http').Server;
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      httpServer.closeIdleConnections?.();
+      const deadline = setTimeout(() => {
+        console.error('[shutdown] connections still open after 10s — exiting');
+        process.exit(0);
+      }, 10_000);
+      deadline.unref();
+    });
+  }
+
   const port = process.env.BACK_PORT || 3000; 
   await app.listen(port);
   console.log(`[boot] listening on ${port}`);

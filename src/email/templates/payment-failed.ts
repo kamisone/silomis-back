@@ -23,5 +23,5 @@ export function renderPaymentFailed(data: PaymentFailedEmailData): {
     ${mutedText(c.note)}
   `;
 
-  return { subject, html: baseLayout(subject, body) };
+  return { subject, html: baseLayout(subject, body, data.locale) };
 }

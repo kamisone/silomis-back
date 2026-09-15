@@ -24,5 +24,5 @@ export function renderReviewRequest(data: ReviewRequestEmailData): {
     ${mutedText(`${c.fallback} ${esc(data.reviewUrl)}`)}
   `;
 
-  return { subject, html: baseLayout(subject, body) };
+  return { subject, html: baseLayout(subject, body, data.locale) };
 }

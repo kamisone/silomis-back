@@ -525,6 +525,10 @@ model Product {
 
   featured            Boolean @default(false)
   isTestProduct       Boolean @default(false)
+  /// A service sold through the catalogue's machinery but not shown in it —
+  /// embroidery on an item the customer already owns. Kept out of every list,
+  /// search index and sitemap; reached only through its own page.
+  isService           Boolean @default(false)
   freeShipping        Boolean @default(false)
   freeShippingDaysMin Int?
   freeShippingDaysMax Int?
@@ -623,6 +627,7 @@ model ProductVariant {
 
   inventoryItem InventoryItem?
   priceRules    PriceRule[]
+  sendInItemType SendInItemType?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1030,6 +1035,8 @@ model Order {
 
   items          OrderItem[]
   statusHistory  OrderStatusHistory[]
+  /// The send-in job, when this order is embroidery on the customer's own item.
+  sendInJob     SendInJob?
   returnRequests ReturnRequest[]
 
   createdAt DateTime @default(now())
@@ -1076,6 +1083,7 @@ model OrderItem {
   returnRequestLinks ReturnRequestItem[]
   reviews            ProductReview[]
   personalizations   OrderItemPersonalization[]
+  sendInJob          SendInJob?
 
   @@map("shop_order_items")
 }
@@ -2831,6 +2839,11 @@ model PersonalizationPlacement {
   /// can, a curved side panel cannot. Off unless a shop says otherwise.
   allowPuff Boolean @default(false)
 
+  /// The photograph comes from the customer, not the shop: a send-in
+  /// position has no traced photo of its own — the customer uploads, frames
+  /// and calibrates their own item, and the design is placed on that.
+  usesCustomerPhoto Boolean @default(false)
+
   /// What this position costs to personalise, on top of the stitch-count band.
   /// A customer who embroiders two positions pays both — each one is its own
   /// hooping, its own thread change and its own run on the machine.
@@ -3058,4 +3071,125 @@ model OrderItemPersonalization {
   @@unique([orderItemId, placementKey])
   @@index([productionStatus])
   @@map("shop_order_item_personalizations")
+}
+
+/// Embroidery on an item the customer already owns and posts to the shop.
+///
+/// One per order — a send-in order carries exactly one item. The design
+/// itself is the order line's personalization, priced and sheeted like any
+/// other; this is everything around it: what the item is, the customer's own
+/// photograph and how they framed it, their note, where the parcel is in the
+/// round trip, and the photographs the shop takes along the way.
+model SendInJob {
+  id String @id @default(uuid())
+
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  orderItemId String    @unique
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  /// cap | beanie | jacket | bag | other — drives the default panel size and the handling price.
+  itemType String @db.VarChar(40)
+  /// What the customer told us about the item — "don't cover the existing logo".
+  note String?
+
+  /// The customer's own photographs, private storage keys (signed on read).
+  photoKeys String[] @default([])
+  /// One entry per side the customer photographed: which position of the
+  /// order line it is, what they called it, its photo, and the mockup drawn
+  /// from it — `[{ placementKey, sideLabel, photoKey, mockupKey }]`.
+  sides Json @default("[]")
+  /// The customer's photo with their design drawn on it, exactly as they saw
+  /// it in the editor — rendered when the order is placed, private storage
+  /// key. Null until rendered (or if the render failed; the design still
+  /// carries everything needed to redraw it).
+  mockupKey String? @db.VarChar(300)
+
+  /// The panel the customer framed on their photo, as % of the image box —
+  /// the same shape the shop's own tracing uses.
+  panelCorners  Json
+  /// The real size of that panel, as the customer measured it. Frozen with
+  /// the job: it is what put their millimetres onto their photograph.
+  panelWidthMm  Float
+  panelHeightMm Float
+
+  /// awaiting_item → received → in_production → done → returned → delivered,
+  /// plus problem and cancelled. Text rather than an enum: the round trip is
+  /// the part most likely to gain a step.
+  status String @default("awaiting_item") @db.VarChar(40)
+
+  returnCarrier        String? @db.VarChar(120)
+  returnTrackingNumber String? @db.VarChar(120)
+  returnTrackingUrl    String? @db.VarChar(1000)
+
+  events SendInEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("shop_send_in_jobs")
+}
+
+/// One step of a send-in job's round trip, with what the shop said and showed
+/// at that step — the photograph of the item as it arrived, of the embroidery
+/// in progress, of the finished piece.
+model SendInEvent {
+  id    String    @id @default(uuid())
+  jobId String
+  job   SendInJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  status String  @db.VarChar(40)
+  note   String?
+  /// Media-library keys (public) — what the customer sees on the tracking page.
+  photoKeys String[] @default([])
+
+  createdAt DateTime @default(now())
+
+  @@index([jobId, createdAt])
+  @@map("shop_send_in_events")
+}
+
+/// What a customer may post in for embroidery: a cap, a beanie, a jacket…
+///
+/// The shop's own list. Each type is one variant of the hidden send-in
+/// product — that variant carries the price, so checkout and receipts treat
+/// it like any other line — and this row carries everything else the wizard
+/// and the desk need to know about it.
+model SendInItemType {
+  id String @id @default(uuid())
+
+  /// Stable, machine-readable; what a job records. Never renamed.
+  key String @unique @db.VarChar(60)
+
+  /// Localised name and the line under it on the card.
+  label Json
+  hint  Json?
+
+  /// The variant the line is sold under, for checkout's sake. It is priced at
+  /// zero: the fee below is charged per side, as each side's own charge.
+  variantId String         @unique
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// Handling and return postage, charged once per side the customer sends
+  /// a photo of — a design on the front and one on the back is two runs and
+  /// two hoopings, and is charged as such.
+  priceCents Int @default(0)
+
+  maxChars      Int     @default(20)
+  /// Whether a frame for this item can take the height of foam.
+  allowPuff     Boolean @default(false)
+
+  /// A picture for the card, media-library key.
+  imageKey String? @db.VarChar(1000)
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("shop_send_in_item_types")
 }

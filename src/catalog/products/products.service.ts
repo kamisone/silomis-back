@@ -328,7 +328,7 @@ export class ProductsService {
    */
   private async compareAtSaleProductIds(): Promise<string[]> {
     const candidates = await this.prisma.product.findMany({
-      where: { status: 'active', deletedAt: null, variants: { some: { compareAtPriceCents: { not: null } } } },
+      where: { status: 'active', deletedAt: null, isService: false, variants: { some: { compareAtPriceCents: { not: null } } } },
       select: {
         id: true,
         basePriceCents: true,
@@ -499,6 +499,8 @@ export class ProductsService {
     const where: Prisma.ProductWhereInput = {
       status: 'active',
       deletedAt: null,
+      // The send-in service is sold through the catalogue but never listed in it.
+      isService: false,
       ...(categoryId ? { categories: { some: { id: categoryId } } } : {}),
       ...(tagId ? { tags: { some: { id: tagId } } } : {}),
       ...(collection ? { collectionLinks: { some: { collection: { slug: collection, isActive: true } } } } : {}),
@@ -683,7 +685,7 @@ export class ProductsService {
 
   async findBySlug(slug: string, lang?: string) {
     const product = await this.prisma.product.findFirst({
-      where: { slug, status: 'active', deletedAt: null },
+      where: { slug, status: 'active', deletedAt: null, isService: false },
       include: {
         categories: true,
         tags: true,

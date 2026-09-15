@@ -165,6 +165,6 @@ export function renderOrderConfirmed(data: OrderConfirmedEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body),
+    html: baseLayout(subject, body, data.locale),
   };
 }

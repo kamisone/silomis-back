@@ -14,6 +14,7 @@ import { COMMERCE_EVENTS } from '../commerce-events/commerce-events.constants';
 import { TestCheckoutGuard } from '../orders/test-checkout-guard.service';
 import { OrdersService } from '../orders/orders.service';
 import { PersonalizationService } from '../personalization/personalization.service';
+import { SendInService } from '../send-in/send-in.service';
 import { CustomerService } from '../customers/customer.service';
 import {
   FREE_SHIPPING_METHOD_ID,
@@ -82,6 +83,7 @@ export class CheckoutService {
     private readonly pickupPoints: PickupPointsService,
     private readonly pricingEngine: PricingEngineService,
     private readonly personalization: PersonalizationService,
+    private readonly sendIn: SendInService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
   ) {}
@@ -302,6 +304,11 @@ export class CheckoutService {
           },
         });
       }
+
+      // A line designed on the customer's own item opens the job that will
+      // follow that item in and back out — in the same transaction, so an
+      // order can never exist with a send-in line and no job.
+      await this.sendIn.createJobsForOrder(tx, created.id);
 
       await tx.orderStatusHistory.create({
         data: {

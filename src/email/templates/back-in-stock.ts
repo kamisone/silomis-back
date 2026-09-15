@@ -22,6 +22,6 @@ export function renderBackInStock(data: BackInStockEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body),
+    html: baseLayout(subject, body, data.locale),
   };
 }

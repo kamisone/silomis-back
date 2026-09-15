@@ -14,6 +14,7 @@ import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduc
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
 import { PersonalizationService } from '../personalization/personalization.service';
 import { designElementsOf } from '../personalization/design-elements';
+import { SendInService } from '../send-in/send-in.service';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
 import { CartItem, Order, OrderItemPersonalization, OrderStatus, Prisma } from '../../generated/prisma/client';
 
@@ -48,6 +49,7 @@ export class OrdersService {
     private readonly eventBus: CommerceEventBus,
     private readonly translations: TranslationsService,
     private readonly personalization: PersonalizationService,
+    private readonly sendIn: SendInService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
   ) {}
@@ -182,6 +184,9 @@ export class OrdersService {
           },
         });
       }
+
+      // Mirrors CheckoutService: a send-in line opens its job with the order.
+      await this.sendIn.createJobsForOrder(tx, created.id);
 
       await tx.orderStatusHistory.create({
         data: {
@@ -498,6 +503,9 @@ export class OrdersService {
       // Shipment tracking is populated once the Shipping domain exists.
       shipping: null,
       timeline,
+      // The item's own round trip, when this order is embroidery on the
+      // customer's own item — the parcel's status, and the shop's photographs.
+      sendIn: await this.sendIn.forCustomer(order.id, lang),
     };
   }
 

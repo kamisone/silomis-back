@@ -26,7 +26,7 @@ export class SearchIndexListener {
         where: { id: event.productId },
         include: { categories: { select: { id: true, name: true } }, tags: { select: { id: true, name: true } } },
       });
-      if (!product || product.deletedAt || product.status !== 'active') {
+      if (!product || product.deletedAt || product.status !== 'active' || product.isService) {
         await this.searchService.removeFromIndex(event.productId);
         return;
       }

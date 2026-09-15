@@ -20,10 +20,10 @@ export function renderOrderStatus(
 ): { subject: string; html: string } {
   const c = COPY[resolveLang(data.locale)].orderStatus;
   const copy = c[kind];
-  const subject = `Order ${data.orderNumber} ${copy.subjectSuffix}`;
+  const subject = c.subject(data.orderNumber, copy.subjectSuffix);
 
   const body = `
-    <p style="margin:0 0 6px;font-size:15px;">Hello ${esc(data.customerName)},</p>
+    <p style="margin:0 0 6px;font-size:15px;">${c.greeting(esc(data.customerName))}</p>
     <p style="margin:0 0 20px;font-size:15px;">${copy.message}</p>
     <p style="font-size:13px;color:#64748b;margin:0;">${c.orderRef} : <strong style="color:#0f172a;">${esc(data.orderNumber)}</strong></p>
     ${data.pickupPoint && kind !== 'cancelled' ? pickupPointBlock(data.pickupPoint, data.locale) : ''}
@@ -31,5 +31,5 @@ export function renderOrderStatus(
     ${mutedText(c.helpText)}
   `;
 
-  return { subject, html: baseLayout(copy.heading, body) };
+  return { subject, html: baseLayout(copy.heading, body, data.locale) };
 }

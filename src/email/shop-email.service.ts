@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailTransportService } from './email-transport.service';
+import { renderSendInStatus, SendInStatusEmailData } from './templates/send-in-status';
 import {
   renderOrderConfirmed,
   OrderConfirmedEmailData,
@@ -81,6 +82,12 @@ export class ShopEmailService {
     this.logger.log(
       `Order ${kind} email sent to ${to} for ${data.orderNumber}`,
     );
+  }
+
+  async sendSendInStatus(to: string, data: SendInStatusEmailData): Promise<void> {
+    const { subject, html } = renderSendInStatus(data);
+    await this.transport.send(to, subject, html);
+    this.logger.log(`Send-in ${data.status} email sent to ${to} for ${data.orderNumber}`);
   }
 
   async sendPaymentFailed(

@@ -32,6 +32,6 @@ export function renderAbandonedCart(data: AbandonedCartEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body),
+    html: baseLayout(subject, body, data.locale),
   };
 }

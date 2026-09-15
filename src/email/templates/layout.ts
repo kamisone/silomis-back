@@ -1,3 +1,4 @@
+import { COPY, resolveLang } from './copy';
 export function esc(s: string): string {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -22,14 +23,15 @@ const BRAND_PRIMARY = '#129c98'; // --color-primary, soft teal
 const BRAND_MID = '#129c98'; // --color-primary, soft teal
 const BRAND_ACCENT = '#d9548c'; // --color-accent, blush pink
 
-export function baseLayout(title: string, body: string): string {
+export function baseLayout(title: string, body: string, locale?: string | null): string {
   const year = new Date().getFullYear();
   const seller = esc(process.env.SELLER_NAME ?? 'Silomis');
   const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
-  const footer = `© ${year} ${seller}. All rights reserved.`;
+  const lang = resolveLang(locale);
+  const footer = COPY[lang].footer(year, seller);
 
   return `<!DOCTYPE html>
-<html lang="en" dir="ltr">
+<html lang="${lang}" dir="ltr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

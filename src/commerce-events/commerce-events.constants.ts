@@ -24,6 +24,9 @@ export const COMMERCE_EVENTS = {
   PRODUCT_UPDATED: 'commerce.product.updated',
   PRODUCT_ARCHIVED: 'commerce.product.archived',
 
+  // Send-in embroidery — the customer's own item on its round trip
+  SEND_IN_STATUS_CHANGED: 'commerce.send_in.status.changed',
+
   // Engagement
   CART_ABANDONED: 'commerce.cart.abandoned',
   REVIEW_SUBMITTED: 'commerce.review.submitted',
@@ -47,6 +50,14 @@ export interface OrderStatusChangedEvent {
   fromStatus: string | null;
   toStatus: string;
   triggeredBy: 'system' | 'admin' | 'webhook';
+}
+
+export interface SendInStatusChangedEvent {
+  jobId: string;
+  orderId: string;
+  fromStatus: string;
+  toStatus: string;
+  eventId: string;
 }
 
 export interface PaymentSucceededEvent {

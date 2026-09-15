@@ -230,8 +230,9 @@ export class PersonalizationService {
 
     // A position with no photograph has nothing for a customer to place artwork
     // on, so it is not offered at all — and a product whose every position is
-    // in that state cannot be personalised yet.
-    const offered = placements.filter((p) => p.mediaKey && imageUrls.get(p.mediaKey));
+    // in that state cannot be personalised yet. A send-in position is the
+    // exception: its photograph arrives with the customer.
+    const offered = placements.filter((p) => p.usesCustomerPhoto || (p.mediaKey && imageUrls.get(p.mediaKey)));
     if (!offered.length) return null;
 
     return {
@@ -255,6 +256,8 @@ export class PersonalizationService {
         key: p.key,
         label: pickLocalized(p.label, lang),
         hint: pickLocalized(p.hint, lang) || null,
+        /** The photo is the customer's — the editor asks for it rather than showing one. */
+        usesCustomerPhoto: p.usesCustomerPhoto,
         /**
          * The real size of the traced panel — what puts the customer's
          * millimetres onto the photograph at scale, and what bounds how far
@@ -266,7 +269,7 @@ export class PersonalizationService {
         maxChars: p.maxChars,
         priceCents: p.priceCents,
         allowPuff: p.allowPuff,
-        imageUrl: imageUrls.get(p.mediaKey!)!,
+        imageUrl: p.mediaKey ? (imageUrls.get(p.mediaKey) ?? null) : null,
         /** Null until an admin has traced it — the editor falls back to the flat box. */
         corners: p.isTraced
           ? [
@@ -350,12 +353,33 @@ export class PersonalizationService {
     if (!template?.isActive) fail(E.NOT_AVAILABLE, 'This product cannot be personalised.');
     if (!placement?.isActive) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not available.');
 
-    // The same rule getConfigForProduct applies when deciding what to offer.
-    // Enforced here too because the config is a convenience for the editor and
-    // this is the only path into a cart — without it a crafted request could
-    // buy a position with no artwork behind it, and the job would reach the
-    // floor with nothing to show the operator.
-    if (!placement.mediaKey) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not set up yet.');
+    // A send-in position has no photo of its own: the customer's item is the
+    // photo, and the panel they framed and measured stands in for the shop's
+    // tracing. Anywhere else, the same rule getConfigForProduct applies when
+    // deciding what to offer — enforced here too because the config is a
+    // convenience for the editor and this is the only path into a cart:
+    // without it a crafted request could buy a position with no artwork
+    // behind it, and the job would reach the floor with nothing to show.
+    const customerItem = input.customerItem ?? null;
+    let sideFeeCents = 0;
+    if (placement.usesCustomerPhoto) {
+      if (!customerItem) fail(E.PLACEMENT_UNKNOWN, 'This position needs a photo of your item.');
+      // The item type is the shop's list, not a fixed enum: a type retired in
+      // the admin must stop being orderable at once.
+      const itemType = await this.prisma.sendInItemType.findUnique({ where: { key: customerItem.itemType }, select: { isActive: true, priceCents: true } });
+      if (!itemType?.isActive) fail(E.PLACEMENT_UNKNOWN, 'That kind of item is not accepted at the moment.');
+      // The whole price of a side: handling, return postage and the run,
+      // charged once per side. What the customer draws on it does not move
+      // the figure — see the pricing below.
+      sideFeeCents = itemType.priceCents;
+    } else {
+      if (customerItem) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position takes no customer photo.');
+      if (!placement.mediaKey) fail(E.PLACEMENT_UNKNOWN, 'That embroidery position is not set up yet.');
+    }
+    // The panel every box travels over. On the customer's own item it is the
+    // side position's field laid over the rectangle framed on their photo —
+    // the one scale the admin sets, like any other position's.
+    const panel = placement;
 
     // Sequential rather than parallel on purpose: the first thing wrong should
     // be the thing reported, and a Promise.all would race two rejections and
@@ -364,7 +388,7 @@ export class PersonalizationService {
     const elements: ResolvedElement[] = [];
     for (let i = 0; i < input.elements.length; i++) {
       try {
-        elements.push(await this.resolveElement(input.elements[i], { template, placement }));
+        elements.push(await this.resolveElement(input.elements[i], { template, placement: panel }));
       } catch (err) {
         if (err instanceof BadRequestException) {
           const body = err.getResponse() as Record<string, unknown>;
@@ -461,7 +485,15 @@ export class PersonalizationService {
     // `?? 1` because Math.max with a single undefined is NaN, and a NaN here
     // does not throw — it silently becomes the price of the whole design.
     const threadMultiplier = Math.max(1, ...threads.map((t) => t.priceMultiplier ?? 1));
-    const priceCents = Math.round(band.priceCents * threadMultiplier) + placement.priceCents;
+    // A send-in side is a flat fee — the item type's price, and only that. The
+    // stitch band, the thread and the position's own price are still checked
+    // above (a design past the largest band is still refused, since the
+    // machine time is real) but none of them is charged: the customer was
+    // quoted one figure per side when they chose the item, and the design
+    // step must not move it.
+    const priceCents = customerItem
+      ? sideFeeCents
+      : Math.round(band.priceCents * threadMultiplier) + placement.priceCents;
 
     // The row keeps a flat summary of the position for everything that reads a
     // design without opening the document — the queue's card, a search, an
@@ -488,6 +520,19 @@ export class PersonalizationService {
       field: { widthMm: fieldWidthMm, heightMm: fieldHeightMm },
       offsetXMm,
       offsetYMm,
+      // The customer's item, frozen with the design: the job that tracks the
+      // parcel is created from this when the order is placed.
+      customerItem: customerItem
+        ? {
+            itemType: customerItem.itemType,
+            sideFeeCents,
+            photoKeys: customerItem.photoKeys,
+            corners: customerItem.corners,
+            panelWidthMm: panel.fieldWidthMm,
+            panelHeightMm: panel.fieldHeightMm,
+            note: customerItem.note?.trim() || null,
+          }
+        : null,
       elements: elements.map((el) => ({
         contentType: el.contentType,
         text: el.text,
@@ -1173,6 +1218,51 @@ export class PersonalizationService {
       `<g transform="translate(${round1(cx0 + dx)} ${round1(cy0 + dy)})">`,
       `<rect x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" fill="none" stroke="#c0c6cf" stroke-width="0.4" stroke-dasharray="2 2"/>`,
       `<path d="M0 ${-h / 2} v${h} M${-w / 2} 0 h${w}" stroke="#dfe4ea" stroke-width="0.2" stroke-dasharray="1 3"/>`,
+      ...boxes,
+      `</g>`,
+      `</svg>`,
+    ].join('\n');
+  }
+
+  /** A stored design row, resolved far enough to be drawn. */
+  resolvedFromRow(row: CartLineDesign): ResolvedPersonalization {
+    return rowToResolved(row);
+  }
+
+  /**
+   * The design as the customer saw it: drawn over their own photograph, in
+   * that photograph's pixels.
+   *
+   * The panel they (or the item type) framed on the photo, with its real
+   * size, is the scale — exactly the conversion the editor's preview used —
+   * so what comes out is the picture they placed the boxes on, and the desk
+   * can hold it next to the item.
+   */
+  mockupOverlaySvg(
+    r: ResolvedPersonalization,
+    frame: { widthPx: number; heightPx: number; panel: { x: number; y: number }[]; panelWidthMm: number },
+  ): string {
+    const xs = frame.panel.map((p) => p.x);
+    const ys = frame.panel.map((p) => p.y);
+    const panelLeft = (Math.min(...xs) / 100) * frame.widthPx;
+    const panelRight = (Math.max(...xs) / 100) * frame.widthPx;
+    const panelTop = (Math.min(...ys) / 100) * frame.heightPx;
+    const panelBottom = (Math.max(...ys) / 100) * frame.heightPx;
+    const pxPerMm = Math.max(0.01, (panelRight - panelLeft) / Math.max(1, frame.panelWidthMm));
+    const cx = (panelLeft + panelRight) / 2 + r.offsetXMm * pxPerMm;
+    const cy = (panelTop + panelBottom) / 2 + r.offsetYMm * pxPerMm;
+
+    const boxes = r.elements.flatMap((el, i) => [
+      `<g transform="translate(${round1(el.offsetXMm)} ${round1(el.offsetYMm)}) rotate(${el.rotationDeg})">`,
+      ...this.artworkBody(el, el.heightMm / 0.72, el.thread.hex, `m${i}`),
+      `</g>`,
+    ]);
+
+    return [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${frame.widthPx}" height="${frame.heightPx}" viewBox="0 0 ${frame.widthPx} ${frame.heightPx}">`,
+      // Millimetres inside, pixels outside: one scale on the group is what
+      // keeps every box at the size the customer set.
+      `<g transform="translate(${round1(cx)} ${round1(cy)}) scale(${pxPerMm.toFixed(4)})">`,
       ...boxes,
       `</g>`,
       `</svg>`,

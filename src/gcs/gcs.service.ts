@@ -42,6 +42,12 @@ export class GcsService {
     }
   }
 
+  /** A small object in memory — a photograph, never a video. */
+  async download(objectName: string): Promise<Buffer> {
+    const [buffer] = await this.storage.bucket(this.bucketName).file(objectName).download();
+    return buffer;
+  }
+
   /** Streams a large object to a local file — avoids buffering videos in RAM. */
   async downloadToFile(objectName: string, destination: string): Promise<void> {
     await this.storage.bucket(this.bucketName).file(objectName).download({ destination });

@@ -7,6 +7,7 @@ import { ShippingModule } from '../shipping/shipping.module';
 import { PromotionsModule } from '../promotions/promotions.module';
 import { DlqModule } from '../dlq/dlq.module';
 import { PersonalizationModule } from '../personalization/personalization.module';
+import { SendInModule } from '../send-in/send-in.module';
 import { CHECKOUT_RESERVATION_QUEUE } from './checkout-reservation.constants';
 import { CheckoutService } from './checkout.service';
 import { CheckoutController } from './checkout.controller';
@@ -15,7 +16,7 @@ import { CheckoutSessionCleanupService } from './checkout-session-cleanup.servic
 import { CheckoutReservationProcessor } from './checkout-reservation.processor';
 
 @Module({
-  imports: [OrdersModule, InventoryModule, CustomersModule, ShippingModule, PromotionsModule, DlqModule, PersonalizationModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
+  imports: [OrdersModule, InventoryModule, CustomersModule, ShippingModule, PromotionsModule, DlqModule, PersonalizationModule, SendInModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
   controllers: [CheckoutController],
   providers: [CheckoutService, CheckoutSessionService, CheckoutSessionCleanupService, CheckoutReservationProcessor],
   exports: [CheckoutService, CheckoutSessionService],

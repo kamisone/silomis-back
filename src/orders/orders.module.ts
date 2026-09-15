@@ -6,6 +6,7 @@ import { CustomersModule } from '../customers/customers.module';
 import { ShippingModule } from '../shipping/shipping.module';
 import { AnalyticsTrackingModule } from '../analytics-tracking/analytics-tracking.module';
 import { PersonalizationModule } from '../personalization/personalization.module';
+import { SendInModule } from '../send-in/send-in.module';
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
 import { OrdersService } from './orders.service';
 import { OrdersAdminController } from './orders-admin.controller';
@@ -14,7 +15,7 @@ import { OrderStatusRefAdminController } from './order-status-ref-admin.controll
 import { TestCheckoutGuard } from './test-checkout-guard.service';
 
 @Module({
-  imports: [TranslationsModule, InventoryModule, CustomersModule, ShippingModule, AnalyticsTrackingModule, PersonalizationModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
+  imports: [TranslationsModule, InventoryModule, CustomersModule, ShippingModule, AnalyticsTrackingModule, PersonalizationModule, SendInModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
   controllers: [OrdersAdminController, OrdersPublicController, OrderStatusRefAdminController],
   providers: [OrdersService, TestCheckoutGuard],
   exports: [OrdersService, TestCheckoutGuard],

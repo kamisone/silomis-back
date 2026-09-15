@@ -7,7 +7,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { BeforeApplicationShutdown, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { RedisService } from '../redis/redis.service';
@@ -42,10 +42,21 @@ function sanitize(raw: string): string {
   },
 })
 export class SupportGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, BeforeApplicationShutdown
 {
   @WebSocketServer()
   private readonly server: Server;
+
+  /**
+   * Drops every live socket before the HTTP server is closed. Node's
+   * `server.close()` waits for open connections, and a websocket stays open
+   * for as long as a browser tab does — so without this a shutdown (a deploy,
+   * or `nest --watch` rebuilding) hangs until the last visitor leaves. The
+   * clients reconnect on their own, to the next process.
+   */
+  beforeApplicationShutdown(): void {
+    this.server?.disconnectSockets(true);
+  }
 
   private readonly logger = new Logger(SupportGateway.name);
 

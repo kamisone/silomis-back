@@ -22,17 +22,24 @@ export class AdminOrderAlertListener {
     try {
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
-        select: { orderNumber: true, customerEmail: true, items: { select: { _count: { select: { personalizations: true } } } } },
+        select: {
+          orderNumber: true,
+          customerEmail: true,
+          items: { select: { _count: { select: { personalizations: true } } } },
+          sendInJob: { select: { itemType: true } },
+        },
       });
       if (!order) return;
       // An order with embroidery is also a job for the floor; the alert says
-      // so, because the person reading it decides who to tell.
+      // so, because the person reading it decides who to tell. A send-in is
+      // more than that: a parcel is about to arrive that has to be matched.
       const jobs = order.items.reduce((n, i) => n + i._count.personalizations, 0);
+      const sendIn = order.sendInJob ? ` — SEND-IN: the customer is posting their own ${order.sendInJob.itemType}, expect a parcel` : '';
       await this.notifications.notify({
         event: 'payment_succeeded',
         orderId: event.orderId,
         orderNumber: order.orderNumber,
-        summary: `Order ${order.orderNumber} paid by ${order.customerEmail} — ${fmtCents(event.amountCents)}${jobs ? ` — ${jobs} embroidery ${jobs === 1 ? 'job' : 'jobs'} to produce` : ''}`,
+        summary: `Order ${order.orderNumber} paid by ${order.customerEmail} — ${fmtCents(event.amountCents)}${jobs ? ` — ${jobs} embroidery ${jobs === 1 ? 'job' : 'jobs'} to produce` : ''}${sendIn}`,
         detailUrl: this.detailUrl(event.orderId),
       });
     } catch (err) {
