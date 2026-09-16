@@ -17,6 +17,17 @@ export class SendInAdminController {
 
   // ── What may be posted in: the shop's own list ─────────────────────────
 
+  /** The service's on/off switch. */
+  @Get('settings')
+  async settings() {
+    return { enabled: await this.sendIn.isEnabled() };
+  }
+
+  @Patch('settings')
+  updateSettings(@Body() body: { enabled?: boolean }) {
+    return this.sendIn.setEnabled(body.enabled !== false);
+  }
+
   @Get('item-types')
   listItemTypes() {
     return this.sendIn.listItemTypes();

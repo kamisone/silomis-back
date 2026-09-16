@@ -119,6 +119,7 @@ function makeService(
       ),
     },
     sendInItemType: { findUnique: jest.fn(async () => ({ isActive: true, priceCents: 990 })) },
+    platformSettings: { findUnique: jest.fn(async () => null) },
     sendInArtwork: {
       findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
         where.key === 'send-in/artwork/a.png'

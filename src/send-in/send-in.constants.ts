@@ -8,6 +8,9 @@
  */
 
 /** The hidden catalogue product every send-in order is a line of. */
+/** platform_settings key: whether the "your own item" service is offered at all. Absent = on. */
+export const SEND_IN_ENABLED_KEY = 'send_in_enabled';
+
 export const SEND_IN_PRODUCT_SLUG = 'send-in-embroidery';
 /**
  * One position per side the customer may photograph. Three is the most

@@ -411,6 +411,10 @@ export class PersonalizationService {
       if (!customerItem) fail(E.PLACEMENT_UNKNOWN, 'This position needs a photo of your item.');
       // The item type is the shop's list, not a fixed enum: a type retired in
       // the admin must stop being orderable at once.
+      // The admin's switch over the whole service: off means nothing on a
+      // customer's own item is accepted, whatever is already in a basket.
+      const gate = await this.prisma.platformSettings.findUnique({ where: { key: 'send_in_enabled' } });
+      if (gate && gate.value !== 'true') fail(E.PLACEMENT_UNKNOWN, 'Embroidery on your own item is not available at the moment.');
       const itemType = await this.prisma.sendInItemType.findUnique({ where: { key: customerItem.itemType }, select: { isActive: true, priceCents: true } });
       if (!itemType?.isActive) fail(E.PLACEMENT_UNKNOWN, 'That kind of item is not accepted at the moment.');
       // The whole price of a side: handling, return postage and the run,

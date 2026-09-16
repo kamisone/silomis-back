@@ -552,14 +552,27 @@ export class PersonalizationAdminController {
    * "can this cap be embroidered" is a per-product decision.
    */
   @Patch('products/:productId/template')
-  async setProductTemplate(@Param('productId') productId: string, @Body() body: { templateId: string | null }) {
-    if (body.templateId) {
-      const exists = await this.prisma.personalizationTemplate.count({ where: { id: body.templateId } });
+  async setProductTemplate(@Param('productId') productId: string, @Body() body: { templateId?: string | null; enabled?: boolean }) {
+    // `enabled` is the product page's switch: on means the shop's standard
+    // template, off means none — the admin never has to know a template exists.
+    let templateId: string | null | undefined = body.templateId;
+    if (body.enabled !== undefined) {
+      if (body.enabled) {
+        const std = await this.prisma.personalizationTemplate.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+        if (!std) throw new BadRequestException('No embroidery template is set up yet.');
+        templateId = std.id;
+      } else {
+        templateId = null;
+      }
+    }
+    if (templateId === undefined) throw new BadRequestException('Nothing to change.');
+    if (templateId) {
+      const exists = await this.prisma.personalizationTemplate.count({ where: { id: templateId } });
       if (!exists) throw new BadRequestException('Template not found');
     }
     return this.prisma.product.update({
       where: { id: productId },
-      data: { personalizationTemplateId: body.templateId },
+      data: { personalizationTemplateId: templateId },
       select: { id: true, slug: true, personalizationTemplateId: true },
     });
   }

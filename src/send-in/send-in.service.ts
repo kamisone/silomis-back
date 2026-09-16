@@ -12,6 +12,7 @@ import { parseLocalized, pickLocalized } from '../personalization/localized.util
 import { PersonalizationService } from '../personalization/personalization.service';
 import { designElementsOf } from '../personalization/design-elements';
 import {
+  SEND_IN_ENABLED_KEY,
   SEND_IN_ARTWORK_MAX_BYTES,
   SEND_IN_ARTWORK_MAX_PX,
   SEND_IN_ARTWORK_MIMES,
@@ -100,7 +101,23 @@ export class SendInService {
    * with its handling price, and where to post the item. Null until the
    * product has been seeded and switched on.
    */
+  /** Whether the service is offered to customers — the admin's one switch over the whole thing. */
+  async isEnabled(): Promise<boolean> {
+    const row = await this.prisma.platformSettings.findUnique({ where: { key: SEND_IN_ENABLED_KEY } });
+    return row ? row.value === 'true' : true;
+  }
+
+  async setEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    await this.prisma.platformSettings.upsert({
+      where: { key: SEND_IN_ENABLED_KEY },
+      create: { key: SEND_IN_ENABLED_KEY, value: String(enabled) },
+      update: { value: String(enabled) },
+    });
+    return { enabled };
+  }
+
   async config(lang?: string) {
+    if (!(await this.isEnabled())) return null;
     const product = await this.prisma.product.findFirst({
       where: { slug: SEND_IN_PRODUCT_SLUG, isService: true, status: 'active', deletedAt: null },
       select: { id: true, slug: true, title: true, basePriceCents: true, personalizationTemplate: { select: { isActive: true } } },
