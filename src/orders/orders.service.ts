@@ -147,6 +147,7 @@ export class OrdersService {
                   personalizations: {
                     create: item.personalizations.map((d) => ({
                       templateId: d.templateId,
+                      previewKey: d.previewKey ?? null,
                       placementKey: d.placementKey,
                       placementLabel: d.placementLabel,
                       contentType: d.contentType,
@@ -514,6 +515,11 @@ export class OrdersService {
       attrMap = new Map(attrs.map((r: Record<string, unknown>) => [r.id as string, r]));
       optionMap = new Map(options.map((r: Record<string, unknown>) => [r.id as string, r]));
     }
+    // Position names in the language asked for, not the basket's at the time.
+    const labelMap = await this.personalization.placementLabels(
+      order.items.flatMap((i) => i.personalizations.map((d) => ({ productId: i.productId, placementKey: d.placementKey }))),
+      lang,
+    );
 
     const timeline = order.statusHistory.map((h) => ({
       status: h.toStatus,
@@ -555,7 +561,10 @@ export class OrdersService {
         variantId: i.variantId,
         // What the customer asked to have embroidered, verbatim. This is what
         // they check the confirmation against, so it is not abbreviated.
-        personalizations: i.personalizations.map(toCustomerDesign),
+        personalizations: i.personalizations.map((d) => ({
+          ...toCustomerDesign(d),
+          placementLabel: labelMap.get(`${i.productId}:${d.placementKey}`) ?? d.placementLabel,
+        })),
       })),
       // Shipment tracking is populated once the Shipping domain exists.
       shipping: null,

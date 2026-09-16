@@ -1343,6 +1343,24 @@ export class PersonalizationService {
   }
 
   /** A stored design row, resolved far enough to be drawn. */
+  /**
+   * The positions' names in one language, for lines whose frozen
+   * `placementLabel` was written in whatever language the basket was in at
+   * the time. A customer who switches language — or opens the confirmation
+   * from an email in another — should read "Face 1", not "Side 1". Keyed
+   * `productId:placementKey`; a position since deleted is simply absent, and
+   * the caller keeps the frozen label.
+   */
+  async placementLabels(refs: { productId: string | null; placementKey: string }[], lang?: string): Promise<Map<string, string>> {
+    const productIds = [...new Set(refs.map((r) => r.productId).filter((id): id is string => !!id))];
+    if (!productIds.length) return new Map();
+    const rows = await this.prisma.personalizationPlacement.findMany({
+      where: { productId: { in: productIds }, key: { in: [...new Set(refs.map((r) => r.placementKey))] } },
+      select: { productId: true, key: true, label: true },
+    });
+    return new Map(rows.map((p) => [`${p.productId}:${p.key}`, pickLocalized(p.label, lang)]));
+  }
+
   resolvedFromRow(row: CartLineDesign): ResolvedPersonalization {
     return rowToResolved(row);
   }

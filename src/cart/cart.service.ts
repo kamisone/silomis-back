@@ -24,6 +24,7 @@ import { TikTokEventsService } from '../marketing/tiktok-events/tiktok-events.se
 import { PersonalizationService } from '../personalization/personalization.service';
 import { PersonalizationInput } from '../personalization/dto/personalization.dto';
 import { designElementsOf } from '../personalization/design-elements';
+import { DesignPreviewService } from '../personalization/design-preview.service';
 
 export interface RequestMeta {
   ip?: string | null;
@@ -38,6 +39,7 @@ const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
 type CartItemWithDesign = CartItem & {
   personalizations: {
     designJson: unknown;
+    previewKey?: string | null;
     stitchEstimate: number;
     placementKey: string;
     placementLabel: string;
@@ -78,6 +80,7 @@ export class CartService {
     private readonly translations: TranslationsService,
     private readonly behaviorTracking: BehaviorTrackingService,
     private readonly personalization: PersonalizationService,
+    private readonly designPreviews: DesignPreviewService,
     private readonly metaCapi: MetaCapiService,
     private readonly tiktokEvents: TikTokEventsService,
     @InjectQueue(CART_ABANDONMENT_QUEUE)
@@ -283,7 +286,7 @@ export class CartService {
       }
       imageKeySnapshot = imageKeySnapshot ?? product.featuredImageKey ?? null;
 
-      await this.prisma.cartItem.create({
+      const createdLine = await this.prisma.cartItem.create({
         data: {
           cartId: cart.id,
           productId: product.id,
@@ -341,6 +344,10 @@ export class CartService {
         },
       });
       trackUnitPriceCents = unitPriceCents;
+      // The picture of the design on the photo, drawn now so the drawer that
+      // opens on this add already shows it. Best-effort: the line stands
+      // without it.
+      if (designSet) await this.designPreviews.renderForCartItem(createdLine.id);
     }
 
     // The line above was priced from its own quantity; this settles every line
@@ -623,9 +630,10 @@ export class CartService {
 
   private async enrichCart(cart: Cart & { items: CartItemWithDesign[] }, lang?: string) {
     const items = cart.items ?? [];
-    const imageKeys = items
-      .map((i) => i.imageKeySnapshot)
-      .filter(Boolean) as string[];
+    const imageKeys = [
+      ...items.map((i) => i.imageKeySnapshot),
+      ...items.flatMap((i) => (i.personalizations ?? []).map((d) => d.previewKey)),
+    ].filter(Boolean) as string[];
     const urlMap = await this.assetUrls.resolveBatch(imageKeys);
 
     const productIds = [...new Set(items.map((i) => i.productId))];
@@ -636,12 +644,21 @@ export class CartService {
       : [];
     const slugMap = new Map(products.map((p) => [p.id, p.slug]));
     const freeShipMap = new Map(products.map((p) => [p.id, p.freeShipping]));
+    // Position names in the language of this request — the frozen label was
+    // written in whatever language the customer was browsing in when they
+    // added the line, and they may have switched since.
+    const labelMap = await this.personalization.placementLabels(
+      items.flatMap((i) => (i.personalizations ?? []).map((d) => ({ productId: i.productId, placementKey: d.placementKey }))),
+      lang,
+    );
 
     let enrichedItems = items.map((item) => ({
       ...item,
-      imageUrl: item.imageKeySnapshot
-        ? (urlMap.get(item.imageKeySnapshot) ?? null)
-        : null,
+      // A personalised line shows its design on the photo, not the bare
+      // product: that picture is the one thing the customer wants to check.
+      imageUrl:
+        (item.personalizations ?? []).map((d) => (d.previewKey ? urlMap.get(d.previewKey) : null)).find(Boolean) ??
+        (item.imageKeySnapshot ? (urlMap.get(item.imageKeySnapshot) ?? null) : null),
       lineTotalCents: item.quantity * item.unitPriceCents,
       productSlug: slugMap.get(item.productId) ?? null,
       freeShipping: freeShipMap.get(item.productId) ?? false,
@@ -650,7 +667,9 @@ export class CartService {
       // mistake before an item that cannot be returned is made for them.
       personalizations: (item.personalizations ?? []).map((d) => ({
         placementKey: d.placementKey,
-        placementLabel: d.placementLabel,
+        placementLabel: labelMap.get(`${item.productId}:${d.placementKey}`) ?? d.placementLabel,
+        /** The design on its photo, for this position. */
+        previewUrl: d.previewKey ? (urlMap.get(d.previewKey) ?? null) : null,
         contentType: d.contentType,
         text: d.text,
         fontName: d.fontName,

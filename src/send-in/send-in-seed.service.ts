@@ -2,6 +2,27 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DEFAULT_TEMPLATE_KEY } from '../personalization/personalization.seed';
 import { SEND_IN_ITEM_TYPES, SEND_IN_PLACEMENT_KEYS, SEND_IN_PRODUCT_SLUG } from './send-in.constants';
+import { ET_SHOP_PRODUCT } from '../translations/translation-entities';
+
+/** The service product's name, in every language the shop speaks — the base row is French like every other product. */
+const SEND_IN_PRODUCT_TITLE: Record<string, string> = {
+  fr: 'Broderie sur votre propre article',
+  en: 'Embroidery on your own item',
+  es: 'Bordado en tu propio artículo',
+  it: 'Ricamo sul tuo articolo',
+  de: 'Stickerei auf Ihrem eigenen Artikel',
+  nl: 'Borduurwerk op je eigen artikel',
+  pl: 'Haft na Twoim własnym artykule',
+};
+const SEND_IN_PRODUCT_DESCRIPTION: Record<string, string> = {
+  fr: 'Envoyez-nous une casquette, un bonnet, une veste ou un sac que vous avez déjà et nous y brodons votre design.',
+  en: 'Post us a cap, beanie, jacket or bag you already own and we embroider your design on it.',
+  es: 'Envíanos una gorra, un gorro, una chaqueta o un bolso que ya tengas y bordamos tu diseño en él.',
+  it: 'Spediscici un cappellino, un berretto, una giacca o una borsa che già possiedi e ci ricamiamo il tuo design.',
+  de: 'Schicken Sie uns eine Kappe, Mütze, Jacke oder Tasche, die Sie bereits besitzen, und wir sticken Ihr Design darauf.',
+  nl: 'Stuur ons een pet, muts, jas of tas die je al hebt en wij borduren je ontwerp erop.',
+  pl: 'Wyślij nam czapkę, kurtkę lub torbę, którą już masz, a my wyhaftujemy na niej Twój projekt.',
+};
 
 /**
  * Puts the send-in service product in place on boot.
@@ -36,8 +57,8 @@ export class SendInSeedService implements OnModuleInit {
         data: {
           slug: SEND_IN_PRODUCT_SLUG,
           sku: 'SENDIN',
-          title: 'Embroidery on your own item',
-          shortDescription: 'Post us a cap, beanie, jacket or bag you already own and we embroider your design on it.',
+          title: SEND_IN_PRODUCT_TITLE.fr,
+          shortDescription: SEND_IN_PRODUCT_DESCRIPTION.fr,
           isService: true,
           status: 'active',
           publishedAt: new Date(),
@@ -47,6 +68,26 @@ export class SendInSeedService implements OnModuleInit {
         include: { variants: true, placements: true },
       });
       this.logger.log(`Seeded send-in service product "${SEND_IN_PRODUCT_SLUG}"`);
+    }
+
+    // The name in every language, on the same translation rows every other
+    // product uses — so the basket, the confirmation and the tracking page
+    // read it in the customer's language, not in the seed's. A base row
+    // still carrying the first seed's English name is moved to French.
+    if (product.title === 'Embroidery on your own item') {
+      await this.prisma.product.update({ where: { id: product.id }, data: { title: SEND_IN_PRODUCT_TITLE.fr, shortDescription: SEND_IN_PRODUCT_DESCRIPTION.fr } });
+    }
+    for (const [lang, value] of Object.entries(SEND_IN_PRODUCT_TITLE)) {
+      await this.prisma.translation.upsert({
+        where: { entityType_entityId_field_lang: { entityType: ET_SHOP_PRODUCT, entityId: product.id, field: 'title', lang } },
+        create: { entityType: ET_SHOP_PRODUCT, entityId: product.id, field: 'title', lang, value },
+        update: {},
+      });
+      await this.prisma.translation.upsert({
+        where: { entityType_entityId_field_lang: { entityType: ET_SHOP_PRODUCT, entityId: product.id, field: 'shortDescription', lang } },
+        create: { entityType: ET_SHOP_PRODUCT, entityId: product.id, field: 'shortDescription', lang, value: SEND_IN_PRODUCT_DESCRIPTION[lang] },
+        update: {},
+      });
     }
 
     // The starting list of item types, once. From then on the list is the

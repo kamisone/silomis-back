@@ -267,6 +267,7 @@ export class CheckoutService {
                   personalizations: {
                     create: item.personalizations.map((d) => ({
                       templateId: d.templateId,
+                      previewKey: d.previewKey ?? null,
                       placementKey: d.placementKey,
                       placementLabel: d.placementLabel,
                       contentType: d.contentType,

@@ -2888,6 +2888,12 @@ model CartItemPersonalization {
   cartItemId String
   cartItem   CartItem @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
 
+  /// The design drawn on the position's photo (or the customer's own), as a
+  /// small PNG — what the basket and the checkout show for the line. Null
+  /// until rendered, or when rendering failed; the line then falls back to
+  /// the product picture.
+  previewKey String? @db.VarChar(300)
+
   templateId    String
   placementKey  String @db.VarChar(60)
   placementLabel String @db.VarChar(160)
@@ -2982,6 +2988,9 @@ model OrderItemPersonalization {
   id          String    @id @default(uuid())
   orderItemId String
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  /// Carried over from the basket line: the picture of the design as bought.
+  previewKey String? @db.VarChar(300)
 
   templateId     String
   placementKey   String @db.VarChar(60)
