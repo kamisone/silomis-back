@@ -1,0 +1,78 @@
+{
+  "block-classic": {
+    "300": "block-classic-300.ttf",
+    "400": "block-classic-400.ttf",
+    "500": "block-classic-500.ttf",
+    "700": "block-classic-700.ttf",
+    "900": "block-classic-900.ttf"
+  },
+  "block-bold": {
+    "400": "block-bold-400.ttf"
+  },
+  "script-classic": {
+    "400": "script-classic-400.ttf",
+    "500": "script-classic-500.ttf",
+    "700": "script-classic-700.ttf"
+  },
+  "script-signature": {
+    "400": "script-signature-400.ttf"
+  },
+  "serif-varsity": {
+    "400": "serif-varsity-400.ttf"
+  },
+  "serif-classic": {
+    "400": "serif-classic-400.ttf",
+    "500": "serif-classic-500.ttf",
+    "700": "serif-classic-700.ttf",
+    "900": "serif-classic-900.ttf"
+  },
+  "sans-modern": {
+    "300": "sans-modern-300.ttf",
+    "400": "sans-modern-400.ttf",
+    "500": "sans-modern-500.ttf",
+    "700": "sans-modern-700.ttf",
+    "900": "sans-modern-900.ttf"
+  },
+  "mono-stencil": {
+    "400": "mono-stencil-400.ttf"
+  },
+  "sans-rounded": {
+    "300": "sans-rounded-300.ttf",
+    "400": "sans-rounded-400.ttf",
+    "500": "sans-rounded-500.ttf",
+    "700": "sans-rounded-700.ttf"
+  },
+  "display-bebas": {
+    "400": "display-bebas-400.ttf"
+  },
+  "hand-caveat": {
+    "400": "hand-caveat-400.ttf",
+    "500": "hand-caveat-500.ttf",
+    "700": "hand-caveat-700.ttf"
+  },
+  "brush-marker": {
+    "400": "brush-marker-400.ttf"
+  },
+  "retro-lobster": {
+    "400": "retro-lobster-400.ttf"
+  },
+  "gothic-pirata": {
+    "400": "gothic-pirata-400.ttf"
+  },
+  "slab-alfa": {
+    "400": "slab-alfa-400.ttf"
+  },
+  "comic-bangers": {
+    "400": "comic-bangers-400.ttf"
+  },
+  "mono-typewriter": {
+    "400": "mono-typewriter-400.ttf",
+    "700": "mono-typewriter-700.ttf"
+  },
+  "serif-elegant": {
+    "300": "serif-elegant-300.ttf",
+    "400": "serif-elegant-400.ttf",
+    "500": "serif-elegant-500.ttf",
+    "700": "serif-elegant-700.ttf"
+  }
+}

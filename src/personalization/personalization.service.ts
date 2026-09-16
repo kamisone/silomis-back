@@ -5,6 +5,7 @@ import { AssetUrlService } from '../asset-url/asset-url.service';
 import { pickLocalized } from './localized.util';
 import { ElementInput, PersonalizationInput } from './dto/personalization.dto';
 import { SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_STITCHES_PER_MM2 } from '../send-in/send-in.constants';
+import { FontGlyphService } from './font-glyph.service';
 import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
@@ -117,6 +118,8 @@ export interface ResolvedElement {
   thread: ResolvedThread | null;
   /** Predicted width of the stitched line, for the operator and the preview. */
   widthMm: number;
+  /** Each line's own predicted width — the editor draws every line at its own, and so does the sheet. */
+  lineWidthsMm: number[];
   /** Every line stacked, curve included — what has to fit the area's height. */
   stackMm: number;
   /** From the area's centre, in millimetres. */
@@ -222,6 +225,8 @@ export class PersonalizationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly assetUrls: AssetUrlService,
+    /** Optional so the specs can build the service bare; without it lettering is drawn as `<text>`. */
+    private readonly glyphs?: FontGlyphService,
   ) {}
 
   // ── Editor configuration ─────────────────────────────────────────────
@@ -607,6 +612,7 @@ export class PersonalizationService {
         // design, the original for the digitiser.
         artwork: el.artwork,
         widthMm: el.widthMm,
+        lineWidthsMm: el.lineWidthsMm,
         stackMm: el.stackMm,
         offsetXMm: el.offsetXMm,
         offsetYMm: el.offsetYMm,
@@ -757,13 +763,17 @@ export class PersonalizationService {
       fail(E.PUFF_UNAVAILABLE, '3D puff is not available for this position or font.');
     }
 
+    // Every line at its own measured width — the widest is what has to fit.
+    // (Measuring the joined text counted every line end to end — and the
+    // newlines between them — so a two-line name was refused as twice its
+    // real width.)
+    const lineWidthsMm = lines.map((line) =>
+      round1(this.estimateWidthMm(line, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor + this.spacingWidthMm(line, heightMm, trackingPct, line === longest ? kerning : null) + 2 * borderMm),
+    );
     const widthMm =
       motif && input.contentType === 'motif'
         ? motif.sizeMm
-        : // The widest line is what has to fit. Measuring the joined text counted
-          // every line end to end — and the newlines between them — so a
-          // two-line name was refused as twice its real width.
-          this.estimateWidthMm(longest, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
+        : this.estimateWidthMm(longest, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
           this.spacingWidthMm(longest, heightMm, trackingPct, kerning) +
           2 * borderMm;
     // A single box has to fit the machine's largest frame on its own; the
@@ -848,6 +858,7 @@ export class PersonalizationService {
       artwork: null,
       thread,
       widthMm: round1(widthMm),
+      lineWidthsMm,
       stackMm: round1(stackWithBorderMm),
       offsetXMm,
       offsetYMm,
@@ -951,6 +962,7 @@ export class PersonalizationService {
       },
       thread: null,
       widthMm,
+      lineWidthsMm: [],
       stackMm: heightMm,
       offsetXMm: round1(clamp(input.offsetXMm ?? 0, -maxTravelX, maxTravelX)),
       offsetYMm: round1(clamp(input.offsetYMm ?? 0, -maxTravelY, maxTravelY)),
@@ -1269,41 +1281,86 @@ export class PersonalizationService {
     }
 
     const lines = r.lines.length ? r.lines : [r.text];
-    // 1.35× leading, the same figure the height check used — a sheet that
-    // stacked its lines differently from the rule that accepted them would be
-    // showing the operator a design the shop never agreed to.
+    // The same leading the height check used — a sheet that stacked its
+    // lines differently from the rule that accepted them would be showing
+    // the operator a design the shop never agreed to.
     const lead = fontSizeMm * 0.72 * (r.leading || DEFAULT_LEADING);
     const firstY = -((lines.length - 1) * lead) / 2;
-
-    // The width the design was quoted, validated and previewed at. Forcing it
+    // The width each line was quoted, validated and previewed at. Forcing it
     // here too means the sheet, the editor and the fit check all show one
-    // number — whatever font the viewer happens to render this file with.
-    const lengthAttrs = r.widthMm > 0 ? ` textLength="${round1(r.widthMm)}" lengthAdjust="spacingAndGlyphs"` : '';
+    // number.
+    const lineWidth = (i: number) => r.lineWidthsMm?.[i] ?? r.widthMm;
 
     // The border is a stroke painted under the fill, so the letters keep
     // their shape and grow outward by exactly the millimetres chosen.
     const border = r.borderMm > 0 ? ` stroke="${escapeXml(color)}" stroke-width="${(2 * r.borderMm).toFixed(2)}" stroke-linejoin="round" paint-order="stroke"` : '';
+    // Letter spacing, as the editor applies it: a share of the cap height per gap.
+    const tracking = (r.trackingPct || 0) * r.heightMm;
+
+    // The arc a curved line rides. The radius comes from the chord the
+    // straight version would have occupied, so bending a word does not also
+    // resize it.
+    const arc = (i: number) => {
+      const chord = Math.max(1, lineWidth(i));
+      const half = (Math.abs(r.curveDeg) * Math.PI) / 360;
+      const radius = chord / (2 * Math.sin(half));
+      const y = firstY + i * lead;
+      const dy = r.curveDeg > 0 ? radius - radius * Math.cos(half) : -(radius - radius * Math.cos(half));
+      return { chord, half, radius, y: round1(y + dy) };
+    };
+
+    // ── Outlines: the face itself, from its own file ─────────────────────
+    const font = this.glyphs?.font(r.fontKey, r.fontWeight) ?? null;
+    if (font) {
+      return lines.map((line, i) => {
+        const y = round1(firstY + i * lead);
+        const target = lineWidth(i) - 2 * r.borderMm;
+        if (!r.curveDeg) {
+          const { d, advance } = this.glyphs!.line(font, line, fontSizeMm, tracking);
+          // Scaled to the measured width, exactly as the editor forces it.
+          const sx = advance > 0 && target > 0 ? target / advance : 1;
+          return `<path d="${d}" transform="translate(0 ${y}) scale(${sx.toFixed(4)} 1)" fill="${escapeXml(color)}"${border}/>`;
+        }
+        // Along the arc, glyph by glyph: each letter sits at its share of the
+        // run and turns to the tangent there, the run centred on the crown.
+        const { half, radius, y: ay } = arc(i);
+        const glyphs = this.glyphs!.glyphs(font, line, fontSizeMm, tracking);
+        const natural = glyphs.reduce((n, g) => n + g.advance, 0);
+        const run = Math.max(1, target);
+        const sx = natural > 0 ? run / natural : 1;
+        const up = r.curveDeg > 0;
+        // The circle's centre sits below an arch and above a bowl, so that
+        // the arc's crown lands on the line's own y.
+        const cyCircle = up ? ay + radius * Math.cos(half) : ay - radius * Math.cos(half);
+        let along = -run / 2;
+        return glyphs
+          .map((g) => {
+            const mid = along + (g.advance * sx) / 2;
+            along += g.advance * sx;
+            const theta = mid / radius; // radians from the crown, left negative
+            const gx = radius * Math.sin(theta);
+            const gy = up ? cyCircle - radius * Math.cos(theta) : cyCircle + radius * Math.cos(theta);
+            const rot = ((up ? theta : -theta) * 180) / Math.PI;
+            return `<path d="${g.d}" transform="translate(${round1(gx)} ${round1(gy)}) rotate(${rot.toFixed(2)}) scale(${sx.toFixed(4)} 1)" fill="${escapeXml(color)}"${border}/>`;
+          })
+          .join('');
+      });
+    }
+
+    // ── No file for this face: `<text>`, in whatever the renderer has ───
     const attrs =
       `font-family="${escapeXml(r.fontName)}" font-size="${fontSizeMm.toFixed(2)}" ` +
       `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"${border}`;
-
     return lines.map((line, i) => {
       const y = round1(firstY + i * lead);
+      const lengthAttrs = lineWidth(i) > 0 ? ` textLength="${round1(lineWidth(i))}" lengthAdjust="spacingAndGlyphs"` : '';
       if (!r.curveDeg) {
         return `<text x="0" y="${y}" ${attrs}${lengthAttrs} fill="${escapeXml(color)}">${escapeXml(line)}</text>`;
       }
-      // A curved line rides a circular arc. The radius comes from the chord the
-      // straight version would have occupied, so bending a word does not also
-      // resize it.
-      const chord = Math.max(1, r.widthMm);
-      const half = (Math.abs(r.curveDeg) * Math.PI) / 360;
-      const radius = chord / (2 * Math.sin(half));
+      const { chord, radius, y: ay } = arc(i);
       const sweep = r.curveDeg > 0 ? 1 : 0;
-      const dy = r.curveDeg > 0 ? radius - radius * Math.cos(half) : -(radius - radius * Math.cos(half));
       const pathId = `${idPrefix}-arc-${i}`;
-      const d =
-        `M ${round1(-chord / 2)} ${round1(y + dy)} ` +
-        `A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} ${round1(chord / 2)} ${round1(y + dy)}`;
+      const d = `M ${round1(-chord / 2)} ${ay} A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} ${round1(chord / 2)} ${ay}`;
       return (
         `<path id="${pathId}" d="${d}" fill="none"/>` +
         `<text ${attrs} fill="${escapeXml(color)}">` +
@@ -1615,6 +1672,7 @@ export function elementsFromRow(
       leading: el.leading ?? DEFAULT_LEADING,
       thread: (el.thread as ResolvedThread | null | undefined) ?? (el.contentType === 'artwork' || el.motif?.paths?.length ? null : (threads[0] ?? null)),
       widthMm: el.widthMm ?? 0,
+      lineWidthsMm: el.lineWidthsMm ?? [],
       stackMm: el.stackMm ?? el.heightMm,
       offsetXMm: el.offsetXMm ?? 0,
       offsetYMm: el.offsetYMm ?? 0,
@@ -1644,6 +1702,7 @@ export function elementsFromRow(
       leading: DEFAULT_LEADING,
       thread: threads[0] ?? { id: '', brand: '', code: '', name: '', hex: '#000000', finish: 'matte', priceMultiplier: 1 },
       widthMm,
+      lineWidthsMm: [],
       stackMm: row.heightMm,
       offsetXMm: 0,
       offsetYMm: 0,
@@ -1720,6 +1779,7 @@ interface StoredElement {
   artwork?: ResolvedArtwork | null;
   borderMm?: number;
   leading?: number;
+  lineWidthsMm?: number[];
   widthMm?: number;
   stackMm?: number;
   offsetXMm?: number;
