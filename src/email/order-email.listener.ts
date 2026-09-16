@@ -81,6 +81,7 @@ export class OrderEmailListener {
               text: el.text,
               motifName: el.motifName,
               motifSizeMm: el.motifSizeMm,
+              artworkName: el.artwork?.name ?? null,
               fontName: el.fontName,
               heightMm: el.heightMm,
               threadNames: el.thread.name ? [el.thread.name] : [],

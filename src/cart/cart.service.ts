@@ -41,7 +41,7 @@ type CartItemWithDesign = CartItem & {
     stitchEstimate: number;
     placementKey: string;
     placementLabel: string;
-    contentType: 'text' | 'monogram' | 'motif';
+    contentType: 'text' | 'monogram' | 'motif' | 'artwork';
     text: string;
     fontName: string;
     fontWeight: number;

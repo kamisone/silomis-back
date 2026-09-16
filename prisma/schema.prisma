@@ -2627,6 +2627,8 @@ enum PersonalizationContentType {
   monogram
   /// A pre-digitised shape, with no lettering.
   motif
+  /// The customer's own logo or drawing, uploaded on a send-in — digitised by the shop.
+  artwork
 }
 
 /// A pre-digitised embroidery typeface.
@@ -3130,6 +3132,30 @@ model SendInJob {
 
   @@index([status])
   @@map("shop_send_in_jobs")
+}
+
+/// A logo or drawing a customer uploaded to embroider on their own item.
+///
+/// Stored before the design exists, like the photos: the editor draws it the
+/// moment it is chosen. `key` is the rendering the editor and the mockup use
+/// (a bounded, trimmed PNG); `originalKey` is the file as uploaded, which is
+/// what the digitiser wants — an SVG stays an SVG.
+model SendInArtwork {
+  id          String @id @default(uuid())
+  key         String @unique @db.VarChar(300)
+  originalKey String @db.VarChar(300)
+  /// The customer's own file name, for the cart line and the desk.
+  originalName String @db.VarChar(200)
+  mime        String @db.VarChar(80)
+  widthPx     Int
+  heightPx    Int
+  /// Share of the rendered box that is actually drawn on (0–1) — what the
+  /// stitch estimate multiplies the area by.
+  coverage    Float
+
+  createdAt DateTime @default(now())
+
+  @@map("shop_send_in_artworks")
 }
 
 /// One step of a send-in job's round trip, with what the shop said and showed

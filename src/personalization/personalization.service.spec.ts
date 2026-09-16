@@ -119,6 +119,13 @@ function makeService(
       ),
     },
     sendInItemType: { findUnique: jest.fn(async () => ({ isActive: true, priceCents: 990 })) },
+    sendInArtwork: {
+      findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
+        where.key === 'send-in/artwork/a.png'
+          ? { key: 'send-in/artwork/a.png', originalKey: 'send-in/artwork/a-original.svg', originalName: 'crest.svg', widthPx: 1000, heightPx: 500, coverage: 0.4 }
+          : null,
+      ),
+    },
     // (the position's own photo is on the placement fixture below)
   };
   // The asset resolver is only reached by getConfigForProduct, which these
@@ -336,6 +343,29 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     expect(small.priceCents).toBe(990);
     expect(heavy.priceCents).toBe(990);
     expect(heavy.stitchEstimate).toBeGreaterThan(small.stitchEstimate);
+  });
+
+  it('takes the customer’s own artwork on their item, sized by width and shaped by the file', async () => {
+    const s = makeService();
+    const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 30, y: 30 }, { x: 70, y: 30 }, { x: 70, y: 70 }, { x: 30, y: 70 }] };
+    const r = await s.resolve('p1', design({ placementKey: 'side-1', contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/a.png', artworkSizeMm: 80, customerItem }));
+    const [el] = r.elements;
+
+    expect(el.artwork).toMatchObject({ name: 'crest.svg', widthMm: 80, heightMm: 40 });
+    expect(el.thread).toBeNull();
+    // 80 × 40 mm at 40% drawn, 6 stitches per mm² — plus the overhead.
+    expect(el.stitchEstimate).toBeGreaterThan(80 * 40 * 0.4 * 6);
+    expect(r.priceCents).toBe(990);
+    expect((r.designJson as { elements: { artwork: { originalKey: string } }[] }).elements[0].artwork.originalKey).toBe('send-in/artwork/a-original.svg');
+  });
+
+  it('refuses artwork that was never uploaded, and artwork on a catalogue cap', async () => {
+    const s = makeService();
+    const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 30, y: 30 }, { x: 70, y: 30 }, { x: 70, y: 70 }, { x: 30, y: 70 }] };
+    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/nope.png', customerItem })))).toBe(
+      'PERSONALIZATION_ARTWORK_UNKNOWN',
+    );
+    expect(await codeOf(s.resolve('p1', design({ contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/a.png' })))).toBe('PERSONALIZATION_CONTENT_TYPE_DISABLED');
   });
 
   it('counts a monogram denser than the same letters set as text', async () => {

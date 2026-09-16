@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { MAX_ELEMENTS } from '../personalization.constants';
 import {
+  SEND_IN_ARTWORK_MAX_MM,
+  SEND_IN_ARTWORK_MIN_MM,
+  SEND_IN_ARTWORK_PREFIX,
   SEND_IN_NOTE_MAX,
   SEND_IN_PHOTO_PREFIX,
 } from '../../send-in/send-in.constants';
@@ -14,7 +17,7 @@ import {
  * again at checkout.
  */
 export const ElementInputSchema = z.object({
-  contentType: z.enum(['text', 'monogram', 'motif']),
+  contentType: z.enum(['text', 'monogram', 'motif', 'artwork']),
   /**
    * Raw as typed; the service trims, collapses, cases and splits it into lines.
    *
@@ -28,9 +31,10 @@ export const ElementInputSchema = z.object({
   heightMm: z.number().min(1).max(200),
   /**
    * The one spool this box is sewn in. A box has exactly one colour; a second
-   * colour on the same position is a second box.
+   * colour on the same position is a second box. Absent only on the
+   * customer's own artwork, which carries its own colours.
    */
-  threadColorId: z.string().uuid(),
+  threadColorId: z.string().uuid().optional(),
   /** How heavy the lettering is stitched, 1 (light) to 5 (extra bold). */
   weight: z.number().int().min(1).max(5).optional(),
 
@@ -52,6 +56,19 @@ export const ElementInputSchema = z.object({
   /** A pre-digitised shape instead of lettering. */
   motifKey: z.string().min(1).max(80).optional(),
   motifSizeMm: z.number().min(1).max(400).optional(),
+
+  /**
+   * The customer's own logo, on a send-in: the key the upload handed back,
+   * and how wide it should be stitched. Its height follows the file's own
+   * proportions — the server knows them, the browser only guesses.
+   */
+  artworkKey: z
+    .string()
+    .min(1)
+    .max(300)
+    .refine((k) => k.startsWith(SEND_IN_ARTWORK_PREFIX), { message: 'Not an uploaded artwork' })
+    .optional(),
+  artworkSizeMm: z.number().min(SEND_IN_ARTWORK_MIN_MM).max(SEND_IN_ARTWORK_MAX_MM).optional(),
 
   /**
    * Where this box sits, in millimetres from the position's traced centre.

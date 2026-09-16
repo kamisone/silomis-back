@@ -9,7 +9,7 @@
  */
 
 export interface DesignElementView {
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: 'text' | 'monogram' | 'motif' | 'artwork';
   /** Verbatim, lines joined by newlines. Empty for a shape. */
   text: string;
   lineCount: number;
@@ -20,6 +20,8 @@ export interface DesignElementView {
   isPuff: boolean;
   motifName: string | null;
   motifSizeMm: number | null;
+  /** The customer's own logo on a send-in: its file name, storage keys and stitched size. */
+  artwork: { key: string; originalKey: string; name: string; widthMm: number; heightMm: number } | null;
   thread: { brand: string; code: string; name: string; hex: string };
   /** From the area's centre, in millimetres, and the box's own angle. */
   offsetXMm: number;
@@ -30,7 +32,7 @@ export interface DesignElementView {
 
 interface StoredRow {
   designJson: unknown;
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: 'text' | 'monogram' | 'motif' | 'artwork';
   text: string;
   lineCount: number;
   fontName: string;
@@ -50,6 +52,7 @@ export function designElementsOf(row: StoredRow): DesignElementView[] {
   if (doc?.version === 2 && Array.isArray(doc.elements) && doc.elements.length) {
     return doc.elements.map((el) => {
       const motif = el.motif as { name?: string; sizeMm?: number } | null | undefined;
+      const artwork = (el.artwork as DesignElementView['artwork'] | undefined) ?? null;
       const font = el.font as { name?: string } | undefined;
       const thread = (el.thread as DesignElementView['thread'] | undefined) ?? { brand: '', code: '', name: '', hex: '#000000' };
       return {
@@ -63,6 +66,7 @@ export function designElementsOf(row: StoredRow): DesignElementView[] {
         isPuff: !!el.isPuff,
         motifName: motif?.name ?? null,
         motifSizeMm: motif?.sizeMm ?? null,
+        artwork,
         thread,
         offsetXMm: Number(el.offsetXMm ?? 0),
         offsetYMm: Number(el.offsetYMm ?? 0),
@@ -84,6 +88,7 @@ export function designElementsOf(row: StoredRow): DesignElementView[] {
       isPuff: row.isPuff,
       motifName: row.motifName,
       motifSizeMm: row.motifSizeMm,
+      artwork: null,
       thread: threads[0] ?? { brand: '', code: '', name: '', hex: '#000000' },
       offsetXMm: 0,
       offsetYMm: 0,

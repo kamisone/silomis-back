@@ -71,4 +71,31 @@ export const SEND_IN_TRANSITIONS: Record<SendInStatus, SendInStatus[]> = {
 };
 
 /** Steps that must come with a photograph — the item as it arrived, and the finished piece. */
+/**
+ * The customer's own logo or drawing. Rendered to a bounded PNG for the
+ * editor and the mockup; the original is kept for the digitiser.
+ */
+export const SEND_IN_ARTWORK_PREFIX = 'send-in/artwork/';
+export const SEND_IN_ARTWORK_MAX_BYTES = 10 * 1024 * 1024;
+export const SEND_IN_ARTWORK_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']);
+/** Long side of the rendering — plenty for a screen, a mockup and a printout. */
+export const SEND_IN_ARTWORK_MAX_PX = 2000;
+/** How wide a logo may be stitched, in millimetres. */
+export const SEND_IN_ARTWORK_MIN_MM = 10;
+export const SEND_IN_ARTWORK_MAX_MM = 200;
+/**
+ * Fill density for the stitch estimate: a solid square centimetre of fill
+ * is roughly 600 stitches, so 6 per mm² of drawn area. Only a size guard on
+ * a send-in — the side's price is flat — but the machine's one-go limit is
+ * still real.
+ */
+export const SEND_IN_ARTWORK_STITCHES_PER_MM2 = 6;
+/**
+ * The most a send-in side may need in one hooping. The catalogue's price
+ * bands cap a design where the shop stops quoting; a side is priced flat, so
+ * the only limit left is the machine's — and a 60mm filled logo is already
+ * past the bands' top, which is nothing a multi-needle machine minds.
+ */
+export const SEND_IN_MAX_STITCHES = 25_000;
+
 export const SEND_IN_PHOTO_REQUIRED: SendInStatus[] = ['received', 'done'];

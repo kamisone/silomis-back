@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { pickLocalized } from './localized.util';
 import { ElementInput, PersonalizationInput } from './dto/personalization.dto';
+import { SEND_IN_ARTWORK_MAX_MM, SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_STITCHES_PER_MM2, SEND_IN_MAX_STITCHES } from '../send-in/send-in.constants';
 import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
@@ -34,6 +35,23 @@ import {
   weightForStep,
 } from './personalization.constants';
 
+export type ContentType = 'text' | 'monogram' | 'motif' | 'artwork';
+
+/**
+ * The customer's own logo, frozen onto a send-in design. The rendering the
+ * editor showed and the original file both travel with it, so the desk can
+ * hand the digitiser exactly what was uploaded.
+ */
+export interface ResolvedArtwork {
+  key: string;
+  originalKey: string;
+  name: string;
+  widthMm: number;
+  heightMm: number;
+  widthPx: number;
+  heightPx: number;
+}
+
 /** A motif frozen onto a design, with everything production needs to redraw it. */
 export interface ResolvedMotif {
   key: string;
@@ -59,7 +77,7 @@ export interface ResolvedThread {
 
 /** One box inside a position, checked and measured. */
 export interface ResolvedElement {
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: ContentType;
   /** Normalised — this exact string is what gets stitched. */
   text: string;
   /** Lines, already split — `text` is the same thing joined by newlines. */
@@ -76,8 +94,9 @@ export interface ResolvedElement {
   curveDeg: number;
   isPuff: boolean;
   motif: ResolvedMotif | null;
-  /** The one spool this box is sewn in. */
-  thread: ResolvedThread;
+  artwork: ResolvedArtwork | null;
+  /** The one spool this box is sewn in — none on the customer's own artwork, which is stitched in its own colours. */
+  thread: ResolvedThread | null;
   /** Predicted width of the stitched line, for the operator and the preview. */
   widthMm: number;
   /** Every line stacked, curve included — what has to fit the area's height. */
@@ -102,7 +121,7 @@ export interface ResolvedPersonalization {
   templateId: string;
   placementKey: string;
   placementLabel: string;
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: ContentType;
   /** Normalised — this exact string is what gets stitched. */
   text: string;
   fontKey: string;
@@ -148,7 +167,7 @@ export interface CartLineDesign {
   designJson: unknown;
   placementKey: string;
   placementLabel: string;
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: ContentType;
   text: string;
   fontName: string;
   fontWeight: number;
@@ -432,7 +451,10 @@ export class PersonalizationService {
     // second would be wrong. Order is the order the boxes were made in, which
     // is the order the operator loads them.
     const threads: ResolvedThread[] = [];
-    for (const el of elements) if (!threads.some((t) => t.id === el.thread.id)) threads.push(el.thread);
+    for (const el of elements) {
+      const t = el.thread;
+      if (t && !threads.some((x) => x.id === t.id)) threads.push(t);
+    }
     if (threads.length > placement.maxColors) {
       fail(E.TOO_MANY_COLORS, `This position takes at most ${placement.maxColors} thread colours across its boxes.`, {
         maxColors: placement.maxColors,
@@ -444,8 +466,12 @@ export class PersonalizationService {
     // happen — between one box's spool and the next.
     const stitchEstimate = elements.reduce((sum, el) => sum + el.stitchEstimate, 0) + Math.max(0, threads.length - 1) * STITCHES_PER_COLOR_CHANGE;
 
-    const band = template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
-    if (!band) {
+    // A send-in side is not banded — its price is flat — so its ceiling is
+    // the machine's, not the last band's.
+    const band = customerItem
+      ? { priceCents: 0, maxStitches: SEND_IN_MAX_STITCHES }
+      : template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
+    if (!band || stitchEstimate > band.maxStitches) {
       // Past the largest band there is no price, and inventing one would mean
       // selling a job whose machine time nobody has costed.
       //
@@ -456,7 +482,7 @@ export class PersonalizationService {
       // numbers and the actual culprit go out with the error. The culprit is
       // looked for on the heaviest box, which is where a single switch can
       // still make the difference.
-      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
+      const ceiling = customerItem ? SEND_IN_MAX_STITCHES : template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
       const heaviest = elements.reduce((a, b) => (b.stitchEstimate > a.stitchEstimate ? b : a));
       fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
         stitchEstimate,
@@ -499,7 +525,7 @@ export class PersonalizationService {
     // design without opening the document — the queue's card, a search, an
     // email — while the document carries every box in full.
     const first = elements[0];
-    const firstText = elements.find((el) => el.contentType !== 'motif') ?? first;
+    const firstText = elements.find((el) => el.contentType !== 'motif' && el.contentType !== 'artwork') ?? first;
     const text = elements.map((el) => el.text).filter(Boolean).join('\n');
     const lines = elements.flatMap((el) => el.lines);
     const kinds = new Set(elements.map((el) => el.contentType));
@@ -548,12 +574,15 @@ export class PersonalizationService {
         // Path and viewBox travel with the document: retiring a motif from the
         // catalogue must not leave an ordered job with nothing to redraw.
         motif: el.motif ? { key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, path: el.motif.path, viewBox: el.motif.viewBox } : null,
+        // Both files by key: the rendering for every later picture of this
+        // design, the original for the digitiser.
+        artwork: el.artwork,
         widthMm: el.widthMm,
         stackMm: el.stackMm,
         offsetXMm: el.offsetXMm,
         offsetYMm: el.offsetYMm,
         rotationDeg: el.rotationDeg,
-        thread: { brand: el.thread.brand, code: el.thread.code, name: el.thread.name, hex: el.thread.hex },
+        thread: el.thread ? { brand: el.thread.brand, code: el.thread.code, name: el.thread.name, hex: el.thread.hex } : null,
         stitchEstimate: el.stitchEstimate,
       })),
       threads: threads.map((t) => ({ brand: t.brand, code: t.code, name: t.name, hex: t.hex })),
@@ -606,10 +635,18 @@ export class PersonalizationService {
     input: ElementInput,
     ctx: {
       template: { allowText: boolean; allowMonogram: boolean };
-      placement: { maxChars: number; allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number };
+      placement: { maxChars: number; allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number; usesCustomerPhoto?: boolean };
     },
   ): Promise<ResolvedElement> {
     const { template, placement } = ctx;
+
+    // The customer's own logo is its own path: no words, no face, no spool —
+    // the shop digitises the file as it is. Only on their own item, because
+    // that is the only place the shop has agreed to digitise on demand.
+    if (input.contentType === 'artwork') {
+      if (!placement.usesCustomerPhoto) fail(E.CONTENT_TYPE_DISABLED, 'Your own artwork can only be embroidered on your own item.');
+      return this.resolveArtworkElement(input, placement);
+    }
 
     if (input.contentType === 'text' && !template.allowText) {
       fail(E.CONTENT_TYPE_DISABLED, 'Text embroidery is not offered on this product.');
@@ -641,6 +678,7 @@ export class PersonalizationService {
       for (const line of lines) this.assertTextIsStitchable(line, input.contentType, placement.maxChars);
     }
 
+    if (!input.threadColorId) fail(E.THREAD_UNKNOWN, 'Pick a thread colour.');
     const [thread] = await this.resolveThreads([input.threadColorId]);
 
     const heightMm = round1(input.heightMm);
@@ -758,6 +796,7 @@ export class PersonalizationService {
       curveDeg,
       isPuff,
       motif,
+      artwork: null,
       thread,
       widthMm: round1(widthMm),
       stackMm: round1(stackMm),
@@ -809,7 +848,67 @@ export class PersonalizationService {
    * empty row, and keeping one would push the rest of the design off centre by
    * a line's height for no reason.
    */
-  private normalizeLines(raw: string, contentType: 'text' | 'monogram' | 'motif', uppercaseOnly: boolean): string[] {
+  /**
+   * The customer's uploaded logo as a box: sized by the width they chose,
+   * its height following the file's proportions, its stitches estimated from
+   * the drawn area. The upload row is the proof the file exists and was
+   * ours to render — a key that was never uploaded is refused.
+   */
+  private async resolveArtworkElement(
+    input: ElementInput,
+    placement: { fieldWidthMm: number; fieldHeightMm: number },
+  ): Promise<ResolvedElement> {
+    const art = input.artworkKey ? await this.prisma.sendInArtwork.findUnique({ where: { key: input.artworkKey } }) : null;
+    if (!art) fail(E.ARTWORK_UNKNOWN, 'Upload your logo first.');
+
+    const widthMm = round1(clamp(input.artworkSizeMm ?? 60, SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_MAX_MM));
+    const heightMm = round1((widthMm * art.heightPx) / Math.max(1, art.widthPx));
+    if (widthMm > FIELD_MAX_WIDTH_MM) {
+      fail(E.TOO_WIDE, `That is wider than we can embroider in one go (${FIELD_MAX_WIDTH_MM}mm) — make it smaller.`, { widthMm, fieldWidthMm: FIELD_MAX_WIDTH_MM });
+    }
+    if (heightMm > FIELD_MAX_HEIGHT_MM) {
+      fail(E.TOO_TALL, `That is taller than we can embroider in one go (${FIELD_MAX_HEIGHT_MM}mm) — make it smaller.`, { heightMm, fieldHeightMm: FIELD_MAX_HEIGHT_MM });
+    }
+
+    const maxTravelX = placement.fieldWidthMm * MAX_TRAVEL_FACTOR;
+    const maxTravelY = placement.fieldHeightMm * MAX_TRAVEL_FACTOR;
+    const stitchEstimate = Math.ceil(widthMm * heightMm * art.coverage * SEND_IN_ARTWORK_STITCHES_PER_MM2 + STITCH_BASE_OVERHEAD);
+
+    return {
+      contentType: 'artwork',
+      text: '',
+      lines: [],
+      lineCount: 0,
+      fontKey: input.fontKey,
+      fontName: '',
+      heightMm,
+      weightStep: 3,
+      fontWeight: 400,
+      trackingPct: 0,
+      kerning: null,
+      curveDeg: 0,
+      isPuff: false,
+      motif: null,
+      artwork: {
+        key: art.key,
+        originalKey: art.originalKey,
+        name: art.originalName,
+        widthMm,
+        heightMm,
+        widthPx: art.widthPx,
+        heightPx: art.heightPx,
+      },
+      thread: null,
+      widthMm,
+      stackMm: heightMm,
+      offsetXMm: round1(clamp(input.offsetXMm ?? 0, -maxTravelX, maxTravelX)),
+      offsetYMm: round1(clamp(input.offsetYMm ?? 0, -maxTravelY, maxTravelY)),
+      rotationDeg: round1(normalizeAngle(input.rotationDeg ?? 0)),
+      stitchEstimate,
+    };
+  }
+
+  private normalizeLines(raw: string, contentType: ContentType, uppercaseOnly: boolean): string[] {
     if (contentType === 'motif') return [];
     return raw
       .split(/\r?\n/)
@@ -846,7 +945,7 @@ export class PersonalizationService {
     widthMm: number;
     curveDeg: number;
     motif: ResolvedMotif | null;
-    contentType: 'text' | 'monogram' | 'motif';
+    contentType: ContentType;
   }): number {
     if (args.contentType === 'motif') return args.motif?.sizeMm ?? 0;
 
@@ -883,7 +982,7 @@ export class PersonalizationService {
     };
   }
 
-  private normalizeText(raw: string, contentType: 'text' | 'monogram' | 'motif', uppercaseOnly: boolean): string {
+  private normalizeText(raw: string, contentType: ContentType, uppercaseOnly: boolean): string {
     // NFC first — "é" typed as e + combining accent is two code points, which
     // would both overrun the character limit and reach the face as a glyph it
     // does not have.
@@ -893,7 +992,7 @@ export class PersonalizationService {
     return text;
   }
 
-  private assertTextIsStitchable(text: string, contentType: 'text' | 'monogram' | 'motif', maxChars: number): void {
+  private assertTextIsStitchable(text: string, contentType: ContentType, maxChars: number): void {
     if (!text) fail(E.TEXT_EMPTY, 'Enter the text to embroider.');
 
     if (contentType === 'monogram') {
@@ -941,7 +1040,7 @@ export class PersonalizationService {
    * that turns out wider does not fit the hoop and the order stops on the
    * floor. Spaces are counted at half an advance, which is what a face does.
    */
-  private estimateWidthMm(text: string, heightMm: number, avgCharWidthRatio: number, contentType: 'text' | 'monogram' | 'motif'): number {
+  private estimateWidthMm(text: string, heightMm: number, avgCharWidthRatio: number, contentType: ContentType): number {
     const advances = [...text].reduce((sum, ch) => sum + (ch === ' ' ? 0.5 : 1), 0);
     const base = advances * heightMm * avgCharWidthRatio;
     // A monogram's letters interlock and the centre letter is drawn larger, so
@@ -961,7 +1060,7 @@ export class PersonalizationService {
   private estimateStitches(args: {
     lines: string[];
     heightMm: number;
-    contentType: 'text' | 'monogram' | 'motif';
+    contentType: ContentType;
     stitchesPerCharAt10mm: number;
     colorCount: number;
     /** A heavier satin column is more thread over the same outline. */
@@ -1066,7 +1165,23 @@ export class PersonalizationService {
    * turn and offset it — the frame and the stitching can never end up
    * disagreeing about where they are.
    */
-  private artworkBody(r: ResolvedElement, fontSizeMm: number, color: string, idPrefix: string): string[] {
+  private artworkBody(r: ResolvedElement, fontSizeMm: number, color: string, idPrefix: string, images?: Map<string, string>): string[] {
+    if (r.artwork) {
+      // The customer's own file, at the size they chose. With the rendering
+      // in hand (the mockup) it is the picture itself; without it (a sheet
+      // built inline, at checkout) a labelled frame marks where it goes —
+      // the digitiser works from the original file, not from this.
+      const w = r.artwork.widthMm;
+      const h = r.artwork.heightMm;
+      const data = images?.get(r.artwork.key);
+      if (data) {
+        return [`<image href="data:image/png;base64,${data}" x="${round1(-w / 2)}" y="${round1(-h / 2)}" width="${round1(w)}" height="${round1(h)}" preserveAspectRatio="xMidYMid meet"/>`];
+      }
+      return [
+        `<rect x="${round1(-w / 2)}" y="${round1(-h / 2)}" width="${round1(w)}" height="${round1(h)}" fill="none" stroke="${escapeXml(color)}" stroke-width="0.4" stroke-dasharray="2 1.5"/>`,
+        `<text x="0" y="0" font-family="sans-serif" font-size="${Math.max(2, Math.min(6, h / 4)).toFixed(1)}" text-anchor="middle" dominant-baseline="central" fill="${escapeXml(color)}">${escapeXml(r.artwork.name)}</text>`,
+      ];
+    }
     if (r.motif) {
       // The path is authored in its own viewBox, so it is scaled to the size
       // the customer chose and centred on the origin.
@@ -1188,12 +1303,15 @@ export class PersonalizationService {
         el.kerning?.some((k) => k !== 0) ? 'kerned' : null,
         el.isPuff ? '3D PUFF — foam under satin' : null,
         el.motif ? `motif "${el.motif.name}" at ${el.motif.sizeMm}mm` : null,
-        el.thread.finish && el.thread.finish !== 'matte' ? `finish: ${el.thread.finish}` : null,
+        el.artwork ? `CUSTOMER ARTWORK "${el.artwork.name}" ${el.artwork.widthMm}×${el.artwork.heightMm}mm — digitise from the original file` : null,
+        el.thread?.finish && el.thread.finish !== 'matte' ? `finish: ${el.thread.finish}` : null,
         el.offsetXMm || el.offsetYMm ? `at ${el.offsetXMm}mm, ${el.offsetYMm}mm from the hoop's centre` : 'centred in the hoop',
         el.rotationDeg ? `turned ${el.rotationDeg}°` : null,
       ].filter(Boolean);
-      const subject = el.motif ? el.motif.name : `"${el.text.replace(/\n/g, ' / ')}"`;
-      return `box ${i + 1}: ${subject} · ${el.fontName} ${el.heightMm}mm · ${el.thread.brand} ${el.thread.code} ${el.thread.name} · ~${el.stitchEstimate} stitches · ${extras.join(' · ')}`;
+      const subject = el.artwork ? `logo "${el.artwork.name}"` : el.motif ? el.motif.name : `"${el.text.replace(/\n/g, ' / ')}"`;
+      const spool = el.thread ? `${el.thread.brand} ${el.thread.code} ${el.thread.name}` : 'own colours';
+      const face = el.artwork ? `${el.artwork.widthMm}×${el.artwork.heightMm}mm` : `${el.fontName} ${el.heightMm}mm`;
+      return `box ${i + 1}: ${subject} · ${face} · ${spool} · ~${el.stitchEstimate} stitches · ${extras.join(' · ')}`;
     });
 
     const boxes = r.elements.flatMap((el, i) => [
@@ -1202,7 +1320,7 @@ export class PersonalizationService {
       `<g transform="translate(${round1(el.offsetXMm)} ${round1(el.offsetYMm)}) rotate(${el.rotationDeg})">`,
       // Cap height is the em-square's cap, not its full body; 0.72 is the
       // usual ratio and keeps the rendered text at the millimetre height quoted.
-      ...this.artworkBody(el, el.heightMm / 0.72, el.thread.hex, `b${i}`),
+      ...this.artworkBody(el, el.heightMm / 0.72, el.thread?.hex ?? '#111111', `b${i}`),
       `</g>`,
     ]);
 
@@ -1241,6 +1359,8 @@ export class PersonalizationService {
   mockupOverlaySvg(
     r: ResolvedPersonalization,
     frame: { widthPx: number; heightPx: number; panel: { x: number; y: number }[]; panelWidthMm: number },
+    /** Customer artwork renderings, base64 PNG by storage key — fetched by the caller, drawn here. */
+    images?: Map<string, string>,
   ): string {
     const xs = frame.panel.map((p) => p.x);
     const ys = frame.panel.map((p) => p.y);
@@ -1254,7 +1374,7 @@ export class PersonalizationService {
 
     const boxes = r.elements.flatMap((el, i) => [
       `<g transform="translate(${round1(el.offsetXMm)} ${round1(el.offsetYMm)}) rotate(${el.rotationDeg})">`,
-      ...this.artworkBody(el, el.heightMm / 0.72, el.thread.hex, `m${i}`),
+      ...this.artworkBody(el, el.heightMm / 0.72, el.thread?.hex ?? '#111111', `m${i}`, images),
       `</g>`,
     ]);
 
@@ -1392,7 +1512,8 @@ export function elementsFromRow(
             colorCount: 1,
           }
         : null,
-      thread: (el.thread as ResolvedThread) ?? threads[0],
+      artwork: (el.artwork as ResolvedArtwork | undefined) ?? null,
+      thread: (el.thread as ResolvedThread | null | undefined) ?? (el.contentType === 'artwork' ? null : (threads[0] ?? null)),
       widthMm: el.widthMm ?? 0,
       stackMm: el.stackMm ?? el.heightMm,
       offsetXMm: el.offsetXMm ?? 0,
@@ -1418,6 +1539,7 @@ export function elementsFromRow(
       curveDeg: row.curveDeg,
       isPuff: row.isPuff,
       motif,
+      artwork: null,
       thread: threads[0] ?? { id: '', brand: '', code: '', name: '', hex: '#000000', finish: 'matte', priceMultiplier: 1 },
       widthMm,
       stackMm: row.heightMm,
@@ -1481,7 +1603,7 @@ export function hoopAround(elements: { offsetXMm: number; offsetYMm: number; rot
 
 /** A box as the version-2 design document stores it. */
 interface StoredElement {
-  contentType: 'text' | 'monogram' | 'motif';
+  contentType: ContentType;
   text?: string;
   lines?: string[];
   font?: { key: string; name: string };
@@ -1493,12 +1615,13 @@ interface StoredElement {
   curveDeg?: number;
   isPuff?: boolean;
   motif?: { key: string; name: string; sizeMm: number; path?: string; viewBox?: string } | null;
+  artwork?: ResolvedArtwork | null;
   widthMm?: number;
   stackMm?: number;
   offsetXMm?: number;
   offsetYMm?: number;
   rotationDeg?: number;
-  thread?: { brand: string; code: string; name: string; hex: string };
+  thread?: { brand: string; code: string; name: string; hex: string } | null;
   stitchEstimate?: number;
 }
 

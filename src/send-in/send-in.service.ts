@@ -10,7 +10,12 @@ import { COMMERCE_EVENTS, SendInStatusChangedEvent } from '../commerce-events/co
 import { Prisma } from '../../generated/prisma/client';
 import { parseLocalized, pickLocalized } from '../personalization/localized.util';
 import { PersonalizationService } from '../personalization/personalization.service';
+import { designElementsOf } from '../personalization/design-elements';
 import {
+  SEND_IN_ARTWORK_MAX_BYTES,
+  SEND_IN_ARTWORK_MAX_PX,
+  SEND_IN_ARTWORK_MIMES,
+  SEND_IN_ARTWORK_PREFIX,
   SEND_IN_PHOTO_MAX,
   SEND_IN_PHOTO_MAX_BYTES,
   SEND_IN_PHOTO_MIMES,
@@ -58,7 +63,7 @@ const JOB_INCLUDE = {
   events: { orderBy: { createdAt: 'asc' as const } },
   order: { select: { id: true, orderNumber: true, status: true, customerName: true, customerEmail: true, createdAt: true } },
   orderItem: {
-    select: { id: true, titleSnapshot: true, personalizations: { select: { id: true, placementKey: true, text: true, productionStatus: true, stitchEstimate: true, priceCents: true } } },
+    select: { id: true, titleSnapshot: true, personalizations: { select: { id: true, placementKey: true, text: true, productionStatus: true, stitchEstimate: true, priceCents: true, designJson: true, contentType: true, lineCount: true, fontName: true, fontWeight: true, heightMm: true, curveDeg: true, isPuff: true, motifName: true, motifSizeMm: true, threadColors: true, rotationDeg: true } } },
   },
 } satisfies Prisma.SendInJobInclude;
 
@@ -168,6 +173,64 @@ export class SendInService {
     return { photos };
   }
 
+  /**
+   * The customer's own logo or drawing, to embroider on their item.
+   *
+   * Two files are kept: the original as uploaded, which is what the
+   * digitiser wants (an SVG stays an SVG), and a bounded PNG rendering that
+   * the editor, the mockup and the desk's picture all draw from. The
+   * rendering is trimmed to its drawn extent, so the size the customer sets
+   * is the size of the logo — not of the white margin around it — and its
+   * drawn share is measured for the stitch estimate.
+   */
+  async uploadArtwork(file: Express.Multer.File | undefined): Promise<{ key: string; url: string; name: string; widthPx: number; heightPx: number; coverage: number }> {
+    if (!file) throw new BadRequestException('Choose a logo or drawing to upload.');
+    if (!SEND_IN_ARTWORK_MIMES.has(file.mimetype)) throw new BadRequestException('Use a PNG, JPG, WebP or SVG file.');
+    if (file.size > SEND_IN_ARTWORK_MAX_BYTES) throw new BadRequestException('A logo may be at most 10MB.');
+
+    const id = randomUUID();
+    const ext = file.mimetype === 'image/svg+xml' ? 'svg' : file.mimetype === 'image/png' ? 'png' : file.mimetype === 'image/webp' ? 'webp' : 'jpg';
+    // A vector is rasterised at a density that gives it real pixels to work
+    // with; a bitmap is taken as it is, then both are bounded.
+    let image = sharp(file.buffer, file.mimetype === 'image/svg+xml' ? { density: 300 } : undefined).rotate().ensureAlpha();
+    try {
+      // Off the margins: a JPG logo on white, or a PNG with air around it,
+      // should be sized by its drawing. Uniform images make trim throw; they
+      // are kept whole.
+      image = sharp(await image.trim({ threshold: 12 }).toBuffer()).ensureAlpha();
+    } catch {
+      image = sharp(file.buffer, file.mimetype === 'image/svg+xml' ? { density: 300 } : undefined).rotate().ensureAlpha();
+    }
+    let png: Buffer;
+    try {
+      png = await image.resize({ width: SEND_IN_ARTWORK_MAX_PX, height: SEND_IN_ARTWORK_MAX_PX, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+    } catch {
+      throw new BadRequestException('That file could not be read as an image.');
+    }
+    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+    if (!info.width || !info.height) throw new BadRequestException('That file could not be read as an image.');
+    // A pixel counts as drawn when it is opaque and not (near-)white — white
+    // on a white cap is nothing to stitch.
+    let drawn = 0;
+    const total = info.width * info.height;
+    for (let i = 0; i < data.length; i += info.channels) {
+      const a = info.channels === 4 ? data[i + 3] : 255;
+      if (a < 128) continue;
+      if (data[i] > 240 && data[i + 1] > 240 && data[i + 2] > 240) continue;
+      drawn += 1;
+    }
+    const coverage = Math.min(1, Math.max(0.05, drawn / Math.max(1, total)));
+
+    const key = `${SEND_IN_ARTWORK_PREFIX}${id}.png`;
+    const originalKey = `${SEND_IN_ARTWORK_PREFIX}${id}-original.${ext}`;
+    await Promise.all([this.gcs.upload(png, key, 'image/png', 'private'), this.gcs.upload(file.buffer, originalKey, file.mimetype, 'private')]);
+    const name = (file.originalname || `logo.${ext}`).replace(/[\r\n\t]/g, ' ').slice(0, 200);
+    await this.prisma.sendInArtwork.create({
+      data: { key, originalKey, originalName: name, mime: file.mimetype, widthPx: info.width, heightPx: info.height, coverage },
+    });
+    return { key, url: await this.assetUrls.resolve(key), name, widthPx: info.width, heightPx: info.height, coverage };
+  }
+
   // ── From order to job ────────────────────────────────────────────────
 
   /**
@@ -267,12 +330,16 @@ export class SendInService {
         rendered.push(side);
         continue;
       }
-      const overlay = this.personalization.mockupOverlaySvg(this.personalization.resolvedFromRow(design), {
-        widthPx: width,
-        heightPx: height,
-        panel: corners,
-        panelWidthMm: job.panelWidthMm,
-      });
+      const resolved = this.personalization.resolvedFromRow(design);
+      // The customer's own logos, fetched so the overlay can draw the files
+      // themselves rather than a labelled frame.
+      const images = new Map<string, string>();
+      for (const el of resolved.elements) {
+        if (el.artwork && !images.has(el.artwork.key)) {
+          images.set(el.artwork.key, (await this.gcs.download(el.artwork.key)).toString('base64'));
+        }
+      }
+      const overlay = this.personalization.mockupOverlaySvg(resolved, { widthPx: width, heightPx: height, panel: corners, panelWidthMm: job.panelWidthMm }, images);
       const png = await base.composite([{ input: Buffer.from(overlay), top: 0, left: 0 }]).png({ compressionLevel: 8 }).toBuffer();
       const key = `${SEND_IN_PHOTO_PREFIX}mockup-${jobId}-${side.placementKey}.png`;
       await this.gcs.upload(png, key, 'image/png', 'private');
@@ -455,7 +522,15 @@ export class SendInService {
 
   private async toAdmin(r: JobRow) {
     const sides = (r.sides as unknown as JobSide[]) ?? [];
-    const keys = [...r.photoKeys, ...sides.flatMap((sd) => [sd.photoKey, sd.mockupKey ?? '']), ...r.events.flatMap((e) => e.photoKeys)].filter(Boolean);
+    // Every logo the customer uploaded, by position: the rendering for the
+    // card, the original for the digitiser.
+    const artworks = new Map<string, { name: string; key: string; originalKey: string; widthMm: number; heightMm: number }[]>();
+    for (const d of r.orderItem.personalizations) {
+      const list = designElementsOf(d).flatMap((el) => (el.artwork ? [el.artwork] : []));
+      if (list.length) artworks.set(d.placementKey, list);
+    }
+    const artworkKeys = [...artworks.values()].flat().flatMap((a) => [a.key, a.originalKey]);
+    const keys = [...r.photoKeys, ...sides.flatMap((sd) => [sd.photoKey, sd.mockupKey ?? '']), ...r.events.flatMap((e) => e.photoKeys), ...artworkKeys].filter(Boolean);
     const [urls, type] = await Promise.all([
       this.assetUrls.resolveBatch(keys),
       this.prisma.sendInItemType.findUnique({ where: { key: r.itemType }, select: { label: true } }),
@@ -479,14 +554,24 @@ export class SendInService {
         placementKey: sd.placementKey,
         photoUrl: urls.get(sd.photoKey) ?? '',
         mockupUrl: sd.mockupKey ? (urls.get(sd.mockupKey) ?? null) : null,
-        design: r.orderItem.personalizations.find((d) => (d as { placementKey?: string }).placementKey === sd.placementKey) ?? null,
+        design: (() => {
+          const d = r.orderItem.personalizations.find((x) => x.placementKey === sd.placementKey);
+          return d ? { id: d.id, text: d.text, productionStatus: d.productionStatus, stitchEstimate: d.stitchEstimate } : null;
+        })(),
+        artworks: (artworks.get(sd.placementKey) ?? []).map((a) => ({
+          name: a.name,
+          widthMm: a.widthMm,
+          heightMm: a.heightMm,
+          url: urls.get(a.key) ?? null,
+          originalUrl: urls.get(a.originalKey) ?? null,
+        })),
       })),
       status: r.status,
       allowedNext: SEND_IN_TRANSITIONS[r.status as SendInStatus] ?? [],
       returnCarrier: r.returnCarrier,
       returnTrackingNumber: r.returnTrackingNumber,
       returnTrackingUrl: r.returnTrackingUrl,
-      designs: r.orderItem.personalizations,
+      designs: r.orderItem.personalizations.map((d) => ({ id: d.id, text: d.text, productionStatus: d.productionStatus, stitchEstimate: d.stitchEstimate })),
       events: r.events.map((e) => ({
         id: e.id,
         status: e.status,

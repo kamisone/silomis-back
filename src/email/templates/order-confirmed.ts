@@ -18,10 +18,11 @@ export interface OrderConfirmedEmailData {
     unitPriceCents: number;
     personalizations?: Array<{
       placementLabel: string;
-      contentType: 'text' | 'monogram' | 'motif';
+      contentType: 'text' | 'monogram' | 'motif' | 'artwork';
       text: string;
       motifName: string | null;
       motifSizeMm: number | null;
+      artworkName?: string | null;
       fontName: string;
       heightMm: number;
       threadNames: string[];
@@ -48,11 +49,15 @@ function embroideryLine(
   c: { embroidery: string; embroideryThread: string },
 ): string {
   const subject =
-    d.contentType === 'motif'
-      ? esc(d.motifName ?? '')
-      : `&ldquo;${esc(d.text).replace(/\n/g, '<br>')}&rdquo;`;
+    d.contentType === 'artwork'
+      ? esc(d.artworkName ?? '')
+      : d.contentType === 'motif'
+        ? esc(d.motifName ?? '')
+        : `&ldquo;${esc(d.text).replace(/\n/g, '<br>')}&rdquo;`;
   const details = [esc(d.placementLabel)];
-  if (d.contentType === 'motif') {
+  if (d.contentType === 'artwork') {
+    details.push(`${d.heightMm}&nbsp;mm`);
+  } else if (d.contentType === 'motif') {
     if (d.motifSizeMm) details.push(`${d.motifSizeMm}&nbsp;mm`);
   } else {
     details.push(`${esc(d.fontName)} &middot; ${d.heightMm}&nbsp;mm`);

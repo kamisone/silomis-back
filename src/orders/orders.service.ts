@@ -633,6 +633,9 @@ export function toCustomerDesign(d: OrderItemPersonalization) {
       isPuff: el.isPuff,
       motifName: el.motifName,
       motifSizeMm: el.motifSizeMm,
+      artworkName: el.artwork?.name ?? null,
+      artworkWidthMm: el.artwork?.widthMm ?? null,
+      artworkHeightMm: el.artwork?.heightMm ?? null,
       thread: el.thread,
     })),
   };
