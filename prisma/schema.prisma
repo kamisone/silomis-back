@@ -2646,6 +2646,9 @@ model EmbroideryFont {
 
   /// CSS stack the editor previews with.
   webFamily String @db.VarChar(300)
+  /// A stylesheet that brings `webFamily` to the browser (a Google Fonts
+  /// CSS URL, typically). Null for a face the browser is trusted to have.
+  webFontCss String? @db.VarChar(500)
 
   /// Below this cap height a stitched letter's counters close up and it stops
   /// reading. Above the max the satin stitches grow long enough to snag.
@@ -2756,6 +2759,10 @@ model EmbroideryMotif {
   path String
   /// The coordinate box `path` is drawn in, so it can be scaled to millimetres.
   viewBox String @default("0 0 100 100") @db.VarChar(80)
+  /// A full-colour design: its shapes with their own fills, drawn in order,
+  /// [{ d, fill }]. When set, `path` is only the silhouette (for a swatch)
+  /// and the design is stitched in its own colours rather than a chosen spool.
+  paths Json?
 
   /// Measured from a stitch-out at 30mm; the estimator scales it by area.
   stitchesAt30mm Int @default(2200)

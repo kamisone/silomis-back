@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { pickLocalized } from './localized.util';
 import { ElementInput, PersonalizationInput } from './dto/personalization.dto';
-import { SEND_IN_ARTWORK_MAX_MM, SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_STITCHES_PER_MM2, SEND_IN_MAX_STITCHES } from '../send-in/send-in.constants';
+import { SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_STITCHES_PER_MM2 } from '../send-in/send-in.constants';
 import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
@@ -52,13 +52,27 @@ export interface ResolvedArtwork {
   heightPx: number;
 }
 
+/** The usual embroidery leading: lines stack at 1.35× their height. */
+const DEFAULT_LEADING = 1.35;
+
+/** One shape of a full-colour design. */
+export interface MotifPath {
+  d: string;
+  fill: string;
+}
+
 /** A motif frozen onto a design, with everything production needs to redraw it. */
 export interface ResolvedMotif {
   key: string;
   name: string;
   path: string;
   viewBox: string;
+  /** The design's own shapes and colours, when it is a full-colour one. */
+  paths: MotifPath[] | null;
+  /** The width it is stitched at. */
   sizeMm: number;
+  /** The height — the drawing's own proportion unless the customer stretched it. */
+  heightMm: number;
   /** Measured from a stitch-out at 30mm; the estimator scales it by area. */
   stitchesAt30mm: number;
   colorCount: number;
@@ -89,8 +103,12 @@ export interface ResolvedElement {
   /** 1–5 as chosen; `fontWeight` is the CSS/production value it maps to. */
   weightStep: number;
   fontWeight: number;
+  /** A satin border round the letters, millimetres beyond the outline — thickness past the heaviest weight. */
+  borderMm: number;
   trackingPct: number;
   kerning: number[] | null;
+  /** Line spacing as a multiple of the letter height; 1.35 unless the customer set it. */
+  leading: number;
   curveDeg: number;
   isPuff: boolean;
   motif: ResolvedMotif | null;
@@ -310,6 +328,8 @@ export class PersonalizationService {
         key: f.key,
         name: f.name,
         webFamily: f.webFamily,
+        /** A stylesheet the editor loads so the face is the same on every device. */
+        webFontCss: f.webFontCss,
         minHeightMm: f.minHeightMm,
         maxHeightMm: f.maxHeightMm,
         avgCharWidthRatio: f.avgCharWidthRatio,
@@ -333,6 +353,7 @@ export class PersonalizationService {
         name: pickLocalized(m.name, lang),
         path: m.path,
         viewBox: m.viewBox,
+        paths: motifPaths(m.paths),
         category: m.category,
       })),
       priceBands: template.priceBands.map((b) => ({ maxStitches: b.maxStitches, priceCents: b.priceCents, label: b.label })),
@@ -399,6 +420,11 @@ export class PersonalizationService {
     // side position's field laid over the rectangle framed on their photo —
     // the one scale the admin sets, like any other position's.
     const panel = placement;
+    // How big a box may be. A catalogue position is bounded by the largest
+    // hoop; the customer's own item by their photograph — the panel's real
+    // size scaled up to the whole picture — because on their own item they
+    // decide, and a design that fills the photo is a design that fills it.
+    const bounds = customerItem ? photoExtentMm(customerItem.corners, panel) : { maxWidthMm: FIELD_MAX_WIDTH_MM, maxHeightMm: FIELD_MAX_HEIGHT_MM };
 
     // Sequential rather than parallel on purpose: the first thing wrong should
     // be the thing reported, and a Promise.all would race two rejections and
@@ -407,7 +433,7 @@ export class PersonalizationService {
     const elements: ResolvedElement[] = [];
     for (let i = 0; i < input.elements.length; i++) {
       try {
-        elements.push(await this.resolveElement(input.elements[i], { template, placement: panel }));
+        elements.push(await this.resolveElement(input.elements[i], { template, placement: panel, bounds }));
       } catch (err) {
         if (err instanceof BadRequestException) {
           const body = err.getResponse() as Record<string, unknown>;
@@ -422,16 +448,16 @@ export class PersonalizationService {
     // stitching. Measured on the boxes' real footprints — a turned box reaches
     // further than its sides — so the operator's sheet holds all of it.
     const hoop = hoopAround(elements);
-    if (hoop.widthMm > FIELD_MAX_WIDTH_MM) {
-      fail(E.TOO_WIDE, `Those boxes spread wider than we can hoop in one go (${FIELD_MAX_WIDTH_MM}mm) — bring them closer or make them smaller.`, {
+    if (hoop.widthMm > bounds.maxWidthMm) {
+      fail(E.TOO_WIDE, `Those boxes spread wider than we can hoop in one go (${Math.round(bounds.maxWidthMm)}mm) — bring them closer or make them smaller.`, {
         widthMm: Math.round(hoop.widthMm),
-        fieldWidthMm: FIELD_MAX_WIDTH_MM,
+        fieldWidthMm: Math.round(bounds.maxWidthMm),
       });
     }
-    if (hoop.heightMm > FIELD_MAX_HEIGHT_MM) {
-      fail(E.TOO_TALL, `Those boxes spread taller than we can hoop in one go (${FIELD_MAX_HEIGHT_MM}mm) — bring them closer or make them smaller.`, {
+    if (hoop.heightMm > bounds.maxHeightMm) {
+      fail(E.TOO_TALL, `Those boxes spread taller than we can hoop in one go (${Math.round(bounds.maxHeightMm)}mm) — bring them closer or make them smaller.`, {
         heightMm: Math.round(hoop.heightMm),
-        fieldHeightMm: FIELD_MAX_HEIGHT_MM,
+        fieldHeightMm: Math.round(bounds.maxHeightMm),
       });
     }
     const fieldWidthMm = hoop.widthMm;
@@ -466,12 +492,13 @@ export class PersonalizationService {
     // happen — between one box's spool and the next.
     const stitchEstimate = elements.reduce((sum, el) => sum + el.stitchEstimate, 0) + Math.max(0, threads.length - 1) * STITCHES_PER_COLOR_CHANGE;
 
-    // A send-in side is not banded — its price is flat — so its ceiling is
-    // the machine's, not the last band's.
+    // A send-in side is not banded — its price is flat, and the customer
+    // is free to put as much on it as the hoop holds. The estimate is still
+    // kept, for the desk's planning, but it stops nothing.
     const band = customerItem
-      ? { priceCents: 0, maxStitches: SEND_IN_MAX_STITCHES }
+      ? { priceCents: 0, maxStitches: Number.POSITIVE_INFINITY }
       : template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
-    if (!band || stitchEstimate > band.maxStitches) {
+    if (!band) {
       // Past the largest band there is no price, and inventing one would mean
       // selling a job whose machine time nobody has costed.
       //
@@ -482,7 +509,7 @@ export class PersonalizationService {
       // numbers and the actual culprit go out with the error. The culprit is
       // looked for on the heaviest box, which is where a single switch can
       // still make the difference.
-      const ceiling = customerItem ? SEND_IN_MAX_STITCHES : template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
+      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
       const heaviest = elements.reduce((a, b) => (b.stitchEstimate > a.stitchEstimate ? b : a));
       fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
         stitchEstimate,
@@ -567,13 +594,15 @@ export class PersonalizationService {
         heightMm: el.heightMm,
         weightStep: el.weightStep,
         fontWeight: el.fontWeight,
+        borderMm: el.borderMm,
         trackingPct: el.trackingPct,
+        leading: el.leading,
         kerning: el.kerning,
         curveDeg: el.curveDeg,
         isPuff: el.isPuff,
         // Path and viewBox travel with the document: retiring a motif from the
         // catalogue must not leave an ordered job with nothing to redraw.
-        motif: el.motif ? { key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, path: el.motif.path, viewBox: el.motif.viewBox } : null,
+        motif: el.motif ? { key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, heightMm: el.motif.heightMm, path: el.motif.path, viewBox: el.motif.viewBox, paths: el.motif.paths } : null,
         // Both files by key: the rendering for every later picture of this
         // design, the original for the digitiser.
         artwork: el.artwork,
@@ -636,16 +665,18 @@ export class PersonalizationService {
     ctx: {
       template: { allowText: boolean; allowMonogram: boolean };
       placement: { maxChars: number; allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number; usesCustomerPhoto?: boolean };
+      /** The most a box may measure: the hoop on a catalogue position, the photograph on the customer's own item. */
+      bounds: { maxWidthMm: number; maxHeightMm: number };
     },
   ): Promise<ResolvedElement> {
-    const { template, placement } = ctx;
+    const { template, placement, bounds } = ctx;
 
     // The customer's own logo is its own path: no words, no face, no spool —
     // the shop digitises the file as it is. Only on their own item, because
     // that is the only place the shop has agreed to digitise on demand.
     if (input.contentType === 'artwork') {
       if (!placement.usesCustomerPhoto) fail(E.CONTENT_TYPE_DISABLED, 'Your own artwork can only be embroidered on your own item.');
-      return this.resolveArtworkElement(input, placement);
+      return this.resolveArtworkElement(input, placement, bounds);
     }
 
     if (input.contentType === 'text' && !template.allowText) {
@@ -656,7 +687,10 @@ export class PersonalizationService {
     }
 
     // A motif is stitched instead of words, so it skips the whole text path.
-    const motif = input.motifKey ? await this.resolveMotif(input.motifKey, input.motifSizeMm) : null;
+    // A shape on a catalogue position is capped like any motif; on the
+    // customer's own item it may grow to the photograph.
+    const motifMax = placement.usesCustomerPhoto ? Math.min(bounds.maxWidthMm, bounds.maxHeightMm) : MOTIF_MAX_MM;
+    const motif = input.motifKey ? await this.resolveMotif(input.motifKey, input.motifSizeMm, input.motifHeightMm, motifMax, bounds.maxHeightMm) : null;
     if (input.contentType === 'motif' && !motif) fail(E.MOTIF_UNKNOWN, 'That shape is not available.');
 
     const font = await this.prisma.embroideryFont.findUnique({ where: { key: input.fontKey } });
@@ -678,11 +712,15 @@ export class PersonalizationService {
       for (const line of lines) this.assertTextIsStitchable(line, input.contentType, placement.maxChars);
     }
 
-    if (!input.threadColorId) fail(E.THREAD_UNKNOWN, 'Pick a thread colour.');
-    const [thread] = await this.resolveThreads([input.threadColorId]);
+    // A full-colour design carries its own spools; everything else is sewn in one the customer picks.
+    const ownColours = input.contentType === 'motif' && !!motif?.paths?.length;
+    if (!input.threadColorId && !ownColours) fail(E.THREAD_UNKNOWN, 'Pick a thread colour.');
+    const thread = ownColours || !input.threadColorId ? null : (await this.resolveThreads([input.threadColorId]))[0];
 
     const heightMm = round1(input.heightMm);
-    const maxHeightMm = font.maxHeightMm;
+    // A face has a height it stitches well at; on the customer's own item the
+    // customer decides, and the only ceiling is the photograph.
+    const maxHeightMm = placement.usesCustomerPhoto ? bounds.maxHeightMm : font.maxHeightMm;
     if (input.contentType !== 'motif' && (heightMm < font.minHeightMm || heightMm > maxHeightMm)) {
       fail(E.HEIGHT_OUT_OF_RANGE, `Letter height must be between ${font.minHeightMm}mm and ${maxHeightMm}mm.`, {
         minHeightMm: font.minHeightMm,
@@ -691,8 +729,13 @@ export class PersonalizationService {
     }
 
     const weight = weightForStep(input.weight);
+    // Thickness past the heaviest face: a satin border round the letters. The
+    // customer's own item is the one place it is theirs to set — and there
+    // it is bounded only like everything else on their photo.
+    const borderMm = placement.usesCustomerPhoto && input.contentType !== 'motif' ? round1(clamp(input.borderMm ?? 0, 0, bounds.maxHeightMm)) : 0;
 
     const trackingPct = round2(clamp(input.trackingPct ?? 0, TRACKING_MIN, TRACKING_MAX));
+    const leading = round2(clamp(input.leading ?? DEFAULT_LEADING, 0.8, 3));
     // One nudge per gap between glyphs on the longest line — anything the
     // browser sent beyond that describes gaps that do not exist.
     const longest = lines.reduce((a, b) => (b.length > a.length ? b : a), '');
@@ -721,13 +764,14 @@ export class PersonalizationService {
           // every line end to end — and the newlines between them — so a
           // two-line name was refused as twice its real width.
           this.estimateWidthMm(longest, heightMm, font.avgCharWidthRatio, input.contentType) * weight.widthFactor +
-          this.spacingWidthMm(longest, heightMm, trackingPct, kerning);
+          this.spacingWidthMm(longest, heightMm, trackingPct, kerning) +
+          2 * borderMm;
     // A single box has to fit the machine's largest frame on its own; the
     // whole position is checked again once every box is placed.
-    if (widthMm > FIELD_MAX_WIDTH_MM) {
-      fail(E.TOO_WIDE, `That is wider than we can embroider in one go (${FIELD_MAX_WIDTH_MM}mm) — shorten the text or reduce the size.`, {
+    if (widthMm > bounds.maxWidthMm) {
+      fail(E.TOO_WIDE, `That is wider than we can embroider in one go (${Math.round(bounds.maxWidthMm)}mm) — shorten the text or reduce the size.`, {
         widthMm: Math.round(widthMm),
-        fieldWidthMm: FIELD_MAX_WIDTH_MM,
+        fieldWidthMm: Math.round(bounds.maxWidthMm),
       });
     }
 
@@ -741,11 +785,13 @@ export class PersonalizationService {
       curveDeg,
       motif,
       contentType: input.contentType,
+      leading,
     });
-    if (stackMm > FIELD_MAX_HEIGHT_MM) {
-      fail(E.TOO_TALL, `That is taller than we can embroider in one go (${FIELD_MAX_HEIGHT_MM}mm) — fewer lines, less curve, or a smaller size.`, {
-        heightMm: Math.round(stackMm),
-        fieldHeightMm: FIELD_MAX_HEIGHT_MM,
+    const stackWithBorderMm = stackMm + 2 * borderMm;
+    if (stackWithBorderMm > bounds.maxHeightMm) {
+      fail(E.TOO_TALL, `That is taller than we can embroider in one go (${Math.round(bounds.maxHeightMm)}mm) — fewer lines, less curve, or a smaller size.`, {
+        heightMm: Math.round(stackWithBorderMm),
+        fieldHeightMm: Math.round(bounds.maxHeightMm),
       });
     }
 
@@ -779,6 +825,7 @@ export class PersonalizationService {
       hasOutline: false,
       isPuff,
       motif,
+      borderMm,
     });
 
     return {
@@ -791,15 +838,17 @@ export class PersonalizationService {
       heightMm,
       weightStep: weight.step,
       fontWeight: weight.cssWeight,
+      borderMm,
       trackingPct,
       kerning,
+      leading,
       curveDeg,
       isPuff,
       motif,
       artwork: null,
       thread,
       widthMm: round1(widthMm),
-      stackMm: round1(stackMm),
+      stackMm: round1(stackWithBorderMm),
       offsetXMm,
       offsetYMm,
       rotationDeg,
@@ -857,17 +906,17 @@ export class PersonalizationService {
   private async resolveArtworkElement(
     input: ElementInput,
     placement: { fieldWidthMm: number; fieldHeightMm: number },
+    bounds: { maxWidthMm: number; maxHeightMm: number },
   ): Promise<ResolvedElement> {
     const art = input.artworkKey ? await this.prisma.sendInArtwork.findUnique({ where: { key: input.artworkKey } }) : null;
     if (!art) fail(E.ARTWORK_UNKNOWN, 'Upload your logo first.');
 
-    const widthMm = round1(clamp(input.artworkSizeMm ?? 60, SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_MAX_MM));
-    const heightMm = round1((widthMm * art.heightPx) / Math.max(1, art.widthPx));
-    if (widthMm > FIELD_MAX_WIDTH_MM) {
-      fail(E.TOO_WIDE, `That is wider than we can embroider in one go (${FIELD_MAX_WIDTH_MM}mm) — make it smaller.`, { widthMm, fieldWidthMm: FIELD_MAX_WIDTH_MM });
-    }
-    if (heightMm > FIELD_MAX_HEIGHT_MM) {
-      fail(E.TOO_TALL, `That is taller than we can embroider in one go (${FIELD_MAX_HEIGHT_MM}mm) — make it smaller.`, { heightMm, fieldHeightMm: FIELD_MAX_HEIGHT_MM });
+    // As wide as the photograph allows — the logo may fill the picture.
+    const widthMm = round1(clamp(input.artworkSizeMm ?? 60, SEND_IN_ARTWORK_MIN_MM, bounds.maxWidthMm));
+    // The file's own proportion, unless the customer stretched it.
+    const heightMm = round1(clamp(input.artworkHeightMm ?? (widthMm * art.heightPx) / Math.max(1, art.widthPx), 1, bounds.maxHeightMm));
+    if (heightMm > bounds.maxHeightMm) {
+      fail(E.TOO_TALL, `That is taller than the photo (${Math.round(bounds.maxHeightMm)}mm) — make it smaller.`, { heightMm, fieldHeightMm: Math.round(bounds.maxHeightMm) });
     }
 
     const maxTravelX = placement.fieldWidthMm * MAX_TRAVEL_FACTOR;
@@ -884,7 +933,9 @@ export class PersonalizationService {
       heightMm,
       weightStep: 3,
       fontWeight: 400,
+      borderMm: 0,
       trackingPct: 0,
+      leading: DEFAULT_LEADING,
       kerning: null,
       curveDeg: 0,
       isPuff: false,
@@ -946,10 +997,12 @@ export class PersonalizationService {
     curveDeg: number;
     motif: ResolvedMotif | null;
     contentType: ContentType;
+    leading?: number;
   }): number {
-    if (args.contentType === 'motif') return args.motif?.sizeMm ?? 0;
+    if (args.contentType === 'motif') return args.motif?.heightMm ?? args.motif?.sizeMm ?? 0;
 
-    const stack = Math.max(1, args.lineCount) * args.heightMm * (args.lineCount > 1 ? 1.35 : 1);
+    const leading = args.leading ?? DEFAULT_LEADING;
+    const stack = Math.max(1, args.lineCount) * args.heightMm * (args.lineCount > 1 ? leading : 1);
     if (!args.curveDeg) return stack;
 
     // Sagitta of the arc — how far the middle of a bent line sits from the
@@ -964,19 +1017,29 @@ export class PersonalizationService {
     return stack + sagitta;
   }
 
-  private async resolveMotif(key: string, sizeMm?: number): Promise<ResolvedMotif | null> {
+  private async resolveMotif(key: string, sizeMm: number | undefined, heightMm: number | undefined, maxMm: number, maxHeightMm: number): Promise<ResolvedMotif | null> {
     const motif = await this.prisma.embroideryMotif.findUnique({ where: { key } });
     if (!motif?.isActive) return null;
     const size = round1(sizeMm ?? 30);
-    if (size < MOTIF_MIN_MM || size > MOTIF_MAX_MM) {
-      fail(E.MOTIF_SIZE, `A shape has to be between ${MOTIF_MIN_MM}mm and ${MOTIF_MAX_MM}mm.`);
+    if (size < MOTIF_MIN_MM || size > maxMm) {
+      fail(E.MOTIF_SIZE, `A shape has to be between ${MOTIF_MIN_MM}mm and ${Math.round(maxMm)}mm.`);
+    }
+    // Width and height are the customer's separately: the drawing's own
+    // proportion unless they stretched it one way.
+    const [, , vw, vh] = motif.viewBox.split(/\s+/).map(Number);
+    const aspect = (vh || 100) / (vw || 100);
+    const height = round1(heightMm ?? size * aspect);
+    if (height < MOTIF_MIN_MM || height > Math.max(maxMm, maxHeightMm)) {
+      fail(E.MOTIF_SIZE, `A shape has to be between ${MOTIF_MIN_MM}mm and ${Math.round(Math.max(maxMm, maxHeightMm))}mm tall.`);
     }
     return {
       key: motif.key,
       name: pickLocalized(motif.name),
       path: motif.path,
       viewBox: motif.viewBox,
+      paths: motifPaths(motif.paths),
       sizeMm: size,
+      heightMm: height,
       stitchesAt30mm: motif.stitchesAt30mm,
       colorCount: motif.colorCount,
     };
@@ -1069,15 +1132,21 @@ export class PersonalizationService {
     hasOutline: boolean;
     isPuff: boolean;
     motif: ResolvedMotif | null;
+    /** A satin border round the letters, in millimetres. */
+    borderMm?: number;
   }): number {
     const colorStitches = Math.max(0, args.colorCount - 1) * STITCHES_PER_COLOR_CHANGE;
+    // A border is a satin band the length of the letters' outline — about
+    // three times a glyph's height per glyph — at 6 stitches per mm².
+    const borderGlyphs = args.lines.join('').split('').filter((ch) => ch !== ' ').length;
+    const borderStitches = args.borderMm ? Math.ceil(borderGlyphs * args.heightMm * 3 * args.borderMm * 6) : 0;
 
     // A motif's cost was measured, not derived — it is a fixed piece of
     // artwork, so it only scales with the area it is stitched at.
     if (args.contentType === 'motif') {
       const motif = args.motif;
       if (!motif) return STITCH_BASE_OVERHEAD;
-      const areaFactor = (motif.sizeMm / 30) ** 2;
+      const areaFactor = (motif.sizeMm * (motif.heightMm || motif.sizeMm)) / (30 * 30);
       return Math.ceil(motif.stitchesAt30mm * areaFactor + colorStitches + STITCH_BASE_OVERHEAD);
     }
 
@@ -1094,7 +1163,7 @@ export class PersonalizationService {
     // A second pass round every glyph, roughly its perimeter.
     if (args.hasOutline) glyphStitches *= 1 + OUTLINE_STITCH_FACTOR;
 
-    return Math.ceil(glyphStitches + colorStitches + STITCH_BASE_OVERHEAD);
+    return Math.ceil(glyphStitches + borderStitches + colorStitches + STITCH_BASE_OVERHEAD);
   }
 
   /**
@@ -1186,21 +1255,24 @@ export class PersonalizationService {
       // The path is authored in its own viewBox, so it is scaled to the size
       // the customer chose and centred on the origin.
       const [, , vw, vh] = r.motif.viewBox.split(/\s+/).map(Number);
-      const scale = r.motif.sizeMm / Math.max(vw || 100, vh || 100);
-      const tx = -((vw || 100) * scale) / 2;
-      const ty = -((vh || 100) * scale) / 2;
-      return [
-        `<g transform="translate(${round1(tx)} ${round1(ty)}) scale(${scale.toFixed(4)})">`,
-        `<path d="${escapeXml(r.motif.path)}" fill="${escapeXml(color)}"/>`,
-        `</g>`,
-      ];
+      // Width and height scale on their own, so a stretched shape stretches.
+      const sx = r.motif.sizeMm / (vw || 100);
+      const sy = (r.motif.heightMm || r.motif.sizeMm) / (vh || 100);
+      const tx = -((vw || 100) * sx) / 2;
+      const ty = -((vh || 100) * sy) / 2;
+      // A full-colour design draws its own shapes in its own colours; a
+      // silhouette takes the box's spool.
+      const shapes = r.motif.paths?.length
+        ? r.motif.paths.map((p) => `<path d="${escapeXml(p.d)}" fill="${escapeXml(p.fill)}"/>`)
+        : [`<path d="${escapeXml(r.motif.path)}" fill="${escapeXml(color)}"/>`];
+      return [`<g transform="translate(${round1(tx)} ${round1(ty)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})">`, ...shapes, `</g>`];
     }
 
     const lines = r.lines.length ? r.lines : [r.text];
     // 1.35× leading, the same figure the height check used — a sheet that
     // stacked its lines differently from the rule that accepted them would be
     // showing the operator a design the shop never agreed to.
-    const lead = fontSizeMm * 0.72 * 1.35;
+    const lead = fontSizeMm * 0.72 * (r.leading || DEFAULT_LEADING);
     const firstY = -((lines.length - 1) * lead) / 2;
 
     // The width the design was quoted, validated and previewed at. Forcing it
@@ -1208,9 +1280,12 @@ export class PersonalizationService {
     // number — whatever font the viewer happens to render this file with.
     const lengthAttrs = r.widthMm > 0 ? ` textLength="${round1(r.widthMm)}" lengthAdjust="spacingAndGlyphs"` : '';
 
+    // The border is a stroke painted under the fill, so the letters keep
+    // their shape and grow outward by exactly the millimetres chosen.
+    const border = r.borderMm > 0 ? ` stroke="${escapeXml(color)}" stroke-width="${(2 * r.borderMm).toFixed(2)}" stroke-linejoin="round" paint-order="stroke"` : '';
     const attrs =
       `font-family="${escapeXml(r.fontName)}" font-size="${fontSizeMm.toFixed(2)}" ` +
-      `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"`;
+      `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"${border}`;
 
     return lines.map((line, i) => {
       const y = round1(firstY + i * lead);
@@ -1302,7 +1377,8 @@ export class PersonalizationService {
         el.trackingPct ? `tracking ${el.trackingPct > 0 ? '+' : ''}${Math.round(el.trackingPct * 100)}%` : null,
         el.kerning?.some((k) => k !== 0) ? 'kerned' : null,
         el.isPuff ? '3D PUFF — foam under satin' : null,
-        el.motif ? `motif "${el.motif.name}" at ${el.motif.sizeMm}mm` : null,
+        el.borderMm > 0 ? `satin border ${el.borderMm}mm round the letters` : null,
+        el.motif ? `motif "${el.motif.name}" at ${el.motif.sizeMm}×${el.motif.heightMm}mm${el.motif.paths?.length ? ` — FULL COLOUR, ${[...new Set(el.motif.paths.map((p) => p.fill))].join(' ')}` : ''}` : null,
         el.artwork ? `CUSTOMER ARTWORK "${el.artwork.name}" ${el.artwork.widthMm}×${el.artwork.heightMm}mm — digitise from the original file` : null,
         el.thread?.finish && el.thread.finish !== 'matte' ? `finish: ${el.thread.finish}` : null,
         el.offsetXMm || el.offsetYMm ? `at ${el.offsetXMm}mm, ${el.offsetYMm}mm from the hoop's centre` : 'centred in the hoop',
@@ -1467,8 +1543,10 @@ function rowToResolved(row: CartLineDesign): ResolvedPersonalization {
         path: row.motifPath ?? '',
         viewBox: row.motifViewBox ?? '0 0 100 100',
         sizeMm: row.motifSizeMm ?? 30,
+        heightMm: row.motifSizeMm ?? 30,
         stitchesAt30mm: 0,
         colorCount: 1,
+        paths: null,
       }
     : null;
   const widthMm = widthFromRow(row);
@@ -1522,16 +1600,20 @@ export function elementsFromRow(
             key: el.motif.key,
             name: el.motif.name,
             sizeMm: el.motif.sizeMm,
+            heightMm: el.motif.heightMm ?? el.motif.sizeMm,
             // Older v2 documents carried no path; the row's own motif columns
             // hold the first one, which is the best that can be done for them.
             path: el.motif.path ?? (motif?.key === el.motif.key ? motif.path : ''),
             viewBox: el.motif.viewBox ?? motif?.viewBox ?? '0 0 100 100',
+            paths: el.motif.paths ?? null,
             stitchesAt30mm: 0,
             colorCount: 1,
           }
         : null,
       artwork: (el.artwork as ResolvedArtwork | undefined) ?? null,
-      thread: (el.thread as ResolvedThread | null | undefined) ?? (el.contentType === 'artwork' ? null : (threads[0] ?? null)),
+      borderMm: el.borderMm ?? 0,
+      leading: el.leading ?? DEFAULT_LEADING,
+      thread: (el.thread as ResolvedThread | null | undefined) ?? (el.contentType === 'artwork' || el.motif?.paths?.length ? null : (threads[0] ?? null)),
       widthMm: el.widthMm ?? 0,
       stackMm: el.stackMm ?? el.heightMm,
       offsetXMm: el.offsetXMm ?? 0,
@@ -1558,6 +1640,8 @@ export function elementsFromRow(
       isPuff: row.isPuff,
       motif,
       artwork: null,
+      borderMm: 0,
+      leading: DEFAULT_LEADING,
       thread: threads[0] ?? { id: '', brand: '', code: '', name: '', hex: '#000000', finish: 'matte', priceMultiplier: 1 },
       widthMm,
       stackMm: row.heightMm,
@@ -1632,8 +1716,10 @@ interface StoredElement {
   kerning?: number[] | null;
   curveDeg?: number;
   isPuff?: boolean;
-  motif?: { key: string; name: string; sizeMm: number; path?: string; viewBox?: string } | null;
+  motif?: { key: string; name: string; sizeMm: number; heightMm?: number; path?: string; viewBox?: string; paths?: MotifPath[] | null } | null;
   artwork?: ResolvedArtwork | null;
+  borderMm?: number;
+  leading?: number;
   widthMm?: number;
   stackMm?: number;
   offsetXMm?: number;
@@ -1672,6 +1758,30 @@ function round1(n: number): number {
 }
 
 /** Two places for the spacing controls, which work in fractions of a height. */
+/**
+ * How big the customer's photograph is, in the millimetres the panel gives
+ * it: the panel's real size scaled up by the share of the picture it
+ * covers. A cap photographed close, with the front taking half the frame,
+ * is about twice the panel wide.
+ */
+function photoExtentMm(corners: { x: number; y: number }[], panel: { fieldWidthMm: number; fieldHeightMm: number }): { maxWidthMm: number; maxHeightMm: number } {
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const wShare = Math.max(1, Math.max(...xs) - Math.min(...xs)) / 100;
+  const hShare = Math.max(1, Math.max(...ys) - Math.min(...ys)) / 100;
+  return { maxWidthMm: round1(panel.fieldWidthMm / wShare), maxHeightMm: round1(panel.fieldHeightMm / hShare) };
+}
+
+/** The stored shapes of a full-colour design, or null for a silhouette — never trusting the JSON's shape. */
+function motifPaths(raw: unknown): MotifPath[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out = raw
+    .filter((p): p is { d: unknown; fill: unknown } => !!p && typeof p === 'object')
+    .filter((p) => typeof p.d === 'string' && typeof p.fill === 'string')
+    .map((p) => ({ d: p.d as string, fill: p.fill as string }));
+  return out.length ? out : null;
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

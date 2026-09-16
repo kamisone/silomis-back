@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { MAX_ELEMENTS } from '../personalization.constants';
 import {
-  SEND_IN_ARTWORK_MAX_MM,
   SEND_IN_ARTWORK_MIN_MM,
   SEND_IN_ARTWORK_PREFIX,
   SEND_IN_NOTE_MAX,
@@ -27,8 +26,8 @@ export const ElementInputSchema = z.object({
    */
   text: z.string().max(200),
   fontKey: z.string().min(1).max(80),
-  /** Cap height. Bounded again against the font and the area. */
-  heightMm: z.number().min(1).max(200),
+  /** Cap height. Bounded again against the font and the area — or, on the customer's own item, against their photograph. */
+  heightMm: z.number().min(1).max(2000),
   /**
    * The one spool this box is sewn in. A box has exactly one colour; a second
    * colour on the same position is a second box. Absent only on the
@@ -37,6 +36,12 @@ export const ElementInputSchema = z.object({
   threadColorId: z.string().uuid().optional(),
   /** How heavy the lettering is stitched, 1 (light) to 5 (extra bold). */
   weight: z.number().int().min(1).max(5).optional(),
+  /**
+   * A satin border stitched round the letters, in millimetres, on top of the
+   * weight — thickness past "extra bold". Only on the customer's own item,
+   * where the customer sets it; ignored elsewhere.
+   */
+  borderMm: z.number().min(0).max(1000).optional(),
 
   /** Letter spacing for every gap, as a fraction of cap height. */
   trackingPct: z.number().min(-1).max(2).optional(),
@@ -47,6 +52,12 @@ export const ElementInputSchema = z.object({
    */
   kerning: z.array(z.number().min(-2).max(2)).max(120).optional(),
 
+  /**
+   * Leading: how far apart stacked lines sit, as a multiple of the letter
+   * height. 1.35 is the usual embroidery leading; 1 is lines touching.
+   */
+  leading: z.number().min(0.8).max(3).optional(),
+
   /** Degrees of arc the baseline is bent along. */
   curveDeg: z.number().min(-360).max(360).optional(),
 
@@ -55,7 +66,9 @@ export const ElementInputSchema = z.object({
 
   /** A pre-digitised shape instead of lettering. */
   motifKey: z.string().min(1).max(80).optional(),
-  motifSizeMm: z.number().min(1).max(400).optional(),
+  /** The shape's width; its height follows the drawing unless `motifHeightMm` stretches it. */
+  motifSizeMm: z.number().min(1).max(2000).optional(),
+  motifHeightMm: z.number().min(1).max(2000).optional(),
 
   /**
    * The customer's own logo, on a send-in: the key the upload handed back,
@@ -68,7 +81,9 @@ export const ElementInputSchema = z.object({
     .max(300)
     .refine((k) => k.startsWith(SEND_IN_ARTWORK_PREFIX), { message: 'Not an uploaded artwork' })
     .optional(),
-  artworkSizeMm: z.number().min(SEND_IN_ARTWORK_MIN_MM).max(SEND_IN_ARTWORK_MAX_MM).optional(),
+  artworkSizeMm: z.number().min(SEND_IN_ARTWORK_MIN_MM).max(2000).optional(),
+  /** Stretches the logo to this height instead of the file's own proportion. */
+  artworkHeightMm: z.number().min(1).max(2000).optional(),
 
   /**
    * Where this box sits, in millimetres from the position's traced centre.

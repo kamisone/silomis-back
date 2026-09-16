@@ -62,7 +62,7 @@ export class PersonalizationController {
         lineCount: r.lineCount,
         hasOutline: r.hasOutline,
         isPuff: r.isPuff,
-        motif: r.motif ? { key: r.motif.key, name: r.motif.name, sizeMm: r.motif.sizeMm } : null,
+        motif: r.motif ? { key: r.motif.key, name: r.motif.name, sizeMm: r.motif.sizeMm, heightMm: r.motif.heightMm } : null,
       })),
     };
   }

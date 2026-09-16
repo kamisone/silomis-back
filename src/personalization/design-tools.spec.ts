@@ -353,7 +353,7 @@ describe('motifs', () => {
   it('draws the shape on the sheet, scaled and centred', async () => {
     const svg = await svgOf({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 40 });
     expect(svg).toContain('<path d="M10 30');
-    expect(svg).toContain('motif &quot;Heart&quot; at 40mm');
+    expect(svg).toContain('motif &quot;Heart&quot; at 40×40mm');
   });
 });
 

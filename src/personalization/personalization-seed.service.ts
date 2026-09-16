@@ -61,6 +61,14 @@ export class PersonalizationSeedService implements OnModuleInit {
       this.logger.log(`Seeded ${pending.length} embroidery font(s)`);
     }
     await this.writeMarker(SEEDED_FONTS_KEY, [...already, ...pending.map((f) => f.key)]);
+
+    // Faces seeded before web fonts existed drew with whatever the device
+    // had. Given a stylesheet once, so every phone shows the same face —
+    // never touching a row an admin has since pointed elsewhere.
+    for (const f of FONT_SEED) {
+      if (!f.webFontCss) continue;
+      await this.prisma.embroideryFont.updateMany({ where: { key: f.key, webFontCss: null }, data: { webFontCss: f.webFontCss, webFamily: f.webFamily } });
+    }
   }
 
   // ── Threads ──────────────────────────────────────────────────────────
@@ -94,6 +102,16 @@ export class PersonalizationSeedService implements OnModuleInit {
       this.logger.log(`Seeded ${pending.length} motif(s)`);
     }
     await this.writeMarker(SEEDED_MOTIFS_KEY, [...already, ...pending.map((m) => m.key)]);
+
+    // The starter shapes were seeded with English names only; the names in
+    // every language are ours to keep current (there is no admin page for
+    // them yet), as is the category the library groups them under.
+    for (const m of MOTIF_SEED) {
+      await this.prisma.embroideryMotif.updateMany({
+        where: { key: m.key },
+        data: { name: m.name, category: m.category, paths: m.paths ?? undefined, colorCount: m.colorCount ?? undefined },
+      });
+    }
   }
 
   // ── Template, placements and bands ───────────────────────────────────

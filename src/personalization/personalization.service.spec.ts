@@ -345,6 +345,43 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     expect(heavy.stitchEstimate).toBeGreaterThan(small.stitchEstimate);
   });
 
+  it('never refuses a send-in for its stitch count — the side is flat-priced and the customer decides', async () => {
+    const s = makeService();
+    // The panel is a fifth of the photo, so the photo is five panels wide — room enough.
+    const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
+    // Past every band on a catalogue cap…
+    expect(await codeOf(s.resolve('p1', design({ text: 'ABCDEFGH', heightMm: 40, weight: 5, puff: true, fontKey: 'serif-varsity' })))).toBe('PERSONALIZATION_TOO_MANY_STITCHES');
+    // …and simply a bigger job on the customer's own.
+    const r = await s.resolve('p1', design({ placementKey: 'side-1', text: 'ABCDEFGH', heightMm: 40, weight: 5, puff: true, fontKey: 'serif-varsity', customerItem }));
+    expect(r.stitchEstimate).toBeGreaterThan(9000);
+    expect(r.priceCents).toBe(990);
+  });
+
+  it('lets lettering grow past the face’s height on the customer’s own item, up to the photograph', async () => {
+    const s = makeService();
+    const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
+    // 40mm is the face's ceiling on a catalogue cap…
+    expect(await codeOf(s.resolve('p1', design({ text: 'Jo', heightMm: 80 })))).toBe('PERSONALIZATION_HEIGHT_OUT_OF_RANGE');
+    // …and just a size on the customer's own (the photo here is 125mm tall).
+    const r = await s.resolve('p1', design({ placementKey: 'side-1', text: 'Jo', heightMm: 80, customerItem }));
+    expect(r.elements[0].heightMm).toBe(80);
+    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', text: 'Jo', heightMm: 140, customerItem })))).toBe('PERSONALIZATION_HEIGHT_OUT_OF_RANGE');
+  });
+
+  it('lets a shape or a logo grow to the photograph on the customer’s own item, and no further', async () => {
+    const s = makeService();
+    // Panel a fifth of the photo each way → the photo is 400 × 125 mm in the panel's millimetres (the side's field is 80 × 25).
+    const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
+    const big = await s.resolve('p1', design({ placementKey: 'side-1', contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 110, customerItem }));
+    expect(big.elements[0].motif?.sizeMm).toBe(110);
+    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 130, customerItem })))).toBe('PERSONALIZATION_MOTIF_SIZE');
+    // A catalogue position keeps the shape cap.
+    expect(await codeOf(s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 150 })))).toBe('PERSONALIZATION_MOTIF_SIZE');
+    // A logo is clamped to the photo's width rather than refused.
+    const logo = await s.resolve('p1', design({ placementKey: 'side-1', contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/a.png', artworkSizeMm: 220, customerItem }));
+    expect(logo.elements[0].artwork?.widthMm).toBe(220);
+  });
+
   it('takes the customer’s own artwork on their item, sized by width and shaped by the file', async () => {
     const s = makeService();
     const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 30, y: 30 }, { x: 70, y: 30 }, { x: 70, y: 70 }, { x: 30, y: 70 }] };
