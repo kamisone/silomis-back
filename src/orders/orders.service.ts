@@ -11,7 +11,7 @@ import { COMMERCE_EVENTS, OrderStatusChangedEvent } from '../commerce-events/com
 import { TranslationsService } from '../translations/translations.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
 import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduct } from '../pricing/variant-price.util';
-import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
+import { CHECKOUT_RESERVATION_QUEUE, RESERVATION_TTL_MS } from '../checkout/checkout-reservation.constants';
 import { PersonalizationService } from '../personalization/personalization.service';
 import { designElementsOf } from '../personalization/design-elements';
 import { SendInService } from '../send-in/send-in.service';
@@ -294,6 +294,40 @@ export class OrdersService {
     return result;
   }
 
+  /**
+   * Gives the customer a fresh reservation window from now — called when the
+   * card form is shown, because the fifteen minutes were counted from the
+   * address step, and a careful customer reading the shipping options should
+   * not find their basket cancelled under the card form. A second timer is
+   * queued for the new deadline; the first one finds the order not yet
+   * expired and steps aside.
+   */
+  async extendReservation(orderId: string, ms = RESERVATION_TTL_MS): Promise<void> {
+    const expiresAt = new Date(Date.now() + ms);
+    await this.prisma.order.updateMany({ where: { id: orderId, status: { in: ['draft', 'awaiting_payment'] } }, data: { reservationExpiresAt: expiresAt } });
+    await this.reservationQueue
+      .add('expire-reservation', { orderId }, { jobId: `expire-${orderId}-${expiresAt.getTime()}`, delay: ms + 1000, attempts: 3, backoff: { type: 'exponential', delay: 5000 } })
+      .catch((err) => this.logger.debug(`Could not queue the extended expiry for ${orderId}: ${(err as Error).message}`));
+  }
+
+  /**
+   * An admin recording a payment that did not go through Stripe. Same path
+   * as a webhook — reservation cleared, stock committed, cart spent — and
+   * the same event, so the customer is confirmed and the desk alerted.
+   */
+  async markPaidManually(orderId: string, note?: string): Promise<Order> {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId }, select: { status: true, totalCents: true, paymentIntentId: true } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status === 'paid') return this.confirmPayment(orderId, order.paymentIntentId ?? 'manual');
+    const paid = await this.confirmPayment(orderId, order.paymentIntentId ?? `manual:${note?.trim() || 'admin'}`);
+    this.eventBus.emit(
+      COMMERCE_EVENTS.PAYMENT_SUCCEEDED,
+      { orderId, paymentIntentId: paid.paymentIntentId ?? 'manual', amountCents: order.totalCents },
+      { entityId: orderId, source: 'OrdersService.markPaidManually' },
+    );
+    return paid;
+  }
+
   // ── Confirm payment (idempotent — target for the future Stripe webhook) ──
 
   async confirmPayment(orderId: string, paymentIntentId: string): Promise<Order> {
@@ -303,12 +337,35 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.status === 'paid') return order; // idempotent
 
+    // The money arrived after the reservation timer had cancelled the order
+    // — a slow 3-D Secure, a webhook that took a while, a customer who left
+    // the card form open. The payment is real, so the order comes back: the
+    // stock is reserved again (it was released on cancel) and the order
+    // rejoins the flow at awaiting_payment, from where it is paid below.
+    // Anything cancelled by a person stays cancelled and is left to them.
+    if (order.status === 'cancelled') {
+      const last = await this.prisma.orderStatusHistory.findFirst({ where: { orderId }, orderBy: { createdAt: 'desc' } });
+      const byTimeout = !!last && last.toStatus === 'cancelled' && !last.adminId && /Reservation expired/.test(last.note ?? '');
+      if (!byTimeout) throw new BadRequestException('Payment received for an order that was cancelled by hand — refund it or restore it manually');
+      await this.prisma.$transaction(async (tx) => {
+        const items = await tx.orderItem.findMany({ where: { orderId } });
+        for (const item of items) if (item.variantId) await this.inventory.reserveForOrder(item.variantId, item.quantity, orderId, tx);
+        await tx.order.update({ where: { id: orderId }, data: { status: 'awaiting_payment' } });
+        await tx.orderStatusHistory.create({
+          data: { orderId, fromStatus: 'cancelled', toStatus: 'awaiting_payment', note: 'Payment arrived after the reservation timed out — order restored' },
+        });
+      });
+      this.logger.warn(`Order ${order.orderNumber} was cancelled by the reservation timeout but its payment succeeded — restored`);
+    }
+
     await this.prisma.order.update({
       where: { id: orderId },
       data: { paymentIntentId },
     });
 
-    // Cancel the pending reservation-expiry job — order is paid, no need to expire it.
+    // Cancel the pending reservation-expiry job — order is paid, no need to
+    // expire it. (An extended timer, if any, finds the order paid and steps
+    // aside on its own.)
     this.reservationQueue.remove(`expire-${orderId}`).catch((err) => this.logger.debug(`Could not remove expiry job for ${orderId}: ${(err as Error).message}`));
 
     // Draft orders skipped the awaiting_payment step — transition through it.

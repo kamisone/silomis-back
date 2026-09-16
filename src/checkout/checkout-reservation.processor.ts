@@ -2,10 +2,11 @@ import { Logger } from '@nestjs/common';
 import { Processor } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { ShopPaymentService } from '../payments/shop-payment.service';
 import { DlqAwareWorker } from '../dlq/dlq-aware.worker';
 import { DlqService } from '../dlq/dlq.service';
 import { OrdersService } from '../orders/orders.service';
-import { CHECKOUT_RESERVATION_QUEUE, ReservationExpiryJobData } from './checkout-reservation.constants';
+import { CHECKOUT_RESERVATION_QUEUE, RESERVATION_GRACE_MS, ReservationExpiryJobData } from './checkout-reservation.constants';
 import { OrderStatus } from '../../generated/prisma/client';
 
 // Statuses that still hold reserved inventory and can be timed out.
@@ -20,6 +21,7 @@ export class CheckoutReservationProcessor extends DlqAwareWorker {
     dlqService: DlqService,
     private readonly prisma: PrismaService,
     private readonly ordersService: OrdersService,
+    private readonly payment: ShopPaymentService,
   ) {
     super(dlqService);
   }
@@ -39,6 +41,24 @@ export class CheckoutReservationProcessor extends DlqAwareWorker {
     if (order.reservationExpiresAt && order.reservationExpiresAt > now) {
       this.logger.log(`Order ${orderId} reservation not yet expired — skipping`);
       return;
+    }
+
+    // Before letting stock go, ask Stripe: a card that was authorising as
+    // the timer ran out is a sale, not a timeout. `succeeded` has already
+    // settled the order by the time this returns; `processing` gets another
+    // wait.
+    if (order.paymentIntentId) {
+      const state = await this.payment.intentState(orderId);
+      if (state === 'succeeded') {
+        this.logger.log(`Order ${orderId}: paid as the reservation ran out — settled instead of cancelled`);
+        return;
+      }
+      if (state === 'processing') {
+        this.logger.log(`Order ${orderId}: payment still in flight — reservation kept for another ${RESERVATION_GRACE_MS / 60_000} min`);
+        await this.prisma.order.update({ where: { id: orderId }, data: { reservationExpiresAt: new Date(now.getTime() + RESERVATION_GRACE_MS) } });
+        await job.moveToDelayed(Date.now() + RESERVATION_GRACE_MS, job.token);
+        return;
+      }
     }
 
     this.logger.log(`Reservation timeout: cancelling ${order.status} order ${orderId}`);

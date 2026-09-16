@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { PaymentsModule } from '../payments/payments.module';
 import { OrdersModule } from '../orders/orders.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { CustomersModule } from '../customers/customers.module';
@@ -16,7 +17,7 @@ import { CheckoutSessionCleanupService } from './checkout-session-cleanup.servic
 import { CheckoutReservationProcessor } from './checkout-reservation.processor';
 
 @Module({
-  imports: [OrdersModule, InventoryModule, CustomersModule, ShippingModule, PromotionsModule, DlqModule, PersonalizationModule, SendInModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
+  imports: [OrdersModule, PaymentsModule, InventoryModule, CustomersModule, ShippingModule, PromotionsModule, DlqModule, PersonalizationModule, SendInModule, BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE })],
   controllers: [CheckoutController],
   providers: [CheckoutService, CheckoutSessionService, CheckoutSessionCleanupService, CheckoutReservationProcessor],
   exports: [CheckoutService, CheckoutSessionService],

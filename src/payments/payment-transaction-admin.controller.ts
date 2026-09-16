@@ -15,6 +15,12 @@ export class PaymentTransactionAdminController {
     return this.payment.refundOrder(orderId, amountCents);
   }
 
+  /** "Check with Stripe": settles an order Stripe has been paid for but the webhook never confirmed. */
+  @Post(':orderId/reconcile')
+  async reconcile(@Param('orderId') orderId: string) {
+    return (await this.payment.reconcileOrder(orderId)) ?? { status: null, reconciled: false };
+  }
+
   @Get()
   async list(@Query('type') type?: PaymentTransactionType, @Query('status') status?: PaymentTransactionStatus, @Query('orderId') orderId?: string, @Query('limit') limit = '50', @Query('offset') offset = '0') {
     const where: Prisma.PaymentTransactionWhereInput = {
