@@ -79,17 +79,27 @@ import { PageContentModule } from './page-content/page-content.module';
     // connect to Redis with no password. The factory runs at bootstrap instead.
     ThrottlerModule.forRootAsync({
       useFactory: () => ({
-        throttlers: [
-          { name: 'auth', ttl: 15 * 60 * 1000, limit: 10 },
-          { name: 'contact', ttl: 15 * 60 * 1000, limit: 5 },
-        ],
+        // ONE bucket, deliberately. The guard checks every registered
+        // bucket against every throttled route, so a second name here would
+        // silently apply its limit to routes that never asked for it — which
+        // is how the order tracking page ended up on the contact form's
+        // 5-per-15-minutes. Per-route numbers come from `@RateLimit`
+        // (src/common/throttling/rate-limit.decorator.ts); counters are
+        // already keyed per route by the guard, so nothing is shared.
+        //
+        // These are the fallback numbers for a route that carries the guard
+        // but names none of its own — deliberately strict, so forgetting
+        // `@Throttle` fails safe.
+        throttlers: [{ ttl: 15 * 60 * 1000, limit: 10 }],
         storage: new ThrottlerStorageRedisService(
           new Redis({
             ...baseRedisOptions(),
             keyPrefix: 'throttle:',
             // Bounded so a Redis outage fails the throttler check quickly
             // instead of parking the request until the client reconnects.
-            commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS ?? 1_000),
+            commandTimeout: Number(
+              process.env.REDIS_COMMAND_TIMEOUT_MS ?? 1_000,
+            ),
           }),
         ),
       }),

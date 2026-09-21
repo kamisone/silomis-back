@@ -16,9 +16,18 @@ import { PersonalizationService } from '../personalization/personalization.servi
 import { designElementsOf } from '../personalization/design-elements';
 import { SendInService } from '../send-in/send-in.service';
 import { CreateOrderDto, OrderListFilter } from './dto/order.dto';
+import { secretsMatch } from './order-access.constants';
 import { CartItem, Order, OrderItemPersonalization, OrderStatus, Prisma } from '../../generated/prisma/client';
 
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
+
+/** How a public caller proves an order is theirs — see OrderAccessService. */
+export interface OrderTrackAuth {
+  token?: string;
+  email?: string;
+  /** Order id carried by a grant this API signed and has already verified. */
+  grantedOrderId?: string;
+}
 
 // ── State machine ─────────────────────────────────────────────────────────
 
@@ -439,8 +448,19 @@ export class OrdersService {
   }
 
   /** Proof-of-ownership for a guest order: the tracking token, or a matching email. */
-  private isAuthorized(order: Order, auth: { token?: string; email?: string }): boolean {
-    return !!((auth.token && order.trackingToken === auth.token) || (auth.email && order.customerEmail.toLowerCase() === auth.email.toLowerCase()));
+  /**
+   * Whether `auth` proves ownership of `order`.
+   *
+   * `grantedOrderId` comes from a grant this API signed itself
+   * (OrderAccessService), so it is accepted on sight — re-deriving it would
+   * mean asking the visitor to keep resending the credential it replaced.
+   */
+  private isAuthorized(order: Order, auth: OrderTrackAuth): boolean {
+    if (auth.grantedOrderId && auth.grantedOrderId === order.id) return true;
+    return !!(
+      (auth.token && order.trackingToken && secretsMatch(auth.token, order.trackingToken)) ||
+      (auth.email && order.customerEmail.toLowerCase() === auth.email.toLowerCase())
+    );
   }
 
   /**
@@ -449,7 +469,7 @@ export class OrdersService {
    * Returns null on ANY failure (never throws) so callers can return one
    * identical "not verified" response regardless of which check failed.
    */
-  async verifyOrderForReview(orderNumber: string, productId: string, auth: { token?: string; email?: string }) {
+  async verifyOrderForReview(orderNumber: string, productId: string, auth: OrderTrackAuth) {
     const order = await this.prisma.order.findUnique({
       where: { orderNumber },
       include: { items: true },
@@ -464,7 +484,7 @@ export class OrdersService {
     return { order, orderItem };
   }
 
-  async trackOrder(orderNumber: string, auth: { token?: string; email?: string }, lang?: string) {
+  async trackOrder(orderNumber: string, auth: OrderTrackAuth, lang?: string) {
     const order = await this.prisma.order.findUnique({
       where: { orderNumber },
       include: {

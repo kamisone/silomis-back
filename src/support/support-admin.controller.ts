@@ -3,15 +3,26 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  NotFoundException,
   Param,
   Patch,
+  Post,
   Query,
-  HttpCode,
   Req,
+  UploadedFiles,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { Request } from 'express';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { SupportConversationsService } from './support-conversations.service';
+import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_FILES,
+  SupportAttachmentsService,
+} from './support-attachments.service';
+import { SupportSenderType } from '../../generated/prisma/client';
 import { SupportNotificationService } from './support-notification.service';
 import { SupportGateway } from './support.gateway';
 import {
@@ -32,6 +43,7 @@ function adminId(req: Request): string | undefined {
 export class SupportAdminController {
   constructor(
     private readonly convService: SupportConversationsService,
+    private readonly attachments: SupportAttachmentsService,
     private readonly notifService: SupportNotificationService,
     private readonly gateway: SupportGateway,
   ) {}
@@ -113,6 +125,102 @@ export class SupportAdminController {
   async delete(@Param('id') id: string, @Req() req: Request) {
     await this.convService.deleteConversation(id, adminId(req));
     this.gateway.emitConversationUpdate(id, { deleted: true });
+  }
+
+  /**
+   * Orders with unread customer messages — the Orders menu badge, and the
+   * markers in the orders list.
+   *
+   * `ids` narrows it to one page of the list; without it the answer is just
+   * the total, which is what the sidebar needs.
+   */
+  @Get('orders/unread')
+  async ordersUnread(@Query('ids') ids?: string) {
+    const orderIds = (ids ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 200);
+    const [count, byOrder] = await Promise.all([
+      this.convService.countOrdersWithUnread(),
+      this.convService.unreadByOrderId(orderIds),
+    ]);
+    return { count, byOrder };
+  }
+
+  /**
+   * The shop's reply, carrying images.
+   *
+   * Mirrors the customer's endpoint, including why it is one request: no
+   * storage key ever reaches a client, so none can be sent back.
+   */
+  @Post('orders/:orderId/attachments')
+  @HttpCode(201)
+  @UseInterceptors(
+    FilesInterceptor('images', ATTACHMENT_MAX_FILES, {
+      limits: { fileSize: ATTACHMENT_MAX_BYTES, files: ATTACHMENT_MAX_FILES },
+    }),
+  )
+  async sendOrderAttachments(
+    @Param('orderId') orderId: string,
+    @Req() req: { user?: { id?: string } },
+    @UploadedFiles() files: Express.Multer.File[] = [],
+    @Body('content') content = '',
+  ) {
+    if (files.length === 0) throw new NotFoundException('Nothing to send');
+    const stored = await this.attachments.upload(files);
+    const adminId = req.user?.id;
+
+    const existing = await this.convService.getByOrderId(orderId);
+    if (existing) {
+      const message = await this.convService.addMessage(
+        existing.id,
+        SupportSenderType.admin,
+        content,
+        adminId,
+        undefined,
+        stored,
+      );
+      const conv = await this.convService.getByIdOrNull(existing.id);
+      const [withUrls] = await this.convService.withAttachmentUrls([message]);
+      if (conv) this.gateway.publishMessage(conv, withUrls);
+      return withUrls;
+    }
+
+    const { conversation, message } =
+      await this.convService.createOrderConversationWithFirstMessage(
+        orderId,
+        undefined,
+        SupportSenderType.admin,
+        content,
+        adminId,
+        undefined,
+        stored,
+      );
+    const [withUrls] = await this.convService.withAttachmentUrls([message]);
+    this.gateway.publishMessage(conversation, withUrls, true);
+    return withUrls;
+  }
+
+  /**
+   * An order's thread, for the Messages tab on the order page.
+   *
+   * Null when nobody has written yet — the normal state, not an error. The
+   * thread opens on the first message from either side.
+   */
+  @Get('orders/:orderId/conversation')
+  async orderConversation(@Param('orderId') orderId: string) {
+    const conversation = await this.convService.getByOrderId(orderId);
+    if (!conversation) {
+      return { conversationId: null, status: null, messages: [] };
+    }
+    const messages = await this.convService.messagesFor(conversation.id);
+    return {
+      conversationId: conversation.id,
+      status: conversation.status,
+      unreadAdminCount: conversation.unreadAdminCount,
+      messages,
+    };
   }
 
   @Get('settings')

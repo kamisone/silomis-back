@@ -96,6 +96,52 @@ export class SupportGateway
     }
   }
 
+  /**
+   * Tells the support inbox about a conversation — unless it is an order's.
+   *
+   * The inbox lists the storefront widget's conversations only (see
+   * SupportConversationsService.listForAdmin), so pushing an order thread's
+   * `conversation:new` or `:update` at it would insert a row that a reload
+   * then makes disappear. Order threads are watched on the order page, which
+   * joins their room directly and listens for `message:new`.
+   */
+  private notifyInbox(
+    conversation: { orderId: string | null },
+    event: string,
+    payload: unknown,
+  ): void {
+    if (conversation.orderId) return;
+    this.server.to('admin').emit(event, payload);
+  }
+
+  /**
+   * Emits to everyone in a conversation, including the customer sockets that
+   * connected before the conversation existed.
+   *
+   * An order's tab opens a socket whether or not anyone has written yet, so on
+   * an order with no thread there is no `conv:` room for it to be in. If the
+   * shop then writes first, emitting only to `conv:<id>` reaches nobody and
+   * the customer sees the message on their next reload — which, on the one
+   * side of this that is a person waiting for an answer, is the worst place to
+   * lose one. Order sockets therefore also sit in a room keyed by the order,
+   * which exists from the moment they connect.
+   *
+   * socket.io delivers once per socket across both rooms, so a customer in
+   * each does not receive the message twice.
+   */
+  private emitToConversation(
+    conversation: { id: string; orderId: string | null },
+    event: string,
+    payload: unknown,
+  ): void {
+    const target = conversation.orderId
+      ? this.server
+          .to(`conv:${conversation.id}`)
+          .to(`order:${conversation.orderId}`)
+      : this.server.to(`conv:${conversation.id}`);
+    target.emit(event, payload);
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   async handleConnection(socket: Socket): Promise<void> {
@@ -123,20 +169,38 @@ export class SupportGateway
       return;
     }
 
-    // ── Guest (signed short-lived ticket containing guestToken) ───────────────
-    // Conversation is NOT created here — it is created lazily on first message:send.
+    // ── Guest (signed short-lived ticket) ─────────────────────────────────────
+    // Two kinds arrive here. The storefront widget's ticket names a
+    // `guestToken` — a cookie the visitor holds. An order thread's ticket names
+    // an `orderId` instead, because its guestToken is an internal join key the
+    // customer never sees; they proved themselves to the HTTP endpoint that
+    // minted this ticket (see SupportOrderController) and the ticket is the
+    // only thing that reaches the socket.
+    //
+    // Conversation is NOT created here in either case — it is created lazily
+    // on first message:send.
     if (guestTicket) {
       try {
         const payload = this.jwtService.verify<{
-          guestToken: string;
+          guestToken?: string;
+          orderId?: string;
           purpose: string;
         }>(guestTicket);
         if (payload.purpose !== 'guest-ws') throw new Error('wrong purpose');
 
-        const guestToken = payload.guestToken;
-        const conversation = await this.convService.getByGuestToken(guestToken);
+        const conversation = payload.orderId
+          ? await this.convService.getByOrderId(payload.orderId)
+          : payload.guestToken
+            ? await this.convService.getByGuestToken(payload.guestToken)
+            : null;
+        if (!payload.orderId && !payload.guestToken) {
+          throw new Error('ticket names neither an order nor a guest');
+        }
 
-        socket.data.guestToken = guestToken;
+        socket.data.guestToken = payload.guestToken ?? conversation?.guestToken;
+        socket.data.orderId = payload.orderId;
+        // Joined whether or not a thread exists yet — see emitToConversation.
+        if (payload.orderId) await socket.join(`order:${payload.orderId}`);
         if (conversation) {
           socket.data.conversationId = conversation.id;
           await socket.join(`conv:${conversation.id}`);
@@ -187,7 +251,11 @@ export class SupportGateway
     clientId?: string;
     error?: string;
   }> {
-    if (!socket.data.guestToken) return { ok: false, error: 'NOT_JOINED' };
+    // An order socket may legitimately have no guestToken yet: the thread it
+    // belongs to has not been created, so there is nothing to have joined.
+    if (!socket.data.guestToken && !socket.data.orderId) {
+      return { ok: false, error: 'NOT_JOINED' };
+    }
     if (!(await this.checkRate(socket.id)))
       return { ok: false, error: 'RATE_LIMITED' };
 
@@ -197,21 +265,30 @@ export class SupportGateway
     // ── First message: create conversation lazily ──────────────────────────────
     if (!socket.data.conversationId) {
       try {
-        const { conversation, message } =
-          await this.convService.createConversationWithFirstMessage(
-            socket.data.guestToken,
-            data.guestName,
-            content,
-            data.clientId,
-            data.pageUrl,
-            data.checkoutProducts,
-          );
+        const { conversation, message } = socket.data.orderId
+          ? await this.convService.createOrderConversationWithFirstMessage(
+              socket.data.orderId,
+              data.guestName,
+              SupportSenderType.guest,
+              content,
+              undefined,
+              data.clientId,
+            )
+          : await this.convService.createConversationWithFirstMessage(
+              socket.data.guestToken,
+              data.guestName,
+              content,
+              data.clientId,
+              data.pageUrl,
+              data.checkoutProducts,
+            );
+        socket.data.guestToken = conversation.guestToken;
         socket.data.conversationId = conversation.id;
         await socket.join(`conv:${conversation.id}`);
 
-        this.server.to('admin').emit('conversation:new', conversation);
-        this.server.to(`conv:${conversation.id}`).emit('message:new', message);
-        this.server.to('admin').emit('conversation:update', {
+        this.notifyInbox(conversation, 'conversation:new', conversation);
+        this.emitToConversation(conversation, 'message:new', message);
+        this.notifyInbox(conversation, 'conversation:update', {
           id: conversation.id,
           unreadAdminCount: conversation.unreadAdminCount,
           lastMessageAt: conversation.lastMessageAt,
@@ -233,9 +310,9 @@ export class SupportGateway
         data.clientId,
       );
 
-      const conv = await this.convService.getByGuestToken(
-        socket.data.guestToken,
-      );
+      const conv = socket.data.orderId
+        ? await this.convService.getByOrderId(socket.data.orderId)
+        : await this.convService.getByGuestToken(socket.data.guestToken);
 
       // Persist guest name if it is newly provided and not yet stored
       const nameUpdate: Record<string, unknown> = {};
@@ -247,10 +324,8 @@ export class SupportGateway
         nameUpdate.guestName = data.guestName;
       }
 
-      this.server
-        .to(`conv:${socket.data.conversationId}`)
-        .emit('message:new', message);
-      this.server.to('admin').emit('conversation:update', {
+      if (conv) this.emitToConversation(conv, 'message:new', message);
+      this.notifyInbox(conv ?? { orderId: null }, 'conversation:update', {
         id: socket.data.conversationId,
         unreadAdminCount: conv?.unreadAdminCount ?? 1,
         lastMessageAt: message.createdAt,
@@ -325,10 +400,8 @@ export class SupportGateway
         data.conversationId,
       );
 
-      this.server
-        .to(`conv:${data.conversationId}`)
-        .emit('message:new', message);
-      this.server.to('admin').emit('conversation:update', {
+      this.emitToConversation(conversation, 'message:new', message);
+      this.notifyInbox(conversation, 'conversation:update', {
         id: data.conversationId,
         unreadGuestCount: conversation.unreadGuestCount,
         lastMessageAt: message.createdAt,
@@ -336,6 +409,123 @@ export class SupportGateway
       });
 
       return { ok: true, message, clientId: data.clientId };
+    } catch {
+      return { ok: false, error: 'SERVER_ERROR' };
+    }
+  }
+
+  /**
+   * Publishes a message that was created over HTTP rather than on the socket —
+   * the attachment upload. Same broadcast the socket paths do, so an image
+   * lands on the other side exactly like a line of text.
+   */
+  publishMessage(
+    conversation: {
+      id: string;
+      orderId: string | null;
+      unreadAdminCount: number;
+      unreadGuestCount: number;
+      lastMessageAt: Date | null;
+      status: string;
+    },
+    message: unknown,
+    isNewConversation = false,
+  ): void {
+    if (isNewConversation) {
+      this.notifyInbox(conversation, 'conversation:new', conversation);
+    }
+    this.emitToConversation(conversation, 'message:new', message);
+    this.notifyInbox(conversation, 'conversation:update', {
+      id: conversation.id,
+      unreadAdminCount: conversation.unreadAdminCount,
+      unreadGuestCount: conversation.unreadGuestCount,
+      lastMessageAt: conversation.lastMessageAt,
+      status: conversation.status,
+    });
+  }
+
+  // ── Admin: send on an order's thread, opening it if needed ─────────────────
+
+  /**
+   * The admin's equivalent of the customer's first message.
+   *
+   * `admin:message:send` needs a conversation to exist. An order usually has
+   * none — threads are created by whoever writes first — so the shop needs a
+   * way to open one, and this is it: same lazy creation as the guest path,
+   * keyed by order rather than by conversation.
+   */
+  @SubscribeMessage('admin:order:message:send')
+  async handleAdminOrderMessage(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody()
+    data: { orderId: string; content: string; clientId?: string },
+  ): Promise<{
+    ok: boolean;
+    message?: unknown;
+    conversationId?: string;
+    clientId?: string;
+    error?: string;
+  }> {
+    if (!socket.data.adminId) return { ok: false, error: 'FORBIDDEN' };
+    if (!(await this.checkRate(socket.id)))
+      return { ok: false, error: 'RATE_LIMITED' };
+
+    const content = sanitize(data?.content ?? '');
+    if (!content) return { ok: false, error: 'EMPTY_MESSAGE' };
+    if (!data?.orderId) return { ok: false, error: 'MISSING_ID' };
+
+    try {
+      const existing = await this.convService.getByOrderId(data.orderId);
+
+      if (existing) {
+        const message = await this.convService.addMessage(
+          existing.id,
+          SupportSenderType.admin,
+          content,
+          socket.data.adminId,
+          data.clientId,
+        );
+        const { conversation } = await this.convService.getByIdForAdmin(
+          existing.id,
+        );
+        this.emitToConversation(existing, 'message:new', message);
+        this.notifyInbox(existing, 'conversation:update', {
+          id: existing.id,
+          unreadGuestCount: conversation.unreadGuestCount,
+          lastMessageAt: message.createdAt,
+          status: conversation.status,
+        });
+        return {
+          ok: true,
+          message,
+          conversationId: existing.id,
+          clientId: data.clientId,
+        };
+      }
+
+      const { conversation, message } =
+        await this.convService.createOrderConversationWithFirstMessage(
+          data.orderId,
+          undefined,
+          SupportSenderType.admin,
+          content,
+          socket.data.adminId,
+          data.clientId,
+        );
+
+      // The sender's own socket is not in the room yet — it joins on the way
+      // out, so the round trip's ack is what puts this message on their screen
+      // and the broadcast reaches everyone else.
+      await socket.join(`conv:${conversation.id}`);
+      this.notifyInbox(conversation, 'conversation:new', conversation);
+      this.emitToConversation(conversation, 'message:new', message);
+
+      return {
+        ok: true,
+        message,
+        conversationId: conversation.id,
+        clientId: data.clientId,
+      };
     } catch {
       return { ok: false, error: 'SERVER_ERROR' };
     }
@@ -383,13 +573,19 @@ export class SupportGateway
       messageIds: read.messageIds,
     };
 
-    // Participants in the chat room see the indicator immediately
-    this.server.to(`conv:${conversationId}`).emit('messages:seen', payload);
-    // All admin connections receive it too — covers admins in list view only
-    this.server.to('admin').emit('messages:seen', payload);
+    // Participants in the chat room see the indicator immediately. Routed
+    // through emitToConversation so an order's customer — who may be in the
+    // order room and not yet in the conversation room — is reached too.
+    const conv = await this.convService.getByIdOrNull(conversationId);
+    if (conv) this.emitToConversation(conv, 'messages:seen', payload);
+    else
+      this.server.to(`conv:${conversationId}`).emit('messages:seen', payload);
+
+    // All admin connections receive it too — covers admins in list view only.
+    this.notifyInbox(conv ?? { orderId: null }, 'messages:seen', payload);
 
     // Keep unread counters in sync
-    this.server.to('admin').emit('conversation:update', {
+    this.notifyInbox(conv ?? { orderId: null }, 'conversation:update', {
       id: conversationId,
       ...(readerType === 'admin'
         ? { unreadAdminCount: 0 }

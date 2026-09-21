@@ -2,15 +2,21 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { randomUUID } from 'crypto';
 import {
   Prisma,
   SupportConversation,
+  SupportConversationKind,
   SupportConversationStatus,
   SupportMessage,
   SupportSenderType,
   AuditAction,
 } from '../../generated/prisma/client';
 import { SUPPORT_QUEUE, MAX_MESSAGE_LENGTH } from './support.constants';
+import {
+  StoredAttachment,
+  SupportAttachmentsService,
+} from './support-attachments.service';
 
 function sanitize(raw: string): string {
   return raw
@@ -71,6 +77,7 @@ export class SupportConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(SUPPORT_QUEUE) private readonly notifQueue: Queue,
+    private readonly attachmentsService: SupportAttachmentsService,
   ) {}
 
   // ── Guest bootstrap ────────────────────────────────────────────────────────
@@ -146,9 +153,106 @@ export class SupportConversationsService {
     return { conversation: updated, message };
   }
 
+  // ── Order threads ──────────────────────────────────────────────────────────
+
+  /**
+   * The conversation about `orderId`, or null when nobody has written yet.
+   *
+   * Null is the normal state and is deliberately not "create one": a thread is
+   * made on the first message, not when a customer opens the tracking page.
+   * Creating one per order would fill the inbox with empty conversations and
+   * make every unread count and response-time average meaningless.
+   */
+  async getByOrderId(orderId: string): Promise<SupportConversation | null> {
+    return this.prisma.supportConversation.findUnique({ where: { orderId } });
+  }
+
+  /**
+   * Opens the thread for an order with its first message.
+   *
+   * `guestToken` is minted here rather than supplied: for an order thread it
+   * is an internal join key for the websocket gateway, never a credential the
+   * customer holds — they authenticate with their order grant and are handed a
+   * short-lived ticket. Randomly generated so it cannot be derived from
+   * anything the customer can see.
+   *
+   * Races are possible — two tabs, or the customer and an admin writing at the
+   * same instant — and `orderId` is unique, so a lost race is resolved by
+   * using the row the winner made rather than by failing the message.
+   */
+  async createOrderConversationWithFirstMessage(
+    orderId: string,
+    guestName: string | undefined,
+    senderType: SupportSenderType,
+    content: string,
+    senderId?: string,
+    clientId?: string,
+    attachments?: StoredAttachment[],
+  ): Promise<{
+    conversation: SupportConversation;
+    message: MessageWithClientId;
+  }> {
+    let conversation: SupportConversation;
+    try {
+      conversation = await this.prisma.supportConversation.create({
+        data: {
+          kind: SupportConversationKind.order,
+          orderId,
+          guestToken: randomUUID(),
+          guestName: guestName ?? null,
+          status: SupportConversationStatus.waiting_admin,
+        },
+      });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        conversation = await this.prisma.supportConversation.findUniqueOrThrow({
+          where: { orderId },
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    const message = await this.addMessage(
+      conversation.id,
+      senderType,
+      content,
+      senderId,
+      clientId,
+      attachments,
+    );
+    const updated = await this.prisma.supportConversation.findUniqueOrThrow({
+      where: { id: conversation.id },
+    });
+    return { conversation: updated, message };
+  }
+
+  /** The thread's messages, oldest first — the order chat's bootstrap. */
+  async messagesFor(
+    conversationId: string,
+    since?: string,
+  ): Promise<SupportMessage[]> {
+    const messages = await this.prisma.supportMessage.findMany({
+      where: {
+        conversationId,
+        ...(since ? { createdAt: { gt: new Date(since) } } : {}),
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+    return this.withAttachmentUrls(messages);
+  }
+
+  /** Conversations with unread messages — the Support menu's badge. */
   async countConvsWithUnread(): Promise<number> {
     return this.prisma.supportConversation.count({
-      where: { unreadAdminCount: { gt: 0 } },
+      where: {
+        kind: SupportConversationKind.general,
+        unreadAdminCount: { gt: 0 },
+      },
     });
   }
 
@@ -170,10 +274,21 @@ export class SupportConversationsService {
     rawContent: string,
     senderId?: string,
     clientId?: string,
+    attachments?: StoredAttachment[],
   ): Promise<MessageWithClientId> {
     const content = sanitize(rawContent);
     const message = await this.prisma.supportMessage.create({
-      data: { conversationId, senderType, content, senderId: senderId ?? null },
+      data: {
+        conversationId,
+        senderType,
+        content,
+        senderId: senderId ?? null,
+        // Keys, never URLs: a signed URL expires in an hour, so storing one
+        // would leave every message older than that pointing at nothing.
+        attachments: attachments?.length
+          ? (attachments as unknown as Prisma.InputJsonValue)
+          : undefined,
+      },
     });
 
     const now = new Date();
@@ -276,7 +391,15 @@ export class SupportConversationsService {
     limit?: number;
     offset?: number;
   }): Promise<{ conversations: SupportConversation[]; total: number }> {
-    const where: Prisma.SupportConversationWhereInput = {};
+    // The support inbox is the storefront widget's, and only that. An order's
+    // thread belongs to its order and is read on the order page: it has a
+    // named customer, a paid basket and a delivery behind it, none of which
+    // this list can show, and mixing the two would bury a pre-sales question
+    // under order traffic. Everything support counts — unread, response time,
+    // the sidebar badge — follows the same rule.
+    const where: Prisma.SupportConversationWhereInput = {
+      kind: SupportConversationKind.general,
+    };
 
     // Exclude archived from default listing
     if (filters.status === 'archived') {
@@ -422,6 +545,14 @@ export class SupportConversationsService {
 
     const convs = await this.prisma.supportConversation.findMany({
       where: {
+        // Order threads are never idle-closed. The sweep exists for the
+        // storefront widget, where a stranger who stopped replying has gone
+        // and the thread is dead. An order thread is the opposite: a customer
+        // waiting on a parcel goes quiet for days precisely because there is
+        // nothing to say yet, and closing it out from under them — with a
+        // system message in the transcript — would be wrong on a record that
+        // is commercial correspondence. They close when the order does.
+        kind: SupportConversationKind.general,
         status: { in: staleStatuses },
         archivedAt: null,
         OR: [
@@ -465,10 +596,86 @@ export class SupportConversationsService {
 
   async getUnreadCount(): Promise<number> {
     const result = await this.prisma.supportConversation.aggregate({
-      where: { archivedAt: null },
+      where: { kind: SupportConversationKind.general, archivedAt: null },
       _sum: { unreadAdminCount: true },
     });
     return result._sum.unreadAdminCount ?? 0;
+  }
+
+  /**
+   * Signs the attachments on a batch of messages.
+   *
+   * Every read path goes through this — the customer's history, the admin's,
+   * and the inbox — because the rows carry storage keys and a client can do
+   * nothing with those. One batched call per request, not one per image.
+   */
+  async withAttachmentUrls<T extends { attachments: unknown }>(
+    messages: T[],
+  ): Promise<T[]> {
+    const all = messages.flatMap((m) =>
+      Array.isArray(m.attachments) ? (m.attachments as StoredAttachment[]) : [],
+    );
+    if (all.length === 0) return messages;
+
+    const resolved = await this.attachmentsService.resolve(all);
+    const byKey = new Map(resolved.map((a) => [a.key, a]));
+    return messages.map((m) =>
+      Array.isArray(m.attachments)
+        ? {
+            ...m,
+            attachments: (m.attachments as StoredAttachment[]).map(
+              (a) => byKey.get(a.key) ?? a,
+            ),
+          }
+        : m,
+    );
+  }
+
+  // ── Order-thread counts (the admin's Orders badge) ─────────────────────
+
+  /**
+   * How many orders have messages the shop has not read.
+   *
+   * Counted in orders, not messages: the badge answers "how many orders want
+   * my attention", and a customer who sent four lines in a row is still one
+   * order to open. Mirrors countConvsWithUnread, which does the same for the
+   * support inbox.
+   */
+  async countOrdersWithUnread(): Promise<number> {
+    return this.prisma.supportConversation.count({
+      where: {
+        kind: SupportConversationKind.order,
+        unreadAdminCount: { gt: 0 },
+      },
+    });
+  }
+
+  /**
+   * Unread counts for the given orders, as a map — one query for a whole page
+   * of the orders list rather than one per row.
+   *
+   * Orders with nothing unread are simply absent from the map.
+   */
+  async unreadByOrderId(orderIds: string[]): Promise<Record<string, number>> {
+    if (orderIds.length === 0) return {};
+    const rows = await this.prisma.supportConversation.findMany({
+      where: {
+        kind: SupportConversationKind.order,
+        orderId: { in: orderIds },
+        unreadAdminCount: { gt: 0 },
+      },
+      select: { orderId: true, unreadAdminCount: true },
+    });
+    return Object.fromEntries(
+      rows
+        .filter((r) => r.orderId)
+        .map((r) => [r.orderId as string, r.unreadAdminCount]),
+    );
+  }
+
+  /** A conversation by id, or null — used where a missing row is not an error. */
+  async getByIdOrNull(id: string): Promise<SupportConversation | null> {
+    return this.prisma.supportConversation.findUnique({ where: { id } });
   }
 
   async getByGuestToken(
@@ -486,6 +693,13 @@ export class SupportConversationsService {
     startOfToday.setHours(0, 0, 0, 0);
     const dayAgo = new Date(Date.now() - 86_400_000);
 
+    // Every figure below is scoped to the storefront widget, for the same
+    // reason the inbox is: order threads answer a different question, on a
+    // different clock — a customer waiting on a parcel replies the next day
+    // without anything being wrong — and averaging the two produces a response
+    // time that describes neither.
+    const general = { kind: SupportConversationKind.general };
+
     const [
       total,
       open,
@@ -495,9 +709,10 @@ export class SupportConversationsService {
       volumeRaw,
       peakRaw,
     ] = await Promise.all([
-      this.prisma.supportConversation.count(),
+      this.prisma.supportConversation.count({ where: general }),
       this.prisma.supportConversation.count({
         where: {
+          ...general,
           archivedAt: null,
           status: {
             in: [
@@ -510,12 +725,14 @@ export class SupportConversationsService {
       }),
       this.prisma.supportConversation.count({
         where: {
+          ...general,
           status: SupportConversationStatus.closed,
           resolvedAt: { gte: startOfToday },
         },
       }),
       this.prisma.supportConversation.count({
         where: {
+          ...general,
           status: {
             notIn: [
               SupportConversationStatus.closed,
@@ -527,17 +744,23 @@ export class SupportConversationsService {
       }),
       this.prisma.$queryRaw<Array<{ avgMs: number | null }>>`
         SELECT AVG(EXTRACT(EPOCH FROM ("firstResponseAt" - "createdAt")) * 1000) AS "avgMs"
-        FROM support_conversations WHERE "firstResponseAt" IS NOT NULL
+        FROM support_conversations
+        WHERE "firstResponseAt" IS NOT NULL AND "kind" = 'general'
       `,
       this.prisma.$queryRaw<Array<{ date: string; count: bigint }>>`
-        SELECT TO_CHAR("createdAt"::date, 'YYYY-MM-DD') AS date, COUNT(*)::bigint AS count
-        FROM support_messages WHERE "createdAt" > NOW() - INTERVAL '30 days'
-        GROUP BY TO_CHAR("createdAt"::date, 'YYYY-MM-DD') ORDER BY date ASC
+        SELECT TO_CHAR(m."createdAt"::date, 'YYYY-MM-DD') AS date, COUNT(*)::bigint AS count
+        FROM support_messages m
+        JOIN support_conversations c ON c.id = m."conversationId"
+        WHERE m."createdAt" > NOW() - INTERVAL '30 days' AND c."kind" = 'general'
+        GROUP BY TO_CHAR(m."createdAt"::date, 'YYYY-MM-DD') ORDER BY date ASC
       `,
       this.prisma.$queryRaw<Array<{ hour: number; count: bigint }>>`
-        SELECT EXTRACT(HOUR FROM "createdAt")::int AS hour, COUNT(*)::bigint AS count
-        FROM support_messages WHERE "senderType" = 'guest' AND "createdAt" > NOW() - INTERVAL '30 days'
-        GROUP BY EXTRACT(HOUR FROM "createdAt") ORDER BY hour ASC
+        SELECT EXTRACT(HOUR FROM m."createdAt")::int AS hour, COUNT(*)::bigint AS count
+        FROM support_messages m
+        JOIN support_conversations c ON c.id = m."conversationId"
+        WHERE m."senderType" = 'guest' AND c."kind" = 'general'
+          AND m."createdAt" > NOW() - INTERVAL '30 days'
+        GROUP BY EXTRACT(HOUR FROM m."createdAt") ORDER BY hour ASC
       `,
     ]);
 

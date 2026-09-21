@@ -68,7 +68,13 @@ describe('CommerceNotificationService', () => {
         smsPhones: [],
         emailEnabled: true,
         emailAddresses: [],
-        events: ['payment_succeeded', 'payment_failed', 'order_cancelled', 'support_message'],
+        events: [
+          'payment_succeeded',
+          'payment_failed',
+          'order_cancelled',
+          'support_message',
+          'order_message',
+        ],
       });
     });
 
@@ -201,15 +207,29 @@ describe('CommerceNotificationService.onModuleInit backfill', () => {
     return { store, boot };
   }
 
-  it('adds support_message to a selection saved before the event existed', async () => {
+  it('adds every event that shipped after the selection was saved', async () => {
     const { store, boot } = makeStore({ [ADMIN_NOTIF_KEYS.events]: 'payment_succeeded,order_cancelled' });
 
     await boot();
 
-    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe('payment_succeeded,order_cancelled,support_message');
+    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe(
+      'payment_succeeded,order_cancelled,support_message,order_message',
+    );
   });
 
-  it('never re-adds it after the admin unticks it', async () => {
+  it('adds only the ones missing, leaving an already-present event alone', async () => {
+    const { store, boot } = makeStore({
+      [ADMIN_NOTIF_KEYS.events]: 'payment_succeeded,support_message',
+    });
+
+    await boot();
+
+    expect(store.get(ADMIN_NOTIF_KEYS.events)).toBe(
+      'payment_succeeded,support_message,order_message',
+    );
+  });
+
+  it('never re-adds them after the admin unticks them', async () => {
     const { store, boot } = makeStore({ [ADMIN_NOTIF_KEYS.events]: 'payment_succeeded' });
     await boot();
     store.set(ADMIN_NOTIF_KEYS.events, 'payment_succeeded');

@@ -8,9 +8,8 @@ import {
   Post,
   Query,
   Req,
-  UseGuards,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { RateLimit } from '../common/throttling/rate-limit.decorator';
 import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { AntiSpamService } from '../common/anti-spam/anti-spam.service';
@@ -33,8 +32,7 @@ export class ContactsPublicController {
 
   @Post()
   @HttpCode(201)
-  @UseGuards(ThrottlerGuard)
-  @Throttle({ contact: { ttl: 15 * 60 * 1000, limit: 5 } })
+  @RateLimit(5, 15)
   async create(
     @Body(new ZodValidationPipe(CreateContactSchema)) dto: CreateContactDto,
     @Req() req: Request & { ip?: string; headers: Record<string, string> },

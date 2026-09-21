@@ -6,6 +6,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { DlqAwareWorker } from '../dlq/dlq-aware.worker';
 import { DlqService } from '../dlq/dlq.service';
 import { CommerceNotificationService } from '../commerce-notifications/commerce-notification.service';
+import { AdminNotifEvent } from '../commerce-notifications/commerce-notification.constants';
 import { SupportNotificationService } from './support-notification.service';
 import { SUPPORT_QUEUE } from './support.constants';
 
@@ -52,18 +53,44 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
       }
     }
 
-    const recipients = await this.notifications.resolveRecipients('support_message');
+    // An order's thread is not support traffic: it has its own event on
+    // Shop → Settings → Notifications, so the shop can take order messages by
+    // SMS and pre-sales questions by email, or switch either off on its own.
+    // The alert names the order and links to the order page, where the
+    // Messages tab is — never to the support inbox, which no longer lists it.
+    const order = conv.orderId
+      ? await this.prisma.order.findUnique({
+          where: { id: conv.orderId },
+          select: { id: true, orderNumber: true },
+        })
+      : null;
+
+    const event: AdminNotifEvent = order ? 'order_message' : 'support_message';
+
+    const recipients = await this.notifications.resolveRecipients(event);
     if (!recipients) {
       await this.log(conversationId, 'skipped', undefined, { reason: 'event_disabled_or_no_recipients' });
       return;
     }
 
     const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
+
+    // English, like the rest of the admin surface — these go to the shop, not
+    // to the customer, whose own emails follow their order's locale.
+    const summary = order
+      ? `New message from the customer on order ${order.orderNumber}`
+      : conv.guestName
+        ? `New support message from ${conv.guestName}`
+        : 'New support message';
+    const detailPath = order
+      ? `/admin/shop/orders/${order.id}`
+      : `/admin/support?conv=${conversationId}`;
+
     try {
       await this.notifications.notify({
-        event: 'support_message',
-        summary: conv.guestName ? `New support message from ${conv.guestName}` : 'New support message',
-        detailUrl: appUrl ? `${appUrl}/admin/support?conv=${conversationId}` : null,
+        event,
+        summary,
+        detailUrl: appUrl ? `${appUrl}${detailPath}` : null,
       });
       await this.prisma.supportConversation.update({
         where: { id: conversationId },

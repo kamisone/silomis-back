@@ -16,12 +16,22 @@ export const ADMIN_NOTIF_KEYS = {
 } as const;
 
 /**
- * Marks the one-time backfill that added `support_message` to an events row
- * written before that event existed. Without it, moving support alerts onto
- * this page would silently switch them off for anyone who had already saved
- * their event selection.
+ * Events added after this page shipped, each with the marker for its one-time
+ * backfill.
+ *
+ * An install that has already saved an event selection has a row that predates
+ * the new event, so without a backfill the addition reads as "these alerts
+ * turned themselves off" — which is how support alerts would have gone silent
+ * when they moved here from their own switch in the support panel. Each entry
+ * runs once; the marker means a later untick is never undone.
+ *
+ * Add a row here with every new event that should be ON for installs already
+ * in service.
  */
-export const ADMIN_NOTIF_SUPPORT_BACKFILL_KEY = 'admin_notif_support_event_backfilled';
+export const ADMIN_NOTIF_BACKFILLS = [
+  { event: 'support_message', markerKey: 'admin_notif_support_event_backfilled' },
+  { event: 'order_message', markerKey: 'admin_notif_order_message_backfilled' },
+] as const;
 
 export const ADMIN_NOTIF_EVENTS = [
   'payment_succeeded',
@@ -31,6 +41,7 @@ export const ADMIN_NOTIF_EVENTS = [
   'order_delivered',
   'low_stock',
   'support_message',
+  'order_message',
 ] as const;
 
 export type AdminNotifEvent = (typeof ADMIN_NOTIF_EVENTS)[number];
@@ -51,15 +62,21 @@ export interface AdminNotifSettings {
  * did before the recipient lists existed, so upgrading changes nothing until
  * somebody deliberately narrows the list.
  *
- * Events default to the four a customer triggers on their own — paying, a
- * payment failing, cancelling, and opening a support chat. Shipped/delivered
- * fire on the admin's own click and low stock can be noisy, so those are
- * opt-in.
+ * Events default to the five a customer triggers on their own — paying, a
+ * payment failing, cancelling, opening a support chat, and writing on their
+ * order. Shipped/delivered fire on the admin's own click and low stock can be
+ * noisy, so those are opt-in.
  */
 export const ADMIN_NOTIF_DEFAULTS: AdminNotifSettings = {
   smsEnabled: true,
   smsPhones: [],
   emailEnabled: true,
   emailAddresses: [],
-  events: ['payment_succeeded', 'payment_failed', 'order_cancelled', 'support_message'],
+  events: [
+    'payment_succeeded',
+    'payment_failed',
+    'order_cancelled',
+    'support_message',
+    'order_message',
+  ],
 };

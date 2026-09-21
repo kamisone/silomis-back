@@ -116,6 +116,15 @@ export const COPY = {
         `<strong>${p}</strong>, que vous avez ajouté à votre liste de souhaits, est de nouveau disponible.`,
       cta: 'Voir le produit',
     },
+    orderAccessLink: {
+      subject: (n: string) => `Votre lien sécurisé – ${n}`,
+      greeting: (name: string) => `Bonjour ${name},`,
+      intro: (n: string) =>
+        `Voici votre lien sécurisé vers la commande <strong>${n}</strong>. Il ouvre le suivi et la conversation avec notre atelier.`,
+      cta: 'Ouvrir ma commande',
+      ignore:
+        "Si vous n'avez pas demandé ce lien, ignorez simplement ce message : personne ne peut ouvrir la conversation sans lui.",
+    },
   },
 
   en: {
@@ -220,6 +229,15 @@ export const COPY = {
         `<strong>${p}</strong>, which you added to your wishlist, is back in stock.`,
       cta: 'View product',
     },
+    orderAccessLink: {
+      subject: (n: string) => `Your secure link – ${n}`,
+      greeting: (name: string) => `Hello ${name},`,
+      intro: (n: string) =>
+        `Here is your secure link to order <strong>${n}</strong>. It opens the tracking page and the conversation with our workshop.`,
+      cta: 'Open my order',
+      ignore:
+        'If you did not ask for this link, simply ignore this message — nobody can open the conversation without it.',
+    },
   },
   es: {
     pickup: {
@@ -297,6 +315,15 @@ export const COPY = {
       intro: '¡Buenas noticias!',
       body: (p: string) => `<strong>${p}</strong>, que añadiste a tu lista de deseos, vuelve a estar en stock.`,
       cta: 'Ver el producto',
+    },
+    orderAccessLink: {
+      subject: (n: string) => `Tu enlace seguro – ${n}`,
+      greeting: (name: string) => `Hola ${name}:`,
+      intro: (n: string) =>
+        `Este es tu enlace seguro al pedido <strong>${n}</strong>. Abre el seguimiento y la conversación con nuestro taller.`,
+      cta: 'Abrir mi pedido',
+      ignore:
+        'Si no has pedido este enlace, ignora este mensaje: nadie puede abrir la conversación sin él.',
     },
   },
   it: {
@@ -376,6 +403,15 @@ export const COPY = {
       body: (p: string) => `<strong>${p}</strong>, che avevi aggiunto alla tua lista dei desideri, è di nuovo disponibile.`,
       cta: 'Vedi il prodotto',
     },
+    orderAccessLink: {
+      subject: (n: string) => `Il tuo link sicuro – ${n}`,
+      greeting: (name: string) => `Ciao ${name},`,
+      intro: (n: string) =>
+        `Ecco il tuo link sicuro all'ordine <strong>${n}</strong>. Apre il tracciamento e la conversazione con il nostro laboratorio.`,
+      cta: 'Apri il mio ordine',
+      ignore:
+        'Se non hai richiesto questo link, ignora pure il messaggio: senza di esso nessuno può aprire la conversazione.',
+    },
   },
   de: {
     pickup: {
@@ -453,6 +489,15 @@ export const COPY = {
       intro: 'Gute Nachrichten!',
       body: (p: string) => `<strong>${p}</strong> aus Ihrer Wunschliste ist wieder verfügbar.`,
       cta: 'Produkt ansehen',
+    },
+    orderAccessLink: {
+      subject: (n: string) => `Ihr sicherer Link – ${n}`,
+      greeting: (name: string) => `Hallo ${name},`,
+      intro: (n: string) =>
+        `Hier ist Ihr sicherer Link zur Bestellung <strong>${n}</strong>. Er öffnet die Sendungsverfolgung und den Austausch mit unserer Werkstatt.`,
+      cta: 'Bestellung öffnen',
+      ignore:
+        'Falls Sie diesen Link nicht angefordert haben, ignorieren Sie diese Nachricht einfach — ohne ihn kann niemand den Austausch öffnen.',
     },
   },
   nl: {
@@ -532,6 +577,15 @@ export const COPY = {
       body: (p: string) => `<strong>${p}</strong>, dat je aan je verlanglijst hebt toegevoegd, is weer op voorraad.`,
       cta: 'Product bekijken',
     },
+    orderAccessLink: {
+      subject: (n: string) => `Je beveiligde link – ${n}`,
+      greeting: (name: string) => `Hallo ${name},`,
+      intro: (n: string) =>
+        `Dit is je beveiligde link naar bestelling <strong>${n}</strong>. Hij opent het volgen van je bestelling en het gesprek met ons atelier.`,
+      cta: 'Mijn bestelling openen',
+      ignore:
+        'Heb je deze link niet aangevraagd? Negeer dit bericht gerust — zonder de link kan niemand het gesprek openen.',
+    },
   },
   pl: {
     pickup: {
@@ -609,6 +663,15 @@ export const COPY = {
       intro: 'Dobra wiadomość!',
       body: (p: string) => `<strong>${p}</strong>, który dodałeś/aś do listy życzeń, jest znów dostępny.`,
       cta: 'Zobacz produkt',
+    },
+    orderAccessLink: {
+      subject: (n: string) => `Twój bezpieczny link – ${n}`,
+      greeting: (name: string) => `Cześć ${name},`,
+      intro: (n: string) =>
+        `Oto Twój bezpieczny link do zamówienia <strong>${n}</strong>. Otwiera śledzenie przesyłki oraz rozmowę z naszą pracownią.`,
+      cta: 'Otwórz moje zamówienie',
+      ignore:
+        'Jeśli nie prosiłeś o ten link, po prostu zignoruj tę wiadomość — bez niego nikt nie otworzy rozmowy.',
     },
   },
 } as const;

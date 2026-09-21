@@ -350,11 +350,11 @@ model ProductCategory {
   seoTitle       String? @db.VarChar(300)
   seoDescription String?
   /// Small square/portrait picture — the category tile on the home page.
-  imageKey String? @db.VarChar(1000)
+  imageKey       String? @db.VarChar(1000)
   /// Wide picture printed across the top of the category's listing page. A
   /// separate field because it is a different crop for a different job, not a
   /// bigger version of the tile.
-  bannerKey String? @db.VarChar(1000)
+  bannerKey      String? @db.VarChar(1000)
 
   parentId String?           @map("parentId")
   parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
@@ -625,8 +625,8 @@ model ProductVariant {
 
   options VariantOption[]
 
-  inventoryItem InventoryItem?
-  priceRules    PriceRule[]
+  inventoryItem  InventoryItem?
+  priceRules     PriceRule[]
   sendInItemType SendInItemType?
 
   createdAt DateTime @default(now())
@@ -699,7 +699,7 @@ model ProductOptionValueImage {
 /// shopper picks between to buy (colour/size), not something they filter a
 /// listing by.
 model CategoryFilter {
-  id         String @id @default(uuid())
+  id         String          @id @default(uuid())
   categoryId String
   category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
@@ -727,7 +727,7 @@ model CategoryFilter {
 /// value per filter should carry isDefault — enforced in the service, not the
 /// schema, the same way ProductVariant.isDefault is.
 model CategoryFilterValue {
-  id       String @id @default(uuid())
+  id       String         @id @default(uuid())
   filterId String
   filter   CategoryFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
 
@@ -749,11 +749,11 @@ model CategoryFilterValue {
 /// what the admin picks (or leaves at the filter's default) when linking a
 /// product to a category.
 model ProductFilterValue {
-  id        String @id @default(uuid())
+  id        String              @id @default(uuid())
   productId String
-  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product   Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
   filterId  String
-  filter    CategoryFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+  filter    CategoryFilter      @relation(fields: [filterId], references: [id], onDelete: Cascade)
   valueId   String
   value     CategoryFilterValue @relation(fields: [valueId], references: [id], onDelete: Cascade)
 
@@ -1012,7 +1012,7 @@ model Order {
   /// the shipping address or method changes.
   pickupPointSnapshot Json?
   /// Saved payment method used for this order
-  paymentMethodId  String?
+  paymentMethodId     String?
 
   /// ISO 639-1 locale captured at checkout — drives email/receipt language
   customerLocale String @default("fr") @db.VarChar(10)
@@ -1036,7 +1036,11 @@ model Order {
   items          OrderItem[]
   statusHistory  OrderStatusHistory[]
   /// The send-in job, when this order is embroidery on the customer's own item.
-  sendInJob     SendInJob?
+  sendInJob      SendInJob?
+  /// The conversation between the customer and the shop about this order.
+  /// Created lazily on the first message from either side, so an order nobody
+  /// has written about has no row here and never reaches the support inbox.
+  conversation   SupportConversation?
   returnRequests ReturnRequest[]
 
   createdAt DateTime @default(now())
@@ -1114,7 +1118,7 @@ model ProductReview {
   /// Present but unused by current logic — reviews are matched by order+email/token, not a user account.
   userId String?
 
-  authorName String  @db.VarChar(300)
+  authorName  String  @db.VarChar(300)
   /// Null for admin-entered reviews sourced from a supplier listing — there is
   /// no customer behind them to email.
   authorEmail String? @db.VarChar(300)
@@ -1411,10 +1415,10 @@ model Collection {
   type      CollectionType      @default(manual)
   ruleMatch CollectionRuleMatch @default(all)
 
-  name        String  @db.VarChar(500)
-  description String?
+  name           String  @db.VarChar(500)
+  description    String?
   /// Card/thumbnail image — the collection as it appears in the storefront listing.
-  imageKey    String? @db.VarChar(1000)
+  imageKey       String? @db.VarChar(1000)
   /// Wide hero image for the collection's own page. Falls back to imageKey when unset.
   bannerImageKey String? @db.VarChar(1000)
 
@@ -2099,7 +2103,7 @@ model ShopBehaviorEvent {
 
   eventType BehaviorEventType
 
-  cartToken      String? @db.VarChar(100)
+  cartToken      String?  @db.VarChar(100)
   shopCustomerId String?
   productId      String?
   /// Whether the product was flagged as a test product AT THE MOMENT of this
@@ -2148,11 +2152,11 @@ enum ReplaySessionStatus {
 model ReplaySession {
   id String @id @default(uuid())
 
-  productId String?
+  productId     String?
   /// The product's test/live state when this session was recorded — see the
   /// same field on ShopBehaviorEvent.
   productIsTest Boolean?
-  cartToken String?
+  cartToken     String?
 
   visitorHash String? @db.VarChar(64)
   clientIp    String? @db.VarChar(64)
@@ -2172,10 +2176,10 @@ model ReplaySession {
 
   status ReplaySessionStatus @default(active)
 
-  startedAt   DateTime @default(now())
+  startedAt   DateTime  @default(now())
   /// Always set at creation (equal to startedAt) — the retention cron reaps
   /// sessions whose lastEventAt has gone stale, so it must never be null.
-  lastEventAt DateTime @default(now())
+  lastEventAt DateTime  @default(now())
   endedAt     DateTime?
   durationMs  Int?
   /// Set when an admin opens this session in the replay player.
@@ -2291,8 +2295,8 @@ enum NewsletterCampaignType {
 model NewsletterCampaign {
   id String @id @default(uuid())
 
-  title       String @db.VarChar(200)
-  subject     String @db.VarChar(250)
+  title       String  @db.VarChar(200)
+  subject     String  @db.VarChar(250)
   previewText String? @db.VarChar(250)
   htmlContent String  @default("")
 
@@ -2377,6 +2381,18 @@ enum SupportConversationStatus {
   archived
 }
 
+/// What a conversation is about, and therefore how it behaves.
+///
+/// `general` is the floating widget on the storefront: a stranger with a
+/// question, closed by the idle sweep, identified by nothing but a cookie.
+/// `order` is a thread attached to a paid order — commercial correspondence
+/// between a named customer and the shop, which is why it is never idle-closed
+/// and never hard-deleted.
+enum SupportConversationKind {
+  general
+  order
+}
+
 enum SupportSenderType {
   guest
   admin
@@ -2386,6 +2402,20 @@ enum SupportSenderType {
 model SupportConversation {
   id String @id @default(uuid())
 
+  kind SupportConversationKind @default(general)
+
+  /// The order this thread is about, for `kind = order`.
+  ///
+  /// Unique: one thread per order, so the customer and the shop always land in
+  /// the same place however they got there.
+  orderId String? @unique
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// Still required, and still unique, for an order thread too: it is the key
+  /// the websocket gateway joins a socket by, so keeping it on every row means
+  /// the gateway needs no idea which kind it is holding. For an order thread
+  /// it is minted at creation and never leaves the server — the customer
+  /// authenticates with their order grant and is handed a short-lived ticket.
   guestToken String  @unique
   guestName  String?
   pageUrl    String?
@@ -2419,6 +2449,7 @@ model SupportConversation {
 
   @@index([status, lastMessageAt])
   @@index([unreadAdminCount, lastMessageAt])
+  @@index([kind, lastMessageAt])
   @@map("support_conversations")
 }
 
@@ -2645,7 +2676,7 @@ model EmbroideryFont {
   name String @db.VarChar(200)
 
   /// CSS stack the editor previews with.
-  webFamily String @db.VarChar(300)
+  webFamily  String  @db.VarChar(300)
   /// A stylesheet that brings `webFamily` to the browser (a Google Fonts
   /// CSS URL, typically). Null for a face the browser is trusted to have.
   webFontCss String? @db.VarChar(500)
@@ -2756,13 +2787,13 @@ model EmbroideryMotif {
   /// { en: "Heart", fr: "Cœur", … } — the admin's Generate button fills it.
   name Json
 
-  path String
+  path    String
   /// The coordinate box `path` is drawn in, so it can be scaled to millimetres.
   viewBox String @default("0 0 100 100") @db.VarChar(80)
   /// A full-colour design: its shapes with their own fills, drawn in order,
   /// [{ d, fill }]. When set, `path` is only the silhouette (for a swatch)
   /// and the design is stitched in its own colours rather than a chosen spool.
-  paths Json?
+  paths   Json?
 
   /// Measured from a stitch-out at 30mm; the estimator scales it by area.
   stitchesAt30mm Int @default(2200)
@@ -2810,8 +2841,8 @@ model PersonalizationPlacement {
 
   fieldWidthMm  Float
   fieldHeightMm Float
-  maxColors     Int @default(3)
-  maxChars      Int @default(12)
+  maxColors     Int   @default(3)
+  maxChars      Int   @default(12)
 
   /// The photograph this position is embroidered on, and the area traced onto
   /// it. They live here rather than per product because a position IS a view of
@@ -2901,8 +2932,8 @@ model CartItemPersonalization {
   /// the product picture.
   previewKey String? @db.VarChar(300)
 
-  templateId    String
-  placementKey  String @db.VarChar(60)
+  templateId     String
+  placementKey   String @db.VarChar(60)
   placementLabel String @db.VarChar(160)
 
   contentType PersonalizationContentType
@@ -2914,13 +2945,13 @@ model CartItemPersonalization {
   /// Denormalised so the production queue can show "3 lines" without parsing.
   lineCount Int    @default(1)
 
-  fontKey  String @db.VarChar(80)
-  fontName String @db.VarChar(200)
+  fontKey    String @db.VarChar(80)
+  fontName   String @db.VarChar(200)
   /// CSS-style weight (300–900). Not a second digitised face: a satin column is
   /// laid thicker or thinner from the same outline, which is what a heavier
   /// letter is on a machine — and why it costs more stitches.
-  fontWeight Int @default(400)
-  heightMm Float
+  fontWeight Int    @default(400)
+  heightMm   Float
 
   /// Letter spacing as a fraction of cap height. Tracking opens every gap
   /// equally; kerning is a per-gap nudge on top, one entry per gap between
@@ -3009,13 +3040,13 @@ model OrderItemPersonalization {
   /// Denormalised so the production queue can show "3 lines" without parsing.
   lineCount Int    @default(1)
 
-  fontKey  String @db.VarChar(80)
-  fontName String @db.VarChar(200)
+  fontKey    String @db.VarChar(80)
+  fontName   String @db.VarChar(200)
   /// CSS-style weight (300–900). Not a second digitised face: a satin column is
   /// laid thicker or thinner from the same outline, which is what a heavier
   /// letter is on a machine — and why it costs more stitches.
-  fontWeight Int @default(400)
-  heightMm Float
+  fontWeight Int    @default(400)
+  heightMm   Float
 
   /// Letter spacing as a fraction of cap height. Tracking opens every gap
   /// equally; kerning is a per-gap nudge on top, one entry per gap between
@@ -3108,21 +3139,21 @@ model SendInJob {
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
 
   /// cap | beanie | jacket | bag | other — drives the default panel size and the handling price.
-  itemType String @db.VarChar(40)
+  itemType String  @db.VarChar(40)
   /// What the customer told us about the item — "don't cover the existing logo".
-  note String?
+  note     String?
 
   /// The customer's own photographs, private storage keys (signed on read).
   photoKeys String[] @default([])
   /// One entry per side the customer photographed: which position of the
   /// order line it is, what they called it, its photo, and the mockup drawn
   /// from it — `[{ placementKey, sideLabel, photoKey, mockupKey }]`.
-  sides Json @default("[]")
+  sides     Json     @default("[]")
   /// The customer's photo with their design drawn on it, exactly as they saw
   /// it in the editor — rendered when the order is placed, private storage
   /// key. Null until rendered (or if the render failed; the design still
   /// carries everything needed to redraw it).
-  mockupKey String? @db.VarChar(300)
+  mockupKey String?  @db.VarChar(300)
 
   /// The panel the customer framed on their photo, as % of the image box —
   /// the same shape the shop's own tracing uses.
@@ -3157,17 +3188,17 @@ model SendInJob {
 /// (a bounded, trimmed PNG); `originalKey` is the file as uploaded, which is
 /// what the digitiser wants — an SVG stays an SVG.
 model SendInArtwork {
-  id          String @id @default(uuid())
-  key         String @unique @db.VarChar(300)
-  originalKey String @db.VarChar(300)
+  id           String @id @default(uuid())
+  key          String @unique @db.VarChar(300)
+  originalKey  String @db.VarChar(300)
   /// The customer's own file name, for the cart line and the desk.
   originalName String @db.VarChar(200)
-  mime        String @db.VarChar(80)
-  widthPx     Int
-  heightPx    Int
+  mime         String @db.VarChar(80)
+  widthPx      Int
+  heightPx     Int
   /// Share of the rendered box that is actually drawn on (0–1) — what the
   /// stitch estimate multiplies the area by.
-  coverage    Float
+  coverage     Float
 
   createdAt DateTime @default(now())
 
@@ -3182,8 +3213,8 @@ model SendInEvent {
   jobId String
   job   SendInJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
-  status String  @db.VarChar(40)
-  note   String?
+  status    String   @db.VarChar(40)
+  note      String?
   /// Media-library keys (public) — what the customer sees on the tracking page.
   photoKeys String[] @default([])
 
@@ -3219,9 +3250,9 @@ model SendInItemType {
   /// two hoopings, and is charged as such.
   priceCents Int @default(0)
 
-  maxChars      Int     @default(20)
+  maxChars  Int     @default(20)
   /// Whether a frame for this item can take the height of foam.
-  allowPuff     Boolean @default(false)
+  allowPuff Boolean @default(false)
 
   /// A picture for the card, media-library key.
   imageKey String? @db.VarChar(1000)

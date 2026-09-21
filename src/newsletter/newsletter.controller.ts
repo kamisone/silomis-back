@@ -8,10 +8,9 @@ import {
   Query,
   Req,
   Res,
-  UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { RateLimit } from '../common/throttling/rate-limit.decorator';
 import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { AntiSpamService } from '../common/anti-spam/anti-spam.service';
@@ -40,8 +39,7 @@ export class NewsletterController {
 
   @Post()
   @HttpCode(201)
-  @UseGuards(ThrottlerGuard)
-  @Throttle({ contact: { ttl: 15 * 60 * 1000, limit: 5 } })
+  @RateLimit(5, 15)
   async subscribe(
     @Body(new ZodValidationPipe(CreateNewsletterSubscriberSchema))
     dto: CreateNewsletterSubscriberDto,

@@ -34,6 +34,10 @@ import {
   renderPaymentFailed,
   PaymentFailedEmailData,
 } from './templates/payment-failed';
+import {
+  renderOrderAccessLink,
+  OrderAccessLinkEmailData,
+} from './templates/order-access-link';
 
 @Injectable()
 export class ShopEmailService {
@@ -50,6 +54,19 @@ export class ShopEmailService {
     this.logger.log(
       `Order confirmed email sent to ${to} for ${data.orderNumber}`,
     );
+  }
+
+  /**
+   * The secure link that opens an order's tracking page and its conversation.
+   * Only ever sent to the address stored on the order.
+   */
+  async sendOrderAccessLink(
+    to: string,
+    data: OrderAccessLinkEmailData,
+  ): Promise<void> {
+    const { subject, html } = renderOrderAccessLink(data);
+    await this.transport.send(to, subject, html);
+    this.logger.log(`Order access link sent to ${to} for ${data.orderNumber}`);
   }
 
   async sendAbandonedCart(
