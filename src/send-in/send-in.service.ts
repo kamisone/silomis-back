@@ -21,7 +21,6 @@ import {
   SEND_IN_PHOTO_MAX_BYTES,
   SEND_IN_PHOTO_MIMES,
   SEND_IN_PHOTO_PREFIX,
-  SEND_IN_PHOTO_REQUIRED,
   SEND_IN_MAX_SIDES,
   SEND_IN_PLACEMENT_KEYS,
   SEND_IN_PRODUCT_SLUG,
@@ -497,12 +496,16 @@ export class SendInService {
       if (!SEND_IN_STATUSES.includes(toStatus)) throw new BadRequestException(`Status must be one of: ${SEND_IN_STATUSES.join(', ')}`);
       const allowed = SEND_IN_TRANSITIONS[job.status as SendInStatus] ?? [];
       if (!allowed.includes(toStatus)) throw new BadRequestException(`Cannot go from "${job.status}" to "${toStatus}".`);
-      // The item as it arrived and the finished piece are the two photographs
-      // a send-in customer is actually waiting for — and the shop's own
-      // record if a condition is ever disputed.
-      if (SEND_IN_PHOTO_REQUIRED.includes(toStatus) && !photoKeys.length) {
-        throw new BadRequestException(`Add a photo of the item before marking it "${toStatus.replace(/_/g, ' ')}".`);
-      }
+      // No photo is demanded any more. The panel that collected one was
+      // removed in favour of the order's conversation, which is where the
+      // shop now sends the customer the item as it arrived and the finished
+      // piece — so requiring one here would only make a status unreachable.
+      //
+      // Worth knowing what that gave up: this was also the shop's own record
+      // of an item's condition on arrival, and nothing now *requires* such a
+      // record before an item is marked received. Re-imposing it means
+      // checking the conversation for an image rather than this call's
+      // payload.
       if (toStatus === 'returned' && !(dto.returnTrackingNumber ?? job.returnTrackingNumber)) {
         throw new BadRequestException('Enter the return tracking number before marking the item returned.');
       }

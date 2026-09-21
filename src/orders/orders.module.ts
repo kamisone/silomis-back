@@ -12,6 +12,7 @@ import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.con
 import { EmailModule } from '../email/email.module';
 import { OrdersService } from './orders.service';
 import { OrderAccessService } from './order-access.service';
+import { OrderThrottlerGuard } from './order-throttler.guard';
 import { orderGrantSecret } from './order-access.constants';
 import { OrdersAdminController } from './orders-admin.controller';
 import { OrdersPublicController } from './orders-public.controller';
@@ -41,7 +42,17 @@ import { TestCheckoutGuard } from './test-checkout-guard.service';
     OrdersPublicController,
     OrderStatusRefAdminController,
   ],
-  providers: [OrdersService, OrderAccessService, TestCheckoutGuard],
-  exports: [OrdersService, OrderAccessService, TestCheckoutGuard],
+  providers: [
+    OrdersService,
+    OrderAccessService,
+    OrderThrottlerGuard,
+    TestCheckoutGuard,
+  ],
+  exports: [
+    OrdersService,
+    OrderAccessService,
+    OrderThrottlerGuard,
+    TestCheckoutGuard,
+  ],
 })
 export class OrdersModule {}

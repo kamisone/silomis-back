@@ -51,14 +51,24 @@ describe('SendInService.update', () => {
     await expect(service.update('j1', { status: 'returned' })).rejects.toThrow(/Cannot go from/);
   });
 
-  it('needs a photograph of the item as it arrived', async () => {
-    const { service } = makeService(job());
-    await expect(service.update('j1', { status: 'received' })).rejects.toThrow(/photo/);
+  // The rule that a photograph was required before marking an item received
+  // or done went with the panel that collected one — the shop sends those
+  // pictures in the order's conversation now. A status change with nothing
+  // attached is expected to succeed.
+  it('advances a step with no photograph and no note', async () => {
+    const { service, events } = makeService(job());
+    await service.update('j1', { status: 'received' });
+    expect(events).toEqual([{ status: 'received', note: null, photoKeys: [] }]);
   });
 
   it('only takes media-library photos, so the links never expire in an inbox', async () => {
-    const { service } = makeService(job());
-    await expect(service.update('j1', { status: 'received', photoKeys: ['send-in/private.jpg'] })).rejects.toThrow(/photo/);
+    const { service, events } = makeService(job());
+    // Used to be asserted through the rejection the missing-photo rule raised
+    // once this filter had emptied the list. The filter is the safeguard —
+    // a private key would reach a customer's inbox as a signed URL that stops
+    // working within the hour — so it is now asserted on its own terms.
+    await service.update('j1', { status: 'received', photoKeys: ['send-in/private.jpg'] });
+    expect(events).toEqual([{ status: 'received', note: null, photoKeys: [] }]);
   });
 
   it('records the step as an event and tells the customer', async () => {

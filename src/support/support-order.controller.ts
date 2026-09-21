@@ -13,7 +13,10 @@ import {
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { JwtService } from '@nestjs/jwt';
 import { Public } from '../auth/public.decorator';
-import { RateLimit } from '../common/throttling/rate-limit.decorator';
+import {
+  ORDER_LIMIT,
+  OrderRateLimit,
+} from '../orders/order-rate-limit.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrderAccessService } from '../orders/order-access.service';
 import { SupportConversationsService } from './support-conversations.service';
@@ -86,7 +89,7 @@ export class SupportOrderController {
    * an empty conversation in the support inbox.
    */
   @Get()
-  @RateLimit(60, 15)
+  @OrderRateLimit(...ORDER_LIMIT.proven)
   async history(
     @Param('orderNumber') orderNumber: string,
     @Headers(GRANT_HEADER) rawGrant?: string,
@@ -120,7 +123,7 @@ export class SupportOrderController {
    */
   @Post('attachments')
   @HttpCode(201)
-  @RateLimit(20, 15)
+  @OrderRateLimit(...ORDER_LIMIT.uploading)
   @UseInterceptors(
     FilesInterceptor('images', ATTACHMENT_MAX_FILES, {
       limits: { fileSize: ATTACHMENT_MAX_BYTES, files: ATTACHMENT_MAX_FILES },
@@ -179,7 +182,7 @@ export class SupportOrderController {
    */
   @Post('ws-ticket')
   @HttpCode(200)
-  @RateLimit(60, 15)
+  @OrderRateLimit(...ORDER_LIMIT.proven)
   async wsTicket(
     @Param('orderNumber') orderNumber: string,
     @Headers(GRANT_HEADER) rawGrant?: string,

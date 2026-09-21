@@ -10,7 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
-import { RateLimit } from '../common/throttling/rate-limit.decorator';
+import { ORDER_LIMIT, OrderRateLimit } from './order-rate-limit.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { OrdersService } from './orders.service';
 import { OrderAccessService } from './order-access.service';
@@ -22,12 +22,6 @@ import {
   OrderSessionSchema,
 } from './dto/order-access.dto';
 import { OrderAccessLevel } from './order-access.constants';
-
-/**
- * Looser than the contact form's: a customer legitimately reloads a tracking
- * page, and this is counted per visitor rather than per proxy socket.
- */
-const ORDER_ACCESS_LIMIT = [20, 15] as const;
 
 /** Header the BFF replays a stored grant on. */
 const GRANT_HEADER = 'x-order-grant';
@@ -46,7 +40,7 @@ export class OrdersPublicController {
   }
 
   @Get(':orderNumber/track')
-  @RateLimit(...ORDER_ACCESS_LIMIT)
+  @OrderRateLimit(...ORDER_LIMIT.proven)
   async track(
     @Param('orderNumber') orderNumber: string,
     @Headers(GRANT_HEADER) rawGrant?: string,
@@ -86,7 +80,7 @@ export class OrdersPublicController {
    */
   @Post(':orderNumber/session')
   @HttpCode(200)
-  @RateLimit(...ORDER_ACCESS_LIMIT)
+  @OrderRateLimit(...ORDER_LIMIT.verifying)
   async session(
     @Param('orderNumber') orderNumber: string,
     @Body(new ZodValidationPipe(OrderSessionSchema)) dto: OrderSessionDto,
@@ -106,7 +100,7 @@ export class OrdersPublicController {
    */
   @Post(':orderNumber/access-link')
   @HttpCode(204)
-  @RateLimit(...ORDER_ACCESS_LIMIT)
+  @OrderRateLimit(...ORDER_LIMIT.verifying)
   async accessLink(
     @Param('orderNumber') orderNumber: string,
     @Body(new ZodValidationPipe(OrderAccessLinkSchema)) dto: OrderAccessLinkDto,

@@ -92,5 +92,3 @@ export const SEND_IN_ARTWORK_MIN_MM = 10;
  * still real.
  */
 export const SEND_IN_ARTWORK_STITCHES_PER_MM2 = 6;
-
-export const SEND_IN_PHOTO_REQUIRED: SendInStatus[] = ['received', 'done'];
