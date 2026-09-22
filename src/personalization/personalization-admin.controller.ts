@@ -7,7 +7,17 @@ import { designElementsOf } from './design-elements';
 import { parseLocalized } from './localized.util';
 
 /** Order in which the floor works a job. Anything else is rejected. */
-const PRODUCTION_STATUSES = ['pending', 'digitizing', 'ready', 'stitched'] as const;
+/**
+ * Two states, because two is all the floor acts on: a job is either still to
+ * do or it is finished.
+ *
+ * It used to run pending → digitizing → ready → stitched. Those described the
+ * digitiser's own passes, not decisions anyone made from this queue — nobody
+ * filtered for "ready" and did something different from "digitizing" — so
+ * they were four columns of bookkeeping on the way to the only question the
+ * queue is asked: what is left.
+ */
+const PRODUCTION_STATUSES = ['waiting', 'done'] as const;
 type ProductionStatus = (typeof PRODUCTION_STATUSES)[number];
 
 /**

@@ -3102,10 +3102,12 @@ model OrderItemPersonalization {
   /// tool at the size it will be sewn, so nobody has to re-measure anything.
   productionSvg String?
 
-  /// pending → digitizing → ready → stitched. Plain text rather than an enum:
-  /// the production workflow is the part most likely to gain a step, and a
-  /// migration per step is a poor trade for a column only staff read.
-  productionStatus String    @default("pending") @db.VarChar(40)
+  /// `waiting` or `done` — the only distinction the floor acts on. Plain text
+  /// rather than an enum: the production workflow is the part most likely to
+  /// change shape, and a migration per step is a poor trade for a column only
+  /// staff read. (It has already changed once: pending/digitizing/ready/
+  /// stitched collapsed to these two.)
+  productionStatus String    @default("waiting") @db.VarChar(40)
   /// Set once a digitiser has produced the stitch file.
   stitchFileKey    String?   @db.VarChar(1000)
   digitizedAt      DateTime?
