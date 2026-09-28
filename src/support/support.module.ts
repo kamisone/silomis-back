@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
 import { DlqModule } from '../dlq/dlq.module';
 import { GcsModule } from '../gcs/gcs.module';
+import { EmailModule } from '../email/email.module';
 import { OrdersModule } from '../orders/orders.module';
 import { CommerceNotificationsModule } from '../commerce-notifications/commerce-notifications.module';
 import { SupportConversationsService } from './support-conversations.service';
@@ -31,6 +32,8 @@ import { SUPPORT_QUEUE } from './support.constants';
     CommerceNotificationsModule,
     // For chat image storage; AssetUrlModule is global.
     GcsModule,
+    // For the email telling a customer the shop has replied.
+    EmailModule,
     // For OrderAccessService: order threads authenticate on an order grant.
     OrdersModule,
   ],

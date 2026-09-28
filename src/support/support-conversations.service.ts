@@ -12,7 +12,11 @@ import {
   SupportSenderType,
   AuditAction,
 } from '../../generated/prisma/client';
-import { SUPPORT_QUEUE, MAX_MESSAGE_LENGTH } from './support.constants';
+import {
+  SUPPORT_QUEUE,
+  MAX_MESSAGE_LENGTH,
+  GUEST_NOTIFY_DELAY_MS,
+} from './support.constants';
 import {
   StoredAttachment,
   SupportAttachmentsService,
@@ -328,6 +332,28 @@ export class SupportConversationsService {
       const conv = await this.prisma.supportConversation.findUnique({
         where: { id: conversationId },
       });
+
+      // An order thread's customer is almost never on the page — they wrote
+      // yesterday and closed the tab — so a reply that only lands in the UI
+      // reaches nobody. Queued rather than sent: the job waits a couple of
+      // minutes and drops itself if the customer read the message in the
+      // meantime, which is the common case when they *are* looking.
+      //
+      // Only for order threads. The storefront widget's guest has no address
+      // to write to, and is on the page by definition.
+      if (conv?.kind === SupportConversationKind.order) {
+        await this.notifQueue.add(
+          'notify-guest',
+          { conversationId, messageId: message.id },
+          {
+            delay: GUEST_NOTIFY_DELAY_MS,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 5000 },
+            removeOnComplete: 50,
+            removeOnFail: 20,
+          },
+        );
+      }
       await this.prisma.supportConversation.update({
         where: { id: conversationId },
         data: {

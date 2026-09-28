@@ -2432,8 +2432,13 @@ model SupportConversation {
   unreadAdminCount Int @default(0)
   unreadGuestCount Int @default(0)
 
-  /// SMS debounce
-  lastNotifiedAt DateTime?
+  /// Debounce for the alert that reaches the SHOP — see lastGuestNotifiedAt
+  /// for the one that reaches the customer. Two fields, because the two
+  /// directions have nothing to do with each other: the shop replying must not
+  /// silence the next alert about a customer who is still waiting.
+  lastNotifiedAt      DateTime?
+  /// Debounce for the email telling the customer the shop has replied.
+  lastGuestNotifiedAt DateTime?
 
   /// Analytics: time from conversation open to first admin reply
   firstResponseAt DateTime?

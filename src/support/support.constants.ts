@@ -18,6 +18,23 @@ export const SUPPORT_DEFAULTS = {
   inactiveCloseHours: 72,
 };
 
+/**
+ * How long the shop's reply waits before it becomes an email.
+ *
+ * Not zero. A customer reading the thread when the answer arrives sees it on
+ * screen, and an email about a message they are already looking at is noise —
+ * so the job is delayed and cancels itself if the message has been read by the
+ * time it runs. Short enough that someone who has closed the tab is not left
+ * wondering.
+ */
+export const GUEST_NOTIFY_DELAY_MS = 2 * 60_000;
+
+/**
+ * And at most one such email per conversation in this window, so a shop
+ * sending three lines in a row sends one email, not three.
+ */
+export const GUEST_NOTIFY_COOLDOWN_MS = 15 * 60_000;
+
 export const MAX_MESSAGE_LENGTH = 2000;
 export const WS_RATE_LIMIT_COUNT = 5;
 export const WS_RATE_LIMIT_WINDOW = 10_000; // ms

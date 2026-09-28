@@ -125,6 +125,14 @@ export const COPY = {
       ignore:
         "Si vous n'avez pas demandé ce lien, ignorez simplement ce message : personne ne peut ouvrir la conversation sans lui.",
     },
+    orderMessage: {
+      subject: (n) => `Notre atelier vous a répondu – ${n}`,
+      greeting: (name) => `Bonjour ${name},`,
+      intro: (n) => `Nous venons de vous répondre au sujet de votre commande <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "Une photo est jointe à ce message." : `${n} photos sont jointes à ce message.`),
+      cta: "Voir la conversation",
+      reply: "Répondez directement depuis la page de votre commande — nous y verrons votre message.",
+    },
   },
 
   en: {
@@ -238,6 +246,14 @@ export const COPY = {
       ignore:
         'If you did not ask for this link, simply ignore this message — nobody can open the conversation without it.',
     },
+    orderMessage: {
+      subject: (n) => `Our workshop has replied – ${n}`,
+      greeting: (name) => `Hello ${name},`,
+      intro: (n) => `We've just replied about your order <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "A photo came with this message." : `${n} photos came with this message.`),
+      cta: "See the conversation",
+      reply: "Reply from your order page and we'll see it there.",
+    },
   },
   es: {
     pickup: {
@@ -324,6 +340,14 @@ export const COPY = {
       cta: 'Abrir mi pedido',
       ignore:
         'Si no has pedido este enlace, ignora este mensaje: nadie puede abrir la conversación sin él.',
+    },
+    orderMessage: {
+      subject: (n) => `Nuestro taller te ha respondido – ${n}`,
+      greeting: (name) => `Hola ${name}:`,
+      intro: (n) => `Acabamos de responderte sobre tu pedido <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "El mensaje incluye una foto." : `El mensaje incluye ${n} fotos.`),
+      cta: "Ver la conversación",
+      reply: "Responde desde la página de tu pedido y lo veremos allí.",
     },
   },
   it: {
@@ -412,6 +436,14 @@ export const COPY = {
       ignore:
         'Se non hai richiesto questo link, ignora pure il messaggio: senza di esso nessuno può aprire la conversazione.',
     },
+    orderMessage: {
+      subject: (n) => `Il nostro laboratorio ti ha risposto – ${n}`,
+      greeting: (name) => `Ciao ${name},`,
+      intro: (n) => `Ti abbiamo appena risposto riguardo al tuo ordine <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "Al messaggio è allegata una foto." : `Al messaggio sono allegate ${n} foto.`),
+      cta: "Vedi la conversazione",
+      reply: "Rispondi dalla pagina del tuo ordine: lo leggeremo lì.",
+    },
   },
   de: {
     pickup: {
@@ -498,6 +530,14 @@ export const COPY = {
       cta: 'Bestellung öffnen',
       ignore:
         'Falls Sie diesen Link nicht angefordert haben, ignorieren Sie diese Nachricht einfach — ohne ihn kann niemand den Austausch öffnen.',
+    },
+    orderMessage: {
+      subject: (n) => `Unsere Werkstatt hat geantwortet – ${n}`,
+      greeting: (name) => `Hallo ${name},`,
+      intro: (n) => `Wir haben Ihnen gerade zu Ihrer Bestellung <strong>${n}</strong> geantwortet.`,
+      images: (n) => (n === 1 ? "Der Nachricht liegt ein Foto bei." : `Der Nachricht liegen ${n} Fotos bei.`),
+      cta: "Unterhaltung ansehen",
+      reply: "Antworten Sie direkt auf Ihrer Bestellseite — wir sehen es dort.",
     },
   },
   nl: {
@@ -586,6 +626,14 @@ export const COPY = {
       ignore:
         'Heb je deze link niet aangevraagd? Negeer dit bericht gerust — zonder de link kan niemand het gesprek openen.',
     },
+    orderMessage: {
+      subject: (n) => `Ons atelier heeft geantwoord – ${n}`,
+      greeting: (name) => `Hallo ${name},`,
+      intro: (n) => `We hebben zojuist gereageerd op je bestelling <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "Er zit een foto bij dit bericht." : `Er zitten ${n} foto's bij dit bericht.`),
+      cta: "Bekijk het gesprek",
+      reply: "Antwoord vanaf je bestelpagina — daar zien we het.",
+    },
   },
   pl: {
     pickup: {
@@ -672,6 +720,14 @@ export const COPY = {
       cta: 'Otwórz moje zamówienie',
       ignore:
         'Jeśli nie prosiłeś o ten link, po prostu zignoruj tę wiadomość — bez niego nikt nie otworzy rozmowy.',
+    },
+    orderMessage: {
+      subject: (n) => `Nasza pracownia odpowiedziała – ${n}`,
+      greeting: (name) => `Cześć ${name},`,
+      intro: (n) => `Właśnie odpowiedzieliśmy w sprawie Twojego zamówienia <strong>${n}</strong>.`,
+      images: (n) => (n === 1 ? "Do wiadomości dołączono zdjęcie." : `Do wiadomości dołączono ${n} zdjęcia.`),
+      cta: "Zobacz rozmowę",
+      reply: "Odpowiedz ze strony swojego zamówienia — zobaczymy to tam.",
     },
   },
 } as const;

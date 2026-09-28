@@ -8,7 +8,9 @@ import { DlqService } from '../dlq/dlq.service';
 import { CommerceNotificationService } from '../commerce-notifications/commerce-notification.service';
 import { AdminNotifEvent } from '../commerce-notifications/commerce-notification.constants';
 import { SupportNotificationService } from './support-notification.service';
-import { SUPPORT_QUEUE } from './support.constants';
+import { ShopEmailService } from '../email/shop-email.service';
+import { AssetUrlService } from '../asset-url/asset-url.service';
+import { GUEST_NOTIFY_COOLDOWN_MS, SUPPORT_QUEUE } from './support.constants';
 
 @Processor(SUPPORT_QUEUE)
 export class SupportNotificationProcessor extends DlqAwareWorker {
@@ -20,6 +22,8 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
     private readonly prisma: PrismaService,
     private readonly notifService: SupportNotificationService,
     private readonly notifications: CommerceNotificationService,
+    private readonly email: ShopEmailService,
+    private readonly assetUrls: AssetUrlService,
   ) {
     super(dlqService);
   }
@@ -34,9 +38,89 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
    * The support log still records the decisions notify() cannot see — the
    * cooldown skip in particular, which returns before any send is attempted.
    */
-  async process(job: Job<{ conversationId: string }>): Promise<void> {
-    const { conversationId } = job.data;
+  async process(
+    job: Job<{ conversationId: string; messageId?: string }>,
+  ): Promise<void> {
+    if (job.name === 'notify-guest') {
+      return this.notifyGuest(job.data.conversationId, job.data.messageId);
+    }
+    return this.notifyAdmin(job.data.conversationId);
+  }
 
+  /**
+   * Tells the customer the shop has replied on their order.
+   *
+   * Runs a couple of minutes after the reply and gives up if the message has
+   * been read by then — someone with the thread open has already seen it, and
+   * an email about a message on their screen is noise. That check is also what
+   * makes this safe to queue on every reply rather than guessing at whether
+   * anyone is looking.
+   */
+  private async notifyGuest(
+    conversationId: string,
+    messageId?: string,
+  ): Promise<void> {
+    if (!messageId) return;
+
+    const [conv, message] = await Promise.all([
+      this.prisma.supportConversation.findUnique({
+        where: { id: conversationId },
+        include: { order: true },
+      }),
+      this.prisma.supportMessage.findUnique({ where: { id: messageId } }),
+    ]);
+    if (!conv?.order || !message) return;
+
+    // Read in the meantime: they saw it live.
+    if (message.readAt) {
+      this.logger.log(
+        `Guest reply email skipped (already read) conv=${conversationId}`,
+      );
+      return;
+    }
+
+    // One email per conversation per window, so three lines in a row are one
+    // notification rather than three.
+    if (
+      conv.lastGuestNotifiedAt &&
+      Date.now() - conv.lastGuestNotifiedAt.getTime() < GUEST_NOTIFY_COOLDOWN_MS
+    ) {
+      this.logger.log(
+        `Guest reply email skipped (cooldown) conv=${conversationId}`,
+      );
+      return;
+    }
+
+    const order = conv.order;
+    const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
+    // `#messages` opens the conversation rather than the order summary; the
+    // token is what makes the link work from a mail client with no cookies.
+    const conversationUrl = order.trackingToken
+      ? `${appUrl}/shop/orders/track/${order.orderNumber}?token=${order.trackingToken}#messages`
+      : `${appUrl}/shop/orders/track`;
+
+    const attachments = Array.isArray(message.attachments)
+      ? (message.attachments as unknown[])
+      : [];
+
+    await this.email.sendOrderMessage(order.customerEmail, {
+      orderNumber: order.orderNumber,
+      customerName: order.customerName ?? order.customerEmail,
+      excerpt: message.content,
+      imageCount: attachments.length,
+      conversationUrl,
+      // The customer's own language, not the shop's.
+      locale: order.customerLocale,
+    });
+
+    await this.prisma.supportConversation.update({
+      where: { id: conversationId },
+      data: { lastGuestNotifiedAt: new Date() },
+    });
+    this.logger.log(`Guest reply email sent conv=${conversationId}`);
+  }
+
+  private async notifyAdmin(conversationId: string): Promise<void> {
     const conv = await this.prisma.supportConversation.findUnique({
       where: { id: conversationId },
     });
@@ -47,8 +131,12 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
     if (conv.lastNotifiedAt) {
       const cooldownMs = settings.smsCooldownMin * 60_000;
       if (Date.now() - conv.lastNotifiedAt.getTime() < cooldownMs) {
-        this.logger.log(`Support notif skipped (cooldown) conv=${conversationId}`);
-        await this.log(conversationId, 'skipped', undefined, { reason: 'cooldown' });
+        this.logger.log(
+          `Support notif skipped (cooldown) conv=${conversationId}`,
+        );
+        await this.log(conversationId, 'skipped', undefined, {
+          reason: 'cooldown',
+        });
         return;
       }
     }
@@ -69,7 +157,9 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
 
     const recipients = await this.notifications.resolveRecipients(event);
     if (!recipients) {
-      await this.log(conversationId, 'skipped', undefined, { reason: 'event_disabled_or_no_recipients' });
+      await this.log(conversationId, 'skipped', undefined, {
+        reason: 'event_disabled_or_no_recipients',
+      });
       return;
     }
 

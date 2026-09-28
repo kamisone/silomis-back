@@ -38,6 +38,10 @@ import {
   renderOrderAccessLink,
   OrderAccessLinkEmailData,
 } from './templates/order-access-link';
+import {
+  renderOrderMessage,
+  OrderMessageEmailData,
+} from './templates/order-message';
 
 @Injectable()
 export class ShopEmailService {
@@ -67,6 +71,16 @@ export class ShopEmailService {
     const { subject, html } = renderOrderAccessLink(data);
     await this.transport.send(to, subject, html);
     this.logger.log(`Order access link sent to ${to} for ${data.orderNumber}`);
+  }
+
+  /** Tells the customer the shop has replied on their order's conversation. */
+  async sendOrderMessage(
+    to: string,
+    data: OrderMessageEmailData,
+  ): Promise<void> {
+    const { subject, html } = renderOrderMessage(data);
+    await this.transport.send(to, subject, html);
+    this.logger.log(`Order reply email sent to ${to} for ${data.orderNumber}`);
   }
 
   async sendAbandonedCart(
