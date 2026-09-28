@@ -60,6 +60,15 @@ const DEFAULT_LEADING = 1.35;
 export interface MotifPath {
   d: string;
   fill: string;
+  /**
+   * Where the shape sits, when the uploaded artwork placed it with a transform
+   * rather than in its own coordinates. Carried as a string instead of being
+   * folded into `d`, because folding it in means re-writing every coordinate of
+   * a path — arcs included — and a transform attribute draws identically in
+   * the browser and in the production sheet. Validated at ingest
+   * (`svg-artwork.ts`) and again on the way out of the database.
+   */
+  transform?: string;
 }
 
 /** A motif frozen onto a design, with everything production needs to redraw it. */
@@ -70,6 +79,13 @@ export interface ResolvedMotif {
   viewBox: string;
   /** The design's own shapes and colours, when it is a full-colour one. */
   paths: MotifPath[] | null;
+  /**
+   * Sewn in the fills `paths` carries, rather than in the box's chosen spool.
+   * Separate from `paths` because a one-colour design still needs its shapes:
+   * artwork that places them with transforms cannot be flattened into a single
+   * `d`, and keeping only the first would drop the rest of the drawing.
+   */
+  ownColours: boolean;
   /** The width it is stitched at. */
   sizeMm: number;
   /** The height — the drawing's own proportion unless the customer stretched it. */
@@ -261,10 +277,15 @@ export class PersonalizationService {
     ]);
     if (!template || !template.isActive || !placements.length) return null;
 
-    const [fonts, threads, motifs] = await Promise.all([
+    const [fonts, threads, motifs, motifCategories] = await Promise.all([
       this.prisma.embroideryFont.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
       this.prisma.threadColor.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
-      this.prisma.embroideryMotif.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
+      this.prisma.embroideryMotif.findMany({
+        where: { isActive: true },
+        orderBy: { sortOrder: 'asc' },
+        include: { category: { select: { key: true, isActive: true } } },
+      }),
+      this.prisma.embroideryMotifCategory.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }),
     ]);
     if (!fonts.length || !threads.length) return null;
 
@@ -301,32 +322,36 @@ export class PersonalizationService {
         /** The photo is the customer's — the editor asks for it rather than showing one. */
         usesCustomerPhoto: p.usesCustomerPhoto,
         /**
-         * The real size of the traced panel — what puts the customer's
-         * millimetres onto the photograph at scale, and what bounds how far
-         * a box may travel over it.
+         * The scale: how many millimetres the traced panel is across, which is
+         * what puts the customer's millimetres onto the photograph, and what
+         * bounds how far a box may travel over it.
+         *
+         * No longer asked of the admin — it is `TRACED_PANEL_WIDTH_MM` for
+         * every position, so the tracing itself means "the area about that wide"
+         * and an admin who wants designs to preview larger traces a smaller
+         * box. Only the apparent size is affected: the real limit is still the
+         * derived hoop against the machine's own maximum.
          */
         fieldWidthMm: p.fieldWidthMm,
         fieldHeightMm: p.fieldHeightMm,
-        maxColors: p.maxColors,
-        maxChars: p.maxChars,
         priceCents: p.priceCents,
         allowPuff: p.allowPuff,
         imageUrl: p.mediaKey ? (imageUrls.get(p.mediaKey) ?? null) : null,
-        /** Null until an admin has traced it — the editor falls back to the flat box. */
-        corners: p.isTraced
-          ? [
-              { x: p.topLeftXPct, y: p.topLeftYPct },
-              { x: p.topRightXPct, y: p.topRightYPct },
-              { x: p.bottomRightXPct, y: p.bottomRightYPct },
-              { x: p.bottomLeftXPct, y: p.bottomLeftYPct },
-            ]
-          : null,
+        /**
+         * Where the embroidery area sits on this photograph, as a share of it.
+         *
+         * This was four corners an admin traced. They never carried more than a
+         * centre and a size — they were deliberately not skewed onto the
+         * artwork, so a tracing was averaged down to exactly this box before
+         * anything was drawn — and asking a shop to drag four handles per
+         * position bought nothing over the box itself. Only a customer still
+         * sends corners, framing the panel on the photo of their own item.
+         */
         preview: {
           xPct: p.previewXPct,
           yPct: p.previewYPct,
           widthPct: p.previewWidthPct,
           heightPct: p.previewHeightPct,
-          rotateDeg: p.previewRotateDeg,
         },
       })),
       fonts: fonts.map((f) => ({
@@ -359,8 +384,18 @@ export class PersonalizationService {
         path: m.path,
         viewBox: m.viewBox,
         paths: motifPaths(m.paths),
-        category: m.category,
+        ownColours: m.ownColours,
+        // The tab's key, not its id — the editor filters on it and nothing
+        // stores it. A design whose tab has been switched off falls back to
+        // showing only under "All", the same as an uncategorised one.
+        category: m.category?.isActive ? m.category.key : null,
       })),
+      /**
+       * The library's tabs, in the shop's own order. Sent with their names
+       * already picked for this language: they are admin data, so the
+       * storefront has no compiled-in list to translate them against.
+       */
+      motifCategories: motifCategories.map((c) => ({ key: c.key, name: pickLocalized(c.name, lang) })),
       priceBands: template.priceBands.map((b) => ({ maxStitches: b.maxStitches, priceCents: b.priceCents, label: b.label })),
     };
   }
@@ -490,11 +525,10 @@ export class PersonalizationService {
       const t = el.thread;
       if (t && !threads.some((x) => x.id === t.id)) threads.push(t);
     }
-    if (threads.length > placement.maxColors) {
-      fail(E.TOO_MANY_COLORS, `This position takes at most ${placement.maxColors} thread colours across its boxes.`, {
-        maxColors: placement.maxColors,
-      });
-    }
+    // No colour cap: a box carries one spool and there are at most
+    // MAX_ELEMENTS boxes, so the number of spools on a hoop is already bounded
+    // by something real. A separate per-position number only ever refused a
+    // design the machine could have run.
 
     // Each box carries its own glyph stitches and its own underlay; the
     // colour changes belong to the position, because that is where they
@@ -504,37 +538,17 @@ export class PersonalizationService {
     // A send-in side is not banded — its price is flat, and the customer
     // is free to put as much on it as the hoop holds. The estimate is still
     // kept, for the desk's planning, but it stops nothing.
+    //
+    // On a catalogue item the ladder prices the machine time, and its top band
+    // is open-ended: a design past it is charged there rather than refused.
+    // The customer decides how much goes on their cap; a stitch count is never
+    // a reason to turn the order away. The bands are ordered by maxStitches
+    // ascending, so the last one is the top of the ladder — and a template
+    // always has at least one (the seed writes them, and the admin endpoint
+    // refuses an empty set).
     const band = customerItem
       ? { priceCents: 0, maxStitches: Number.POSITIVE_INFINITY }
-      : template.priceBands.find((b) => stitchEstimate <= b.maxStitches);
-    if (!band) {
-      // Past the largest band there is no price, and inventing one would mean
-      // selling a job whose machine time nobody has costed.
-      //
-      // This is a limit on machine time, not on space — a bold puffed name can
-      // be under a third of the panel's width and still be three times the
-      // stitches of the plain one. Saying "too large" and suggesting shorter
-      // text sends people to fix the one thing that is not the problem, so the
-      // numbers and the actual culprit go out with the error. The culprit is
-      // looked for on the heaviest box, which is where a single switch can
-      // still make the difference.
-      const ceiling = template.priceBands.reduce((max, b) => Math.max(max, b.maxStitches), 0);
-      const heaviest = elements.reduce((a, b) => (b.stitchEstimate > a.stitchEstimate ? b : a));
-      fail(E.TOO_MANY_STITCHES, `That design needs about ${stitchEstimate} stitches, more than the ${ceiling} we can run in one go.`, {
-        stitchEstimate,
-        maxStitches: ceiling,
-        elementIndex: elements.indexOf(heaviest),
-        relax: this.overBudgetCulprit({
-          stitchEstimate,
-          ceiling,
-          hasOutline: false,
-          isPuff: heaviest.isPuff,
-          curveDeg: heaviest.curveDeg,
-          weightFactor: weightForStep(heaviest.weightStep).stitchFactor,
-          share: heaviest.stitchEstimate / Math.max(1, stitchEstimate),
-        }),
-      });
-    }
+      : (template.priceBands.find((b) => stitchEstimate <= b.maxStitches) ?? template.priceBands[template.priceBands.length - 1]);
 
     // The stitch band covers machine time; the placement's own price covers the
     // hooping and the run. A customer embroidering two positions pays both
@@ -547,15 +561,13 @@ export class PersonalizationService {
     // `?? 1` because Math.max with a single undefined is NaN, and a NaN here
     // does not throw — it silently becomes the price of the whole design.
     const threadMultiplier = Math.max(1, ...threads.map((t) => t.priceMultiplier ?? 1));
-    // A send-in side is a flat fee — the item type's price, and only that. The
-    // stitch band, the thread and the position's own price are still checked
-    // above (a design past the largest band is still refused, since the
-    // machine time is real) but none of them is charged: the customer was
-    // quoted one figure per side when they chose the item, and the design
-    // step must not move it.
+    // A send-in side is a flat fee — the item type's price, and only that.
+    // Neither the band nor the thread is charged: the customer was quoted one
+    // figure per side when they chose the item, and the design step must not
+    // move it.
     const priceCents = customerItem
       ? sideFeeCents
-      : Math.round(band.priceCents * threadMultiplier) + placement.priceCents;
+      : Math.round((band?.priceCents ?? 0) * threadMultiplier) + placement.priceCents;
 
     // The row keeps a flat summary of the position for everything that reads a
     // design without opening the document — the queue's card, a search, an
@@ -611,7 +623,12 @@ export class PersonalizationService {
         isPuff: el.isPuff,
         // Path and viewBox travel with the document: retiring a motif from the
         // catalogue must not leave an ordered job with nothing to redraw.
-        motif: el.motif ? { key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, heightMm: el.motif.heightMm, path: el.motif.path, viewBox: el.motif.viewBox, paths: el.motif.paths } : null,
+        motif: el.motif
+          ? {
+              key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, heightMm: el.motif.heightMm,
+              path: el.motif.path, viewBox: el.motif.viewBox, paths: el.motif.paths, ownColours: el.motif.ownColours,
+            }
+          : null,
         // Both files by key: the rendering for every later picture of this
         // design, the original for the digitiser.
         artwork: el.artwork,
@@ -674,7 +691,7 @@ export class PersonalizationService {
     input: ElementInput,
     ctx: {
       template: { allowText: boolean; allowMonogram: boolean };
-      placement: { maxChars: number; allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number; usesCustomerPhoto?: boolean };
+      placement: { allowPuff: boolean; fieldWidthMm: number; fieldHeightMm: number; usesCustomerPhoto?: boolean };
       /** The most a box may measure: the hoop on a catalogue position, the photograph on the customer's own item. */
       bounds: { maxWidthMm: number; maxHeightMm: number };
     },
@@ -719,11 +736,11 @@ export class PersonalizationService {
       if (lines.length > MAX_TEXT_LINES) {
         fail(E.TOO_MANY_LINES, `At most ${MAX_TEXT_LINES} lines.`, { maxLines: MAX_TEXT_LINES });
       }
-      for (const line of lines) this.assertTextIsStitchable(line, input.contentType, placement.maxChars);
+      for (const line of lines) this.assertTextIsStitchable(line, input.contentType);
     }
 
     // A full-colour design carries its own spools; everything else is sewn in one the customer picks.
-    const ownColours = input.contentType === 'motif' && !!motif?.paths?.length;
+    const ownColours = input.contentType === 'motif' && !!motif?.ownColours;
     if (!input.threadColorId && !ownColours) fail(E.THREAD_UNKNOWN, 'Pick a thread colour.');
     const thread = ownColours || !input.threadColorId ? null : (await this.resolveThreads([input.threadColorId]))[0];
 
@@ -1054,6 +1071,7 @@ export class PersonalizationService {
       path: motif.path,
       viewBox: motif.viewBox,
       paths: motifPaths(motif.paths),
+      ownColours: motif.ownColours,
       sizeMm: size,
       heightMm: height,
       stitchesAt30mm: motif.stitchesAt30mm,
@@ -1071,7 +1089,16 @@ export class PersonalizationService {
     return text;
   }
 
-  private assertTextIsStitchable(text: string, contentType: ContentType, maxChars: number): void {
+  /**
+   * No length limit. A position used to carry a `maxChars`, which was a second,
+   * arbitrary answer to a question the geometry already answers: the design is
+   * measured and refused if the hoop round it will not fit
+   * (`TOO_WIDE`/`TOO_TALL`). A count could only ever disagree with that — a
+   * narrow font fitted far more characters than the number allowed, a wide one
+   * overran while still under it — so the customer writes what they like and
+   * the measurement decides.
+   */
+  private assertTextIsStitchable(text: string, contentType: ContentType): void {
     if (!text) fail(E.TEXT_EMPTY, 'Enter the text to embroider.');
 
     if (contentType === 'monogram') {
@@ -1082,9 +1109,6 @@ export class PersonalizationService {
         fail(E.TEXT_UNSTITCHABLE, 'A monogram can only use letters.');
       }
     } else {
-      if (text.length > maxChars) {
-        fail(E.TEXT_TOO_LONG, `This position fits ${maxChars} characters.`, { maxChars });
-      }
       if (!STITCHABLE_TEXT.test(text)) {
         fail(E.TEXT_UNSTITCHABLE, 'Some of those characters cannot be embroidered.');
       }
@@ -1182,43 +1206,6 @@ export class PersonalizationService {
     return Math.ceil(glyphStitches + borderStitches + colorStitches + STITCH_BASE_OVERHEAD);
   }
 
-  /**
-   * The one option that, on its own, would bring an over-budget design back.
-   *
-   * Tried heaviest-first: a customer who has turned on three things wants to be
-   * told which single one to drop, not handed a list. Null when no single
-   * change is enough — then the size or the wording genuinely has to give.
-   */
-  private overBudgetCulprit(args: {
-    stitchEstimate: number;
-    ceiling: number;
-    hasOutline: boolean;
-    isPuff: boolean;
-    curveDeg: number;
-    weightFactor: number;
-    /**
-     * How much of the total the box being relaxed accounts for, 0–1. A switch
-     * on one box only shrinks that box's stitches; the rest of the position is
-     * unchanged, so the saving has to be scaled by the box's share.
-     */
-    share?: number;
-  }): 'outline' | 'puff' | 'weight' | 'curve' | null {
-    const candidates: [Exclude<ReturnType<typeof this.overBudgetCulprit>, null>, number][] = [
-      ['outline', args.hasOutline ? 1 + OUTLINE_STITCH_FACTOR : 1],
-      ['puff', args.isPuff ? PUFF_STITCH_FACTOR : 1],
-      ['weight', args.weightFactor > 1 ? args.weightFactor : 1],
-      ['curve', args.curveDeg ? CURVE_STITCH_FACTOR : 1],
-    ];
-    const share = args.share ?? 1;
-
-    return (
-      candidates
-        .filter(([, factor]) => factor > 1)
-        .sort((a, b) => b[1] - a[1])
-        .find(([, factor]) => args.stitchEstimate - args.stitchEstimate * share * (1 - 1 / factor) <= args.ceiling)?.[0] ?? null
-    );
-  }
-
   // ── Fingerprint ──────────────────────────────────────────────────────
 
   /**
@@ -1276,10 +1263,14 @@ export class PersonalizationService {
       const sy = (r.motif.heightMm || r.motif.sizeMm) / (vh || 100);
       const tx = -((vw || 100) * sx) / 2;
       const ty = -((vh || 100) * sy) / 2;
-      // A full-colour design draws its own shapes in its own colours; a
-      // silhouette takes the box's spool.
+      // The shapes are the drawing; `ownColours` only decides what fills them.
+      // A one-spool design still draws every shape — sewing just the first
+      // would leave most of the artwork off the cap. Designs seeded before the
+      // shapes existed have only the single silhouette path.
       const shapes = r.motif.paths?.length
-        ? r.motif.paths.map((p) => `<path d="${escapeXml(p.d)}" fill="${escapeXml(p.fill)}"/>`)
+        ? r.motif.paths.map(
+            (p) => `<path d="${escapeXml(p.d)}" fill="${escapeXml(r.motif!.ownColours ? p.fill : color)}"${p.transform ? ` transform="${escapeXml(p.transform)}"` : ''}/>`,
+          )
         : [`<path d="${escapeXml(r.motif.path)}" fill="${escapeXml(color)}"/>`];
       return [`<g transform="translate(${round1(tx)} ${round1(ty)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)})">`, ...shapes, `</g>`];
     }
@@ -1439,7 +1430,14 @@ export class PersonalizationService {
         el.kerning?.some((k) => k !== 0) ? 'kerned' : null,
         el.isPuff ? '3D PUFF — foam under satin' : null,
         el.borderMm > 0 ? `satin border ${el.borderMm}mm round the letters` : null,
-        el.motif ? `motif "${el.motif.name}" at ${el.motif.sizeMm}×${el.motif.heightMm}mm${el.motif.paths?.length ? ` — FULL COLOUR, ${[...new Set(el.motif.paths.map((p) => p.fill))].join(' ')}` : ''}` : null,
+        // "FULL COLOUR" follows `ownColours`, not the presence of shapes: a
+        // one-spool design has shapes too, and telling the operator to load
+        // four cones for it would have them re-thread the machine for nothing.
+        el.motif
+          ? `motif "${el.motif.name}" at ${el.motif.sizeMm}×${el.motif.heightMm}mm${
+              el.motif.ownColours && el.motif.paths?.length ? ` — FULL COLOUR, ${[...new Set(el.motif.paths.map((p) => p.fill))].join(' ')}` : ''
+            }`
+          : null,
         el.artwork ? `CUSTOMER ARTWORK "${el.artwork.name}" ${el.artwork.widthMm}×${el.artwork.heightMm}mm — digitise from the original file` : null,
         el.thread?.finish && el.thread.finish !== 'matte' ? `finish: ${el.thread.finish}` : null,
         el.offsetXMm || el.offsetYMm ? `at ${el.offsetXMm}mm, ${el.offsetYMm}mm from the hoop's centre` : 'centred in the hoop',
@@ -1607,7 +1605,10 @@ function rowToResolved(row: CartLineDesign): ResolvedPersonalization {
         heightMm: row.motifSizeMm ?? 30,
         stitchesAt30mm: 0,
         colorCount: 1,
+        // The row's flat motif columns are a silhouette by construction: they
+        // predate shapes entirely, so there are no fills of its own to use.
         paths: null,
+        ownColours: false,
       }
     : null;
   const widthMm = widthFromRow(row);
@@ -1667,6 +1668,10 @@ export function elementsFromRow(
             path: el.motif.path ?? (motif?.key === el.motif.key ? motif.path : ''),
             viewBox: el.motif.viewBox ?? motif?.viewBox ?? '0 0 100 100',
             paths: el.motif.paths ?? null,
+            // Documents written before the flag existed encoded the same
+            // decision in the presence of shapes, so that is what they still
+            // mean — a job on the floor must not change colour under it.
+            ownColours: el.motif.ownColours ?? !!el.motif.paths?.length,
             stitchesAt30mm: 0,
             colorCount: 1,
           }
@@ -1674,7 +1679,9 @@ export function elementsFromRow(
       artwork: (el.artwork as ResolvedArtwork | undefined) ?? null,
       borderMm: el.borderMm ?? 0,
       leading: el.leading ?? DEFAULT_LEADING,
-      thread: (el.thread as ResolvedThread | null | undefined) ?? (el.contentType === 'artwork' || el.motif?.paths?.length ? null : (threads[0] ?? null)),
+      thread:
+        (el.thread as ResolvedThread | null | undefined) ??
+        (el.contentType === 'artwork' || (el.motif?.ownColours ?? !!el.motif?.paths?.length) ? null : (threads[0] ?? null)),
       widthMm: el.widthMm ?? 0,
       lineWidthsMm: el.lineWidthsMm ?? [],
       stackMm: el.stackMm ?? el.heightMm,
@@ -1779,7 +1786,7 @@ interface StoredElement {
   kerning?: number[] | null;
   curveDeg?: number;
   isPuff?: boolean;
-  motif?: { key: string; name: string; sizeMm: number; heightMm?: number; path?: string; viewBox?: string; paths?: MotifPath[] | null } | null;
+  motif?: { key: string; name: string; sizeMm: number; heightMm?: number; path?: string; viewBox?: string; paths?: MotifPath[] | null; ownColours?: boolean } | null;
   artwork?: ResolvedArtwork | null;
   borderMm?: number;
   leading?: number;
@@ -1840,11 +1847,21 @@ function photoExtentMm(corners: { x: number; y: number }[], panel: { fieldWidthM
 function motifPaths(raw: unknown): MotifPath[] | null {
   if (!Array.isArray(raw)) return null;
   const out = raw
-    .filter((p): p is { d: unknown; fill: unknown } => !!p && typeof p === 'object')
+    .filter((p): p is { d: unknown; fill: unknown; transform?: unknown } => !!p && typeof p === 'object')
     .filter((p) => typeof p.d === 'string' && typeof p.fill === 'string')
-    .map((p) => ({ d: p.d as string, fill: p.fill as string }));
+    .map((p) => ({
+      d: p.d as string,
+      fill: p.fill as string,
+      // Re-checked on the way out, not just at ingest: a row written before the
+      // check existed, or edited straight in the database, still reaches an SVG
+      // attribute from here.
+      ...(typeof p.transform === 'string' && SAFE_TRANSFORM.test(p.transform.trim()) ? { transform: p.transform.trim() } : {}),
+    }));
   return out.length ? out : null;
 }
+
+/** Same grammar `svg-artwork.ts` accepts: transform functions and numbers, nothing else. */
+const SAFE_TRANSFORM = /^(?:(?:matrix|translate|scale|rotate|skewX|skewY)\s*\(\s*[-+0-9eE.,\s]+\)\s*)+$/;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;

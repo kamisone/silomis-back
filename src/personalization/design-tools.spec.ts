@@ -37,7 +37,27 @@ const BANDS = [
 const MOTIF = {
   key: 'heart', name: { en: 'Heart' }, path: 'M10 30 A20 20 0 0 1 50 30 Z',
   viewBox: '0 0 100 100', stitchesAt30mm: 2200, colorCount: 1, isActive: true,
+  paths: null, ownColours: false,
 };
+
+/**
+ * An uploaded design: shapes, placed by a transform the way a drawing tool
+ * exports them, sewn in ONE spool. This is the shape a silhouette takes now —
+ * shapes with `ownColours` false — and the combination that used to be
+ * impossible to store.
+ */
+const FLAT_SHAPES = {
+  key: 'badge', name: { en: 'Badge' }, path: 'M0 0h10v10z',
+  viewBox: '0 0 64 64', stitchesAt30mm: 2200, colorCount: 1, isActive: true,
+  ownColours: false,
+  paths: [
+    { d: 'M0 0h10v10z', fill: '#ff8800', transform: 'translate(2,2)' },
+    { d: 'M20 20h10v10z', fill: '#003366', transform: 'translate(2,2)' },
+  ],
+};
+
+/** The same artwork, kept in its own colours. */
+const OWN_COLOURS = { ...FLAT_SHAPES, key: 'badge-colour', ownColours: true, colorCount: 2 };
 
 function makeService() {
   const prisma = {
@@ -58,7 +78,11 @@ function makeService() {
         where.key === 'script-joined' ? NO_CURVE : BLOCK,
       ),
     },
-    embroideryMotif: { findUnique: jest.fn(async ({ where }: { where: { key: string } }) => (where.key === 'heart' ? MOTIF : null)) },
+    embroideryMotif: {
+      findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
+        [MOTIF, FLAT_SHAPES, OWN_COLOURS].find((m) => m.key === where.key) ?? null,
+      ),
+    },
     threadColor: {
       findMany: jest.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         [TEAL, PINK, GOLD].filter((t) => where.id.in.includes(t.id)),
@@ -425,71 +449,61 @@ describe('rendering a stored row', () => {
     expect(svg).toContain('<path d="M10 30');
     expect(svg).not.toContain('NaN');
   });
+
+  /**
+   * The bug this guards: shapes used to double as "full colour", so a
+   * one-spool design whose artwork places its shapes with transforms had to be
+   * flattened into a single `d` — which cannot be done — and all but the first
+   * shape were dropped. Every shape gets sewn now; `ownColours` alone decides
+   * the fill.
+   */
+  it('sews every shape of a one-spool design, in the chosen thread', async () => {
+    const s = makeService();
+    const r = await s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'badge', motifSizeMm: 30, threadColorIds: [TEAL.id] }));
+    const row = { ...r, designJson: r.designJson, outlineThread: null, lines: undefined, motif: undefined, widthMm: undefined };
+    const svg = (await s.buildArtworkForCartItems([{ id: 'ci-3', personalizations: [row as never] }])).get('ci-3:front');
+
+    expect(svg).toContain('d="M0 0h10v10z"');
+    expect(svg).toContain('d="M20 20h10v10z"');
+    // Both in the spool, not in the file's own colours.
+    expect((svg!.match(new RegExp(`fill="${TEAL.hex}"`, 'g')) ?? []).length).toBe(2);
+    expect(svg).not.toContain('#ff8800');
+    // The placement the file gave them survives.
+    expect((svg!.match(/transform="translate\(2,2\)"/g) ?? []).length).toBe(2);
+  });
+
+  it('sews a full-colour design in the fills its artwork carries', async () => {
+    const s = makeService();
+    const r = await s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'badge-colour', motifSizeMm: 30 }));
+    const row = { ...r, designJson: r.designJson, outlineThread: null, lines: undefined, motif: undefined, widthMm: undefined };
+    const svg = (await s.buildArtworkForCartItems([{ id: 'ci-4', personalizations: [row as never] }])).get('ci-4:front');
+
+    expect(svg).toContain('fill="#ff8800"');
+    expect(svg).toContain('fill="#003366"');
+    // No spool is charged or named for it — the design carries its own.
+    expect(r.threadColors).toEqual([]);
+  });
 });
 
-describe('the stitch ceiling', () => {
+describe('the price ladder past its top band', () => {
   /**
-   * The ceiling is machine time, not space. A bold puffed name can occupy a
-   * fifth of a wide panel and still be three times the stitches of the plain
-   * one, so the error has to say what is actually wrong and which switch to
-   * flip — telling someone to shorten their text when the foam is the
-   * problem sends them to fix the one thing that is not.
+   * The ladder prices machine time; it does not cap it. A customer who wants a
+   * bold puffed name three times the stitches of the plain one gets it, charged
+   * at the top band — nothing about the stitch count turns the order away.
    */
-  const over = async (over: Record<string, unknown>) => {
-    try {
-      await makeService().resolve('p1', design(over));
-      return null;
-    } catch (err) {
-      return (err as { response?: Record<string, unknown> }).response ?? null;
-    }
-  };
-
-  it('reports the estimate and the ceiling, not a vague "too large"', async () => {
-    // ~11,400 stitches against a 9,000 ceiling.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, puff: true });
-    expect(res?.code).toBe(E.TOO_MANY_STITCHES);
-    expect(res?.stitchEstimate).toBeGreaterThan(9000);
-    expect(res?.maxStitches).toBe(9000);
-    expect(String(res?.message)).toContain('stitches');
+  it('prices a design past the largest band at that band rather than refusing it', async () => {
+    // ~11,400 stitches against a ladder whose top band stops at 9,000. The
+    // top band is 1800 and this position costs nothing of its own.
+    const r = await makeService().resolve('p1', design({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, puff: true }));
+    expect(r.stitchEstimate).toBeGreaterThan(9000);
+    expect(r.priceCents).toBe(1800);
   });
 
-  it('names the puff when dropping it alone would fit', async () => {
-    // 7,174 stitches flat; 9,657 puffed, against a 9,000 ceiling.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 2, puff: true });
-    expect(res?.relax).toBe('puff');
-  });
-
-  it('names the heaviest contributor when several are on', async () => {
-    // Weight (×1.42) beats puff (×1.35), so it is the one to drop first:
-    // 11,510 as chosen, 8,130 at regular weight.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 35, weight: 4, puff: true });
-    expect(res?.relax).toBe('weight');
-  });
-
-  it('names nothing when no single switch is enough — the size has to give', async () => {
-    // 40mm is the face's own ceiling, so this is as big as it goes: ~16,550
-    // stitches. Dropping the puff still leaves ~12,300 and dropping the
-    // weight ~9,660 — both over the 9,000, so nothing short of a smaller
-    // design will do and the error says so by naming none of them.
-    const res = await over({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, puff: true });
-    expect(res?.relax).toBeNull();
-  });
-
-  it('looks for the switch on the heaviest box, not on whichever box happens to have one', async () => {
-    // A 40mm bold name (~12,300) next to a tiny puffed box. The puff is the
-    // only switch on the tiny box, but dropping it saves a few hundred
-    // stitches of a 12,000 total; the weight on the big box is what brings
-    // the position back under, so that is the one named — and the error
-    // points at that box.
-    const res = await over({
-      placementKey: 'wide',
-      elements: [
-        box({ text: 'Alexandra', heightMm: 40, weight: 5, threadColorId: TEAL.id, offsetYMm: -10 }),
-        box({ text: 'Jo', heightMm: 10, puff: true, threadColorId: TEAL.id, offsetYMm: 25 }),
-      ],
-    });
-    expect(res?.code).toBe(E.TOO_MANY_STITCHES);
-    expect(res?.elementIndex).toBe(0);
-    expect(res?.relax).toBe('weight');
+  it('lets the heaviest design the face allows through, at the same top band', async () => {
+    // 40mm, heaviest weight, puffed: ~16,550 stitches, nearly twice the top
+    // band. Space is still checked — machine time is not.
+    const r = await makeService().resolve('p1', design({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, puff: true }));
+    expect(r.stitchEstimate).toBeGreaterThan(16000);
+    expect(r.priceCents).toBe(1800);
   });
 });

@@ -115,7 +115,6 @@ export interface PlacementSeed {
   previewYPct: number;
   previewWidthPct: number;
   previewHeightPct: number;
-  previewRotateDeg: number;
   /** What this position costs, on top of the stitch band. */
   priceCents: number;
   sortOrder: number;
@@ -142,7 +141,7 @@ export const CAP_PLACEMENT_SEED: PlacementSeed[] = [
     hint: { en: 'Centred above the peak — the classic position' },
     fieldWidthMm: 110, fieldHeightMm: 55, maxColors: 3, maxChars: 14,
     previewXPct: 34, previewYPct: 43, previewWidthPct: 32, previewHeightPct: 14,
-    previewRotateDeg: 0, priceCents: 0, sortOrder: 10,
+    priceCents: 0, sortOrder: 10,
   },
   {
     key: 'side',
@@ -150,7 +149,7 @@ export const CAP_PLACEMENT_SEED: PlacementSeed[] = [
     hint: { en: 'Small and subtle, above the left ear' },
     fieldWidthMm: 60, fieldHeightMm: 30, maxColors: 2, maxChars: 10,
     previewXPct: 18, previewYPct: 50, previewWidthPct: 16, previewHeightPct: 8,
-    previewRotateDeg: -4, priceCents: 150, sortOrder: 20,
+    priceCents: 150, sortOrder: 20,
   },
   {
     key: 'back',
@@ -158,7 +157,7 @@ export const CAP_PLACEMENT_SEED: PlacementSeed[] = [
     hint: { en: 'Above the closure — seen when you walk away' },
     fieldWidthMm: 80, fieldHeightMm: 25, maxColors: 2, maxChars: 12,
     previewXPct: 62, previewYPct: 62, previewWidthPct: 22, previewHeightPct: 7,
-    previewRotateDeg: 0, priceCents: 150, sortOrder: 30,
+    priceCents: 150, sortOrder: 30,
   },
 ];
 
@@ -173,8 +172,9 @@ export interface PriceBandSeed {
  * is as many as a customer can hold in their head, and the jump between them
  * is visible enough to nudge toward the small one.
  *
- * The top band is also the hard ceiling: a design past 9000 stitches is a
- * quarter of an hour on the machine and belongs in a quote, not a checkout.
+ * The top band is open-ended rather than a ceiling: a design past 9000
+ * stitches is charged at the Large band, not refused. Shops that want a
+ * heavier job priced properly add a band above it.
  */
 export const PRICE_BAND_SEED: PriceBandSeed[] = [
   { maxStitches: 3000, priceCents: 800, label: 'Small' },
@@ -185,6 +185,35 @@ export const PRICE_BAND_SEED: PriceBandSeed[] = [
 export const DEFAULT_TEMPLATE_KEY = 'cap-standard';
 export const DEFAULT_TEMPLATE_NAME = 'Cap — standard embroidery';
 export const THREAD_BRAND = 'Madeira Polyneon';
+
+export interface MotifCategorySeed {
+  key: string;
+  name: Record<string, string>;
+  sortOrder: number;
+}
+
+/**
+ * The tabs the design library opens with.
+ *
+ * These are the labels the storefront used to carry in its own translation
+ * maps, moved here because the tabs are now the shop's data: it can rename
+ * them, reorder them, switch them off or add its own. The seed only decides
+ * what a fresh install starts with — after that these rows are never
+ * re-applied, or a deploy would undo the shop's merchandising.
+ */
+export const MOTIF_CATEGORY_SEED: MotifCategorySeed[] = [
+  { key: 'love',     sortOrder: 10,  name: { en: 'Love',     fr: 'Amour',            es: 'Amor',           it: 'Amore',      de: 'Liebe',        nl: 'Liefde',       pl: 'Miłość' } },
+  { key: 'shapes',   sortOrder: 20,  name: { en: 'Shapes',   fr: 'Formes',           es: 'Formas',         it: 'Forme',      de: 'Formen',       nl: 'Vormen',       pl: 'Kształty' } },
+  { key: 'animals',  sortOrder: 30,  name: { en: 'Animals',  fr: 'Animaux',          es: 'Animales',       it: 'Animali',    de: 'Tiere',        nl: 'Dieren',       pl: 'Zwierzęta' } },
+  { key: 'outdoors', sortOrder: 40,  name: { en: 'Outdoors', fr: 'Plein air',        es: 'Aire libre',     it: 'All’aperto', de: 'Draußen',      nl: 'Buiten',       pl: 'Na zewnątrz' } },
+  { key: 'nature',   sortOrder: 50,  name: { en: 'Nature',   fr: 'Nature',           es: 'Naturaleza',     it: 'Natura',     de: 'Natur',        nl: 'Natuur',       pl: 'Natura' } },
+  { key: 'sport',    sortOrder: 60,  name: { en: 'Sport',    fr: 'Sport',            es: 'Deporte',        it: 'Sport',      de: 'Sport',        nl: 'Sport',        pl: 'Sport' } },
+  { key: 'symbols',  sortOrder: 70,  name: { en: 'Symbols',  fr: 'Symboles',         es: 'Símbolos',       it: 'Simboli',    de: 'Symbole',      nl: 'Symbolen',     pl: 'Symbole' } },
+  { key: 'social',   sortOrder: 80,  name: { en: 'Social',   fr: 'Réseaux sociaux',  es: 'Redes sociales', it: 'Social',     de: 'Social Media', nl: 'Social media', pl: 'Social media' } },
+  { key: 'modern',   sortOrder: 90,  name: { en: 'Modern',   fr: 'Moderne',          es: 'Moderno',        it: 'Moderno',    de: 'Modern',       nl: 'Modern',       pl: 'Nowoczesne' } },
+  { key: 'food',     sortOrder: 100, name: { en: 'Food',     fr: 'Gourmand',         es: 'Comida',         it: 'Cibo',       de: 'Essen',        nl: 'Eten',         pl: 'Jedzenie' } },
+  { key: 'other',    sortOrder: 110, name: { en: 'Other',    fr: 'Autres',           es: 'Otros',          it: 'Altro',      de: 'Sonstiges',    nl: 'Overig',       pl: 'Inne' } },
+];
 
 export interface MotifSeed {
   key: string;

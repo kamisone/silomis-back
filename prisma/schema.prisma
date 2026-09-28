@@ -2786,6 +2786,30 @@ model PersonalizationTemplate {
 /// `path` is the outline as SVG path data. The catalogue is admin-authored, so
 /// it is trusted markup — but it is still rendered as a `d` attribute on a
 /// `<path>` and never injected as HTML.
+/// One tab in the storefront's design library — "Love", "Shapes", "Social".
+///
+/// A row rather than a compiled-in list because the tabs are the shop's own
+/// merchandising: a headwear shop wants "Sport" where a christening shop wants
+/// "Baptism", and neither should need a deploy. The key is what the editor
+/// filters on and never changes; `name` is what the customer reads.
+model EmbroideryMotifCategory {
+  id   String @id @default(uuid())
+  key  String @unique @db.VarChar(80)
+  /// { en: "Love", fr: "Amour", … } — the admin's Generate button fills it.
+  name Json
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  motifs EmbroideryMotif[]
+
+  @@index([isActive, sortOrder])
+  @@map("shop_embroidery_motif_categories")
+}
+
 model EmbroideryMotif {
   id   String @id @default(uuid())
   key  String @unique @db.VarChar(80)
@@ -2795,17 +2819,33 @@ model EmbroideryMotif {
   path    String
   /// The coordinate box `path` is drawn in, so it can be scaled to millimetres.
   viewBox String @default("0 0 100 100") @db.VarChar(80)
-  /// A full-colour design: its shapes with their own fills, drawn in order,
-  /// [{ d, fill }]. When set, `path` is only the silhouette (for a swatch)
-  /// and the design is stitched in its own colours rather than a chosen spool.
+  /// The design's shapes, drawn in order: [{ d, fill, transform? }]. Set for
+  /// anything uploaded through the admin; null for the older seeded shapes,
+  /// which are the single `path` above and nothing else.
   paths   Json?
+  /// Stitched in the fills `paths` carries, rather than in one spool the
+  /// customer picks. Separate from `paths` because a one-colour design still
+  /// needs its shapes: a file that places them with transforms cannot be
+  /// flattened into one `d`, and picking only the first would quietly drop the
+  /// rest of the artwork.
+  ownColours Boolean @default(false)
 
   /// Measured from a stitch-out at 30mm; the estimator scales it by area.
+  /// Not an admin field: it feeds the machine-time estimate on the production
+  /// sheet, while what a design COSTS is `priceCents` below.
   stitchesAt30mm Int @default(2200)
   /// How many thread colours this shape needs. Most are one.
   colorCount     Int @default(1)
+  /// What this design adds to the embroidery price, on top of the position's
+  /// own price — a licensed or fiddly shape can be worth more than a plain one.
+  /// Charged per box, because each box is stitched.
+  priceCents     Int @default(0)
 
-  category  String? @db.VarChar(80)
+  /// The tab it sits under, or null for a design that only shows under "All".
+  /// Deleting a tab does not delete its designs — they fall back to null.
+  categoryId String?
+  category   EmbroideryMotifCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
   isActive  Boolean @default(true)
   sortOrder Int     @default(0)
 
@@ -2813,6 +2853,7 @@ model EmbroideryMotif {
   updatedAt DateTime @updatedAt
 
   @@index([isActive, sortOrder])
+  @@index([categoryId])
   @@map("shop_embroidery_motifs")
 }
 
@@ -2849,36 +2890,28 @@ model PersonalizationPlacement {
   maxColors     Int   @default(3)
   maxChars      Int   @default(12)
 
-  /// The photograph this position is embroidered on, and the area traced onto
-  /// it. They live here rather than per product because a position IS a view of
-  /// the item — "Front panel" is the front panel, photographed once — and
-  /// asking an admin to re-upload the same shot for every cap was work with
-  /// nothing to show for it.
+  /// The photograph this position is embroidered on. It lives here rather than
+  /// per product because a position IS a view of the item — "Front panel" is
+  /// the front panel, photographed once — and asking an admin to re-upload the
+  /// same shot for every cap was work with nothing to show for it.
   ///
   /// NULL until a photo is chosen. A position without one is not offered: there
   /// would be nothing for a customer to place artwork on.
   mediaKey String? @db.VarChar(1000)
 
-  topLeftXPct     Float @default(34)
-  topLeftYPct     Float @default(42)
-  topRightXPct    Float @default(66)
-  topRightYPct    Float @default(42)
-  bottomRightXPct Float @default(66)
-  bottomRightYPct Float @default(57)
-  bottomLeftXPct  Float @default(34)
-  bottomLeftYPct  Float @default(57)
-
-  /// False until an admin has actually dragged the corners. The storefront
-  /// falls back to a flat box while it is false, rather than showing a
-  /// perspective nobody checked against the photo.
-  isTraced Boolean @default(false)
-
-  /// Flat fallback box, used only until the area above is traced.
+  /// The embroidery area on that photograph, as a share of it.
+  ///
+  /// This replaced eight corner columns and an `isTraced` flag. The corners
+  /// never carried more: they were deliberately never skewed onto the artwork
+  /// (a design mapped through a trapezoid has no side parallel to the image, so
+  /// a quarter turn comes out leaning), so a tracing was averaged down to
+  /// exactly this box before anything was drawn — and dragging four handles per
+  /// position bought nothing over the box itself. Only a customer still sends
+  /// corners, framing the panel on the photo of their own item.
   previewXPct      Float @default(34)
   previewYPct      Float @default(42)
   previewWidthPct  Float @default(32)
   previewHeightPct Float @default(15)
-  previewRotateDeg Float @default(0)
 
   /// 3D puff needs a frame that can take the foam's height — a flat cap front
   /// can, a curved side panel cannot. Off unless a shop says otherwise.

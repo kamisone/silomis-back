@@ -54,8 +54,8 @@ export class DesignPreviewService {
         const doc = row.designJson as { customerItem?: { photoKeys?: string[]; corners?: Corner[]; panelWidthMm?: number } | null } | null;
         const placement = placements.find((p) => p.key === row.placementKey);
 
-        // The photo and the traced panel: the customer's own on a send-in,
-        // the position's on a catalogue product.
+        // The photo and the embroidery area on it: the customer's framing on a
+        // send-in, the position's own box on a catalogue product.
         let photoKey: string | null = null;
         let corners: Corner[] | null = null;
         let panelWidthMm = 0;
@@ -65,21 +65,16 @@ export class DesignPreviewService {
           panelWidthMm = doc.customerItem.panelWidthMm ?? row.fieldWidthMm;
         } else if (placement?.mediaKey) {
           photoKey = placement.mediaKey;
-          // Untraced positions show a flat box in the editor; the same box
-          // is where the design is drawn here.
-          corners = placement.isTraced
-            ? [
-                { x: placement.topLeftXPct, y: placement.topLeftYPct },
-                { x: placement.topRightXPct, y: placement.topRightYPct },
-                { x: placement.bottomRightXPct, y: placement.bottomRightYPct },
-                { x: placement.bottomLeftXPct, y: placement.bottomLeftYPct },
-              ]
-            : [
-                { x: placement.previewXPct, y: placement.previewYPct },
-                { x: placement.previewXPct + placement.previewWidthPct, y: placement.previewYPct },
-                { x: placement.previewXPct + placement.previewWidthPct, y: placement.previewYPct + placement.previewHeightPct },
-                { x: placement.previewXPct, y: placement.previewYPct + placement.previewHeightPct },
-              ];
+          // The position's embroidery area, as a share of its photo — the same
+          // box the editor draws in. There is no tracing on a position any
+          // more; only a customer's own item still arrives as four corners,
+          // handled above.
+          corners = [
+            { x: placement.previewXPct, y: placement.previewYPct },
+            { x: placement.previewXPct + placement.previewWidthPct, y: placement.previewYPct },
+            { x: placement.previewXPct + placement.previewWidthPct, y: placement.previewYPct + placement.previewHeightPct },
+            { x: placement.previewXPct, y: placement.previewYPct + placement.previewHeightPct },
+          ];
           panelWidthMm = placement.fieldWidthMm;
         }
         if (!photoKey || !corners) continue;

@@ -162,6 +162,18 @@ export const PUFF_STITCH_FACTOR = 1.35;
 export const CURVE_STITCH_FACTOR = 1.08;
 
 /** Motifs cost what they were digitised at, plus the usual colour changes. */
+/**
+ * What a traced panel is taken to be, across, in millimetres.
+ *
+ * The admin used to measure and type this per position. It only ever set the
+ * photograph's scale — the hoop is fitted round whatever the customer places,
+ * and the machine's own maximum is what refuses a design — so it is one
+ * constant now and the tracing carries the meaning: trace the area that is
+ * about this wide, and trace a smaller box to make designs preview larger.
+ */
+export const TRACED_PANEL_WIDTH_MM = 100;
+export const TRACED_PANEL_HEIGHT_MM = 50;
+
 export const MOTIF_MIN_MM = 15;
 export const MOTIF_MAX_MM = 120;
 
@@ -195,14 +207,11 @@ export const PERSONALIZATION_ERRORS = {
   FONT_UNKNOWN: 'PERSONALIZATION_FONT_UNKNOWN',
   THREAD_UNKNOWN: 'PERSONALIZATION_THREAD_UNKNOWN',
   TEXT_EMPTY: 'PERSONALIZATION_TEXT_EMPTY',
-  TEXT_TOO_LONG: 'PERSONALIZATION_TEXT_TOO_LONG',
   TEXT_UNSTITCHABLE: 'PERSONALIZATION_TEXT_UNSTITCHABLE',
   TEXT_BLOCKED: 'PERSONALIZATION_TEXT_BLOCKED',
   MONOGRAM_LENGTH: 'PERSONALIZATION_MONOGRAM_LENGTH',
   HEIGHT_OUT_OF_RANGE: 'PERSONALIZATION_HEIGHT_OUT_OF_RANGE',
   TOO_WIDE: 'PERSONALIZATION_TOO_WIDE',
-  TOO_MANY_COLORS: 'PERSONALIZATION_TOO_MANY_COLORS',
-  TOO_MANY_STITCHES: 'PERSONALIZATION_TOO_MANY_STITCHES',
   CONTENT_TYPE_DISABLED: 'PERSONALIZATION_CONTENT_TYPE_DISABLED',
   TOO_MANY_LINES: 'PERSONALIZATION_TOO_MANY_LINES',
   TOO_TALL: 'PERSONALIZATION_TOO_TALL',

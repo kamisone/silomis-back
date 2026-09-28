@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   DEFAULT_TEMPLATE_KEY,
   MOTIF_SEED,
+  MOTIF_CATEGORY_SEED,
   DEFAULT_TEMPLATE_NAME,
   FONT_SEED,
   PRICE_BAND_SEED,
@@ -15,6 +16,7 @@ const SEEDED_FONTS_KEY = 'personalization_seeded_font_keys';
 const SEEDED_THREADS_KEY = 'personalization_seeded_thread_codes';
 const SEEDED_TEMPLATE_KEY = 'personalization_seeded_template_keys';
 const SEEDED_MOTIFS_KEY = 'personalization_seeded_motif_keys';
+const SEEDED_MOTIF_CATEGORIES_KEY = 'personalization_seeded_motif_category_keys';
 
 /**
  * Puts the starting catalogue in place on boot, then stays out of the way.
@@ -91,27 +93,53 @@ export class PersonalizationSeedService implements OnModuleInit {
 
   // ── Motifs ───────────────────────────────────────────────────────────
 
+  /**
+   * The library's tabs. Seeded once, like everything else here — a shop that
+   * deletes "Sport" or renames it must not find the original back after the
+   * next deploy.
+   */
+  private async seedMotifCategories(): Promise<Map<string, string>> {
+    const seeded = await this.readMarker(SEEDED_MOTIF_CATEGORIES_KEY);
+    const fresh = seeded === null && (await this.prisma.embroideryMotifCategory.count()) === 0;
+    const already = new Set(seeded ?? (fresh ? [] : MOTIF_CATEGORY_SEED.map((c) => c.key)));
+
+    const pending = MOTIF_CATEGORY_SEED.filter((c) => !already.has(c.key));
+    if (pending.length) {
+      await this.prisma.embroideryMotifCategory.createMany({ data: pending, skipDuplicates: true });
+      this.logger.log(`Seeded ${pending.length} design tab(s)`);
+    }
+    await this.writeMarker(SEEDED_MOTIF_CATEGORIES_KEY, [...already, ...pending.map((c) => c.key)]);
+
+    const rows = await this.prisma.embroideryMotifCategory.findMany({ select: { id: true, key: true } });
+    return new Map(rows.map((r) => [r.key, r.id]));
+  }
+
   private async seedMotifs(): Promise<void> {
+    const categoryIds = await this.seedMotifCategories();
+
     const seeded = await this.readMarker(SEEDED_MOTIFS_KEY);
     const fresh = seeded === null && (await this.prisma.embroideryMotif.count()) === 0;
     const already = new Set(seeded ?? (fresh ? [] : MOTIF_SEED.map((m) => m.key)));
 
     const pending = MOTIF_SEED.filter((m) => !already.has(m.key));
     if (pending.length) {
-      await this.prisma.embroideryMotif.createMany({ data: pending, skipDuplicates: true });
+      await this.prisma.embroideryMotif.createMany({
+        data: pending.map(({ category, ...m }) => ({ ...m, categoryId: categoryIds.get(category) ?? null })),
+        skipDuplicates: true,
+      });
       this.logger.log(`Seeded ${pending.length} motif(s)`);
     }
     await this.writeMarker(SEEDED_MOTIFS_KEY, [...already, ...pending.map((m) => m.key)]);
 
-    // The starter shapes were seeded with English names only; the names in
-    // every language are ours to keep current (there is no admin page for
-    // them yet), as is the category the library groups them under.
-    for (const m of MOTIF_SEED) {
-      await this.prisma.embroideryMotif.updateMany({
-        where: { key: m.key },
-        data: { name: m.name, category: m.category, paths: m.paths ?? undefined, colorCount: m.colorCount ?? undefined },
-      });
-    }
+    // Nothing is written over an existing row.
+    //
+    // This loop used to re-apply every seeded name, category and colour set on
+    // each boot, which was defensible while the shapes were ours: there was no
+    // admin page, so the seed file was the only place a name could be kept
+    // current. There is one now — the designs page edits names, tabs, stitch
+    // counts and the artwork itself — and re-applying the seed would quietly
+    // undo the shop's own work on the next deploy. Seeded rows are starting
+    // material, not managed content.
   }
 
   // ── Template, placements and bands ───────────────────────────────────

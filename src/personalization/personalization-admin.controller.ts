@@ -5,6 +5,16 @@ import { OrderStatus, Prisma } from '../../generated/prisma/client';
 import { PersonalizationService } from './personalization.service';
 import { designElementsOf } from './design-elements';
 import { parseLocalized } from './localized.util';
+import { TRACED_PANEL_HEIGHT_MM, TRACED_PANEL_WIDTH_MM } from './personalization.constants';
+import { parseSvgArtwork, SvgArtworkError } from './svg-artwork';
+
+/**
+ * A stable, lower-case key. Stored designs and tabs are referred to by it, so
+ * it is generated once and never renamed — the localized name is what changes.
+ */
+function slugKey(raw: string | null | undefined): string {
+  return (raw ?? '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
 
 /** Order in which the floor works a job. Anything else is rejected. */
 /**
@@ -432,20 +442,11 @@ export class PersonalizationAdminController {
       hint: p.hint,
       fieldWidthMm: p.fieldWidthMm,
       fieldHeightMm: p.fieldHeightMm,
-      maxColors: p.maxColors,
-      maxChars: p.maxChars,
       priceCents: p.priceCents,
       isActive: p.isActive,
       sortOrder: p.sortOrder,
       mediaKey: p.mediaKey,
       imageUrl: p.mediaKey ? (urls.get(p.mediaKey) ?? null) : null,
-      isTraced: p.isTraced,
-      corners: [
-        { x: p.topLeftXPct, y: p.topLeftYPct },
-        { x: p.topRightXPct, y: p.topRightYPct },
-        { x: p.bottomRightXPct, y: p.bottomRightYPct },
-        { x: p.bottomLeftXPct, y: p.bottomLeftYPct },
-      ],
     }));
   }
 
@@ -477,19 +478,15 @@ export class PersonalizationAdminController {
         label,
         hint: parseLocalized(body.hint) ?? Prisma.JsonNull,
         mediaKey: body.mediaKey?.trim() || null,
-        // The hoop field has no sensible default — it is a measurement of a
-        // real frame — so a position created without one gets a conservative
-        // cap-front size the admin is expected to correct.
-        fieldWidthMm: numbers.fieldWidthMm ?? 100,
-        fieldHeightMm: numbers.fieldHeightMm ?? 50,
-        maxColors: numbers.maxColors ?? 3,
-        maxChars: numbers.maxChars ?? 12,
+        // Not asked for and not writable: the tracing means "the area about
+        // this wide", and the scale is the same constant for every position.
+        fieldWidthMm: TRACED_PANEL_WIDTH_MM,
+        fieldHeightMm: TRACED_PANEL_HEIGHT_MM,
         priceCents: numbers.priceCents ?? 0,
         previewXPct: numbers.previewXPct ?? 34,
         previewYPct: numbers.previewYPct ?? 42,
         previewWidthPct: numbers.previewWidthPct ?? 32,
         previewHeightPct: numbers.previewHeightPct ?? 15,
-        previewRotateDeg: numbers.previewRotateDeg ?? 0,
         sortOrder: count * 10,
       },
     });
@@ -509,24 +506,9 @@ export class PersonalizationAdminController {
     if (body.hint !== undefined) data.hint = parseLocalized(body.hint) ?? Prisma.JsonNull;
     if (body.isActive !== undefined) data.isActive = body.isActive;
     if (body.sortOrder !== undefined) data.sortOrder = body.sortOrder;
-    // Swapping the photo keeps the tracing: the shot is usually a re-export of
-    // the same framing, and silently discarding the corners would throw away
-    // the fiddliest part of setting a position up.
+    // Swapping the photo is all there is to it now: there is no tracing on a
+    // position to keep or to discard.
     if (body.mediaKey !== undefined) data.mediaKey = body.mediaKey?.trim() || null;
-
-    if (body.corners !== undefined) {
-      if (!Array.isArray(body.corners) || body.corners.length !== 4 || body.corners.some((c) => !Number.isFinite(c?.x) || !Number.isFinite(c?.y))) {
-        throw new BadRequestException('A tracing needs exactly four corners.');
-      }
-      const [tl, tr, br, bl] = body.corners;
-      Object.assign(data, {
-        topLeftXPct: tl.x, topLeftYPct: tl.y,
-        topRightXPct: tr.x, topRightYPct: tr.y,
-        bottomRightXPct: br.x, bottomRightYPct: br.y,
-        bottomLeftXPct: bl.x, bottomLeftYPct: bl.y,
-        isTraced: true,
-      });
-    }
 
     return this.prisma.personalizationPlacement.update({ where: { id }, data });
   }
@@ -543,11 +525,17 @@ export class PersonalizationAdminController {
     return { ok: true };
   }
 
+  /**
+   * `fieldWidthMm`/`fieldHeightMm` are deliberately NOT here. They are the
+   * panel's scale, they are the same constant for every catalogue position, and
+   * leaving them writable is what let two positions on one cap drift to 100×50
+   * and 50×80 — which drew the same lettering at twice the size on one panel.
+   */
   private placementNumbers(body: PlacementBody): Record<string, number> {
     const out: Record<string, number> = {};
     const numeric = [
-      'fieldWidthMm', 'fieldHeightMm', 'maxColors', 'maxChars', 'priceCents',
-      'previewXPct', 'previewYPct', 'previewWidthPct', 'previewHeightPct', 'previewRotateDeg',
+      'priceCents',
+      'previewXPct', 'previewYPct', 'previewWidthPct', 'previewHeightPct',
     ] as const;
     for (const field of numeric) {
       const value = body[field];
@@ -586,6 +574,246 @@ export class PersonalizationAdminController {
       select: { id: true, slug: true, personalizationTemplateId: true },
     });
   }
+
+  // ── The design library ───────────────────────────────────────────────
+  // Both the designs and the tabs they sit under are the shop's own data. A
+  // headwear shop wants "Sport" where a christening shop wants "Baptism", and
+  // neither should need a deploy — so nothing here is compiled in.
+
+  @Get('motif-categories')
+  listMotifCategories() {
+    return this.prisma.embroideryMotifCategory.findMany({
+      orderBy: { sortOrder: 'asc' },
+      include: { _count: { select: { motifs: true } } },
+    });
+  }
+
+  @Post('motif-categories')
+  async createMotifCategory(@Body() body: MotifCategoryBody) {
+    const name = parseLocalized(body.name);
+    if (!name) throw new BadRequestException('A tab needs a name in at least one language.');
+
+    const key = slugKey(body.key) || slugKey(String(name.en ?? Object.values(name)[0] ?? ''));
+    if (!key) throw new BadRequestException('A tab needs a key.');
+
+    const count = await this.prisma.embroideryMotifCategory.count();
+    try {
+      return await this.prisma.embroideryMotifCategory.create({
+        data: { key, name, sortOrder: body.sortOrder ?? count * 10 },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') throw new BadRequestException(`A tab with the key "${key}" already exists.`);
+      throw err;
+    }
+  }
+
+  @Patch('motif-categories/:id')
+  async updateMotifCategory(@Param('id') id: string, @Body() body: MotifCategoryBody) {
+    const data: Prisma.EmbroideryMotifCategoryUpdateInput = {};
+    if (body.name !== undefined) {
+      const name = parseLocalized(body.name);
+      // An unnamed tab is a blank button in the storefront, so an empty map is
+      // refused rather than stored.
+      if (!name) throw new BadRequestException('A tab needs a name in at least one language.');
+      data.name = name;
+    }
+    if (body.isActive !== undefined) data.isActive = body.isActive;
+    if (body.sortOrder !== undefined && Number.isFinite(body.sortOrder)) data.sortOrder = body.sortOrder;
+    // The key is never renamed: it is what the editor filters on, and a rename
+    // would silently empty the tab. The name above is what changes.
+    return this.prisma.embroideryMotifCategory.update({ where: { id }, data });
+  }
+
+  /**
+   * Removes a tab. Its designs are kept — the foreign key is ON DELETE SET
+   * NULL, so they fall back to showing only under "All" and the shop can
+   * re-file them. Deleting a tab must never delete artwork.
+   */
+  @Delete('motif-categories/:id')
+  async deleteMotifCategory(@Param('id') id: string) {
+    const orphaned = await this.prisma.embroideryMotif.count({ where: { categoryId: id } });
+    await this.prisma.embroideryMotifCategory.delete({ where: { id } });
+    return { ok: true, orphaned };
+  }
+
+  @Get('motifs')
+  async listMotifs() {
+    const motifs = await this.prisma.embroideryMotif.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      include: { category: { select: { id: true, key: true } } },
+    });
+    return motifs.map((m) => ({
+      id: m.id,
+      key: m.key,
+      name: m.name,
+      path: m.path,
+      viewBox: m.viewBox,
+      paths: m.paths,
+      ownColours: m.ownColours,
+      priceCents: m.priceCents,
+      colorCount: m.colorCount,
+      categoryId: m.categoryId,
+      categoryKey: m.category?.key ?? null,
+      isActive: m.isActive,
+      sortOrder: m.sortOrder,
+    }));
+  }
+
+  /**
+   * Reads an uploaded SVG without storing anything.
+   *
+   * The admin sees what will actually be stored — the parsed shapes, drawn the
+   * way the storefront draws them — rather than the file as their browser
+   * renders it. The two differ whenever something in the file cannot be
+   * stitched, and that is exactly when they need to know.
+   */
+  @Post('motifs/parse')
+  parseMotifSvg(@Body() body: { svg?: unknown }) {
+    return this.readSvg(body.svg);
+  }
+
+  @Post('motifs')
+  async createMotif(@Body() body: MotifBody) {
+    const name = parseLocalized(body.name);
+    if (!name) throw new BadRequestException('A design needs a name in at least one language.');
+
+    const key = slugKey(body.key) || slugKey(String(name.en ?? Object.values(name)[0] ?? ''));
+    if (!key) throw new BadRequestException('A design needs a key.');
+
+    const art = this.readSvg(body.svg);
+    const categoryId = await this.categoryIdFor(body);
+    const count = await this.prisma.embroideryMotif.count();
+    // Its own colours, or one chosen spool. Default: whatever the artwork is —
+    // a two-colour file is a full-colour design unless the shop says it wants
+    // it sewn flat.
+    const ownColours = body.ownColours ?? art.colorCount > 1;
+
+    try {
+      return await this.prisma.embroideryMotif.create({
+        data: {
+          key,
+          name,
+          path: art.path,
+          viewBox: art.viewBox,
+          // The shapes are stored either way — they are the drawing. Whether
+          // they keep their own fills or take the customer's spool is the flag
+          // below, not the presence of this column.
+          paths: art.shapes as unknown as Prisma.InputJsonValue,
+          ownColours,
+          colorCount: this.positiveInt(body.colorCount) ?? (ownColours ? art.colorCount : 1),
+          priceCents: this.nonNegativeInt(body.priceCents) ?? 0,
+          ...(categoryId ? { category: { connect: { id: categoryId } } } : {}),
+          sortOrder: body.sortOrder ?? count * 10,
+        },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') throw new BadRequestException(`A design with the key "${key}" already exists.`);
+      throw err;
+    }
+  }
+
+  @Patch('motifs/:id')
+  async updateMotif(@Param('id') id: string, @Body() body: MotifBody) {
+    const data: Prisma.EmbroideryMotifUpdateInput = {};
+
+    if (body.name !== undefined) {
+      const name = parseLocalized(body.name);
+      if (!name) throw new BadRequestException('A design needs a name in at least one language.');
+      data.name = name;
+    }
+    // Re-uploading replaces the artwork; leaving `svg` out keeps it, so the
+    // shop can rename or re-file a design without having the file to hand.
+    if (body.svg !== undefined) {
+      const art = this.readSvg(body.svg);
+      const ownColours = body.ownColours ?? art.colorCount > 1;
+      data.path = art.path;
+      data.viewBox = art.viewBox;
+      data.paths = art.shapes as unknown as Prisma.InputJsonValue;
+      data.ownColours = ownColours;
+      data.colorCount = ownColours ? art.colorCount : 1;
+    } else if (body.ownColours !== undefined) {
+      // Flipping a stored design between its own colours and one spool with no
+      // new file. The shapes are already there; this only decides what fills
+      // them — except for a design seeded before shapes existed, which has
+      // nothing but a silhouette and so has no colours to turn back on.
+      const current = await this.prisma.embroideryMotif.findUnique({ where: { id }, select: { paths: true } });
+      if (!current) throw new NotFoundException('Design not found');
+      const shapes = Array.isArray(current.paths) ? (current.paths as { fill?: unknown }[]) : [];
+      if (body.ownColours && !shapes.length) {
+        throw new BadRequestException('This design has no colours of its own — upload the artwork again to give it some.');
+      }
+      data.ownColours = body.ownColours;
+      data.colorCount = body.ownColours ? new Set(shapes.map((sh) => sh.fill)).size || 1 : 1;
+    }
+
+    if (body.priceCents !== undefined) {
+      const value = this.nonNegativeInt(body.priceCents);
+      if (value === null) throw new BadRequestException('The extra charge has to be zero or more.');
+      data.priceCents = value;
+    }
+    if (body.colorCount !== undefined) {
+      const value = this.positiveInt(body.colorCount);
+      if (!value) throw new BadRequestException('The colour count has to be a number above zero.');
+      data.colorCount = value;
+    }
+    if (body.categoryId !== undefined || body.categoryKey !== undefined) {
+      const categoryId = await this.categoryIdFor(body);
+      data.category = categoryId ? { connect: { id: categoryId } } : { disconnect: true };
+    }
+    if (body.isActive !== undefined) data.isActive = body.isActive;
+    if (body.sortOrder !== undefined && Number.isFinite(body.sortOrder)) data.sortOrder = body.sortOrder;
+
+    return this.prisma.embroideryMotif.update({ where: { id }, data });
+  }
+
+  /**
+   * Removes a design from the library. Designs already ordered are untouched:
+   * every line froze the shape's own path, viewBox and colours into its
+   * document at checkout, so a job on the floor still draws what was bought.
+   */
+  @Delete('motifs/:id')
+  async deleteMotif(@Param('id') id: string) {
+    await this.prisma.embroideryMotif.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  /** Parses an uploaded SVG, turning a parse failure into the admin's own words. */
+  private readSvg(svg: unknown) {
+    if (typeof svg !== 'string' || !svg.trim()) throw new BadRequestException('Upload the design as an SVG file.');
+    if (svg.length > 2_000_000) throw new BadRequestException('That file is too large. A stitched design is line art, not a photo.');
+    try {
+      return parseSvgArtwork(svg);
+    } catch (err) {
+      if (err instanceof SvgArtworkError) throw new BadRequestException(err.message);
+      throw err;
+    }
+  }
+
+  /** The tab a design goes under, by id or by key. Null clears it. */
+  private async categoryIdFor(body: MotifBody): Promise<string | null> {
+    if (body.categoryId) {
+      const found = await this.prisma.embroideryMotifCategory.count({ where: { id: body.categoryId } });
+      if (!found) throw new BadRequestException('That tab does not exist.');
+      return body.categoryId;
+    }
+    if (body.categoryKey) {
+      const found = await this.prisma.embroideryMotifCategory.findUnique({ where: { key: body.categoryKey }, select: { id: true } });
+      if (!found) throw new BadRequestException('That tab does not exist.');
+      return found.id;
+    }
+    return null;
+  }
+
+  private positiveInt(value: unknown): number | null {
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }
+
+  /** Money: zero is a real answer, so it is not folded in with "missing". */
+  private nonNegativeInt(value: unknown): number | null {
+    const n = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+  }
 }
 
 
@@ -594,17 +822,36 @@ interface PlacementBody {
   label?: unknown;
   hint?: unknown;
   mediaKey?: string | null;
-  corners?: { x: number; y: number }[];
-  fieldWidthMm?: number;
-  fieldHeightMm?: number;
-  maxColors?: number;
-  maxChars?: number;
   priceCents?: number;
   previewXPct?: number;
   previewYPct?: number;
   previewWidthPct?: number;
   previewHeightPct?: number;
-  previewRotateDeg?: number;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+/** What the admin can set on a design library tab. All optional — PATCH is partial. */
+interface MotifCategoryBody {
+  key?: string;
+  name?: unknown;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+/** What the admin can set on a design. All optional — PATCH is partial. */
+interface MotifBody {
+  key?: string;
+  name?: unknown;
+  /** The uploaded artwork. Parsed into shapes; the file itself is never stored. */
+  svg?: unknown;
+  /** Stitched in the artwork's own colours, rather than one spool the customer picks. */
+  ownColours?: boolean;
+  /** What picking this design adds to the embroidery price, in cents. */
+  priceCents?: number;
+  colorCount?: number;
+  categoryId?: string | null;
+  categoryKey?: string | null;
   isActive?: boolean;
   sortOrder?: number;
 }

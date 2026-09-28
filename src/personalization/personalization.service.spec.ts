@@ -209,15 +209,9 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
     ['emoji', { text: 'Maria 🎀' }, E.TEXT_UNSTITCHABLE],
     ['a script no face covers', { text: 'Мария' }, E.TEXT_UNSTITCHABLE],
     ['profanity', { text: 'fuck off' }, E.TEXT_BLOCKED],
-    ['longer than the placement allows', { placementKey: 'back', text: 'Alexandria Rose' }, E.TEXT_TOO_LONG],
     ['wider than the machine can hoop', { text: 'Alexandra Rose', heightMm: 40 }, E.TOO_WIDE],
     ['below the face’s minimum height', { fontKey: 'script-signature', heightMm: 9 }, E.HEIGHT_OUT_OF_RANGE],
     ['above the face’s maximum height', { heightMm: 45 }, E.HEIGHT_OUT_OF_RANGE],
-    [
-      'more colours across the boxes than the position takes',
-      { placementKey: 'back', text: 'Jo', heightMm: 10, elements: [box({ threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: PINK.id, offsetYMm: 0 }), box({ threadColorId: WHITE.id, offsetYMm: 8 })] },
-      E.TOO_MANY_COLORS,
-    ],
     ['a monogram of four letters', { contentType: 'monogram', text: 'ABCD' }, E.MONOGRAM_LENGTH],
     ['a monogram on a face that cannot interlock', { contentType: 'monogram', text: 'AB', fontKey: 'script-signature' }, E.FONT_UNKNOWN],
     ['a placement that does not exist', { placementKey: 'peak' }, E.PLACEMENT_UNKNOWN],
@@ -228,19 +222,47 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
     expect(await codeOf(makeService().resolve('p1', design(over)))).toBe(expected);
   });
 
+  /**
+   * `maxChars` and `maxColors` were removed: both were a second, arbitrary
+   * answer to a question the geometry already answers. A long name is refused
+   * only when the hoop round it will not fit, and spools are bounded by
+   * MAX_ELEMENTS because a box carries one.
+   */
+  it('takes a name longer than any character count would have allowed, if it fits', async () => {
+    const s = makeService();
+    // 15 characters on the back panel, which used to cap at 12.
+    const r = await s.resolve('p1', design({ placementKey: 'back', text: 'Alexandria Rose', heightMm: 8 }));
+    expect(r.text).toBe('Alexandria Rose');
+  });
+
+  it('still refuses it when it is too wide to hoop, which is the real limit', async () => {
+    expect(await codeOf(makeService().resolve('p1', design({ placementKey: 'back', text: 'Alexandria Rose', heightMm: 40 })))).toBe(E.TOO_WIDE);
+  });
+
+  it('takes as many spools as there are boxes', async () => {
+    const s = makeService();
+    const r = await s.resolve('p1', design({
+      placementKey: 'back', text: 'Jo', heightMm: 10,
+      elements: [box({ threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: PINK.id, offsetYMm: 0 }), box({ threadColorId: WHITE.id, offsetYMm: 8 })],
+    }));
+    // Three boxes, three spools — the back panel used to allow two.
+    expect(r.threadColors).toHaveLength(3);
+  });
+
   it('accepts the accents our locales actually use', async () => {
     const s = makeService();
     await expect(s.resolve('p1', design({ text: 'Chloé' }))).resolves.toBeDefined();
     await expect(s.resolve('p1', design({ text: 'Łukasz', heightMm: 12 }))).resolves.toBeDefined();
   });
 
-  it('rejects a design past the largest price band rather than inventing a price', async () => {
+  it('accepts a design past the largest price band, at that band', async () => {
     // Narrow enough to clear the width check, dense enough to exceed 9000:
     // three Varsity letters at 40mm, heaviest weight, in 3D puff (~8,500), next
-    // to a second box of ~700 — one hoop, one budget, over together.
-    expect(await codeOf(makeService().resolve('p1', design({ elements: [box({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, puff: true, threadColorId: TEAL.id, offsetYMm: 0 }), box({ text: 'Jo', heightMm: 18, threadColorId: TEAL.id, offsetYMm: 24 })] })))).toBe(
-      E.TOO_MANY_STITCHES,
-    );
+    // to a second box of ~700 — one hoop, over the top band together. Machine
+    // time is priced, never refused: the customer decides how much goes on.
+    const r = await makeService().resolve('p1', design({ elements: [box({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, puff: true, threadColorId: TEAL.id, offsetYMm: 0 }), box({ text: 'Jo', heightMm: 18, threadColorId: TEAL.id, offsetYMm: 24 })] }));
+    expect(r.stitchEstimate).toBeGreaterThan(9000);
+    expect(r.priceCents).toBeGreaterThan(0);
   });
 
   it('refuses a product with no template, and one that is not active', async () => {
@@ -346,14 +368,13 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     expect(heavy.stitchEstimate).toBeGreaterThan(small.stitchEstimate);
   });
 
-  it('never refuses a send-in for its stitch count — the side is flat-priced and the customer decides', async () => {
+  it('charges a send-in by the side however heavy the design is', async () => {
     const s = makeService();
     // The panel is a fifth of the photo, so the photo is five panels wide — room enough.
     const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
-    // Past every band on a catalogue cap…
-    expect(await codeOf(s.resolve('p1', design({ text: 'ABCDEFGH', heightMm: 40, weight: 5, puff: true, fontKey: 'serif-varsity' })))).toBe('PERSONALIZATION_TOO_MANY_STITCHES');
-    // …and simply a bigger job on the customer's own.
     const r = await s.resolve('p1', design({ placementKey: 'side-1', text: 'ABCDEFGH', heightMm: 40, weight: 5, puff: true, fontKey: 'serif-varsity', customerItem }));
+    // Far past every band, and the side's flat fee all the same — the bands do
+    // not price a send-in and, on a catalogue cap, do not refuse it either.
     expect(r.stitchEstimate).toBeGreaterThan(9000);
     expect(r.priceCents).toBe(990);
   });
