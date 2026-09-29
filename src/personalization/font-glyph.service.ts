@@ -48,6 +48,33 @@ export class FontGlyphService {
   }
 
   /**
+   * Whether this face's file can lay out this text on its own.
+   *
+   * Two questions, and a "no" to either sends the sheet to live `<text>`, where
+   * whatever opens it does the work properly:
+   *
+   * 1. **Has it the glyphs?** A Latin file asked for Arabic returns `.notdef`
+   *    for every letter, and the sheet comes out a row of empty boxes — for a
+   *    job somebody has already paid for.
+   * 2. **Can it be laid out naively?** opentype.js maps characters to glyphs and
+   *    advances them left to right. That is the whole truth for Latin, Cyrillic
+   *    and Greek. It is not for Arabic, which joins its letters into different
+   *    shapes depending on their neighbours and runs right to left, nor for any
+   *    script that reorders or stacks marks: there is no shaping engine here, so
+   *    the outlines would be correct glyphs in the wrong forms and the wrong
+   *    order. Those go to `<text>` even when the file has the glyphs.
+   */
+  canLayOut(font: opentype.Font, text: string): boolean {
+    const letters = [...text].filter((ch) => ch !== ' ');
+    if (!letters.length) return true;
+    // Scripts that advance one glyph at a time, plus digits and the punctuation
+    // a design is allowed. Anything else — joining, bidirectional, or carrying
+    // combining marks — is not ours to lay out.
+    if (!/^[\p{sc=Latin}\p{sc=Cyrillic}\p{sc=Greek}\p{N} '&.\-]+$/u.test(text)) return false;
+    return letters.every((ch) => font.charToGlyphIndex(ch) > 0);
+  }
+
+  /**
    * One line of lettering as a path, drawn with its central line on y=0 and
    * centred on x=0, at the given font size. `letterSpacing` is in the same
    * units as the size. Returns the path data and the width it came out at,

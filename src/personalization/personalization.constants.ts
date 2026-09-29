@@ -5,18 +5,34 @@
  */
 
 /**
- * Characters a text embroidery face can actually stitch. Latin letters with
- * the accents our seven locales use, digits, and the handful of punctuation
- * marks that exist as glyphs in a digitised face.
+ * What can be embroidered, as characters.
  *
- * Emoji and other scripts are excluded deliberately rather than stripped: a
- * customer who typed one has to see that it cannot be sewn, because silently
- * dropping it would ship a cap that is missing the part they cared about.
+ * Any script: `\p{L}` is every letter Unicode knows — Arabic, Cyrillic, Greek,
+ * Hebrew, CJK — and `\p{M}` the combining marks that go with them, which Arabic
+ * and Indic scripts need to spell anything at all. This used to be an allow-list
+ * of Latin letters, which quietly told a shop it could not sell a name written
+ * in its own customers' alphabet.
+ *
+ * What is still refused is what no machine lays in thread: emoji and
+ * pictographs, box drawing, arrows, control and formatting characters. They are
+ * not letters, and a satin column cannot be a picture of a cat.
+ *
+ * Whether the CHOSEN FACE can draw a given script is a different question, and
+ * one the face itself answers — see the production sheet, which falls back to
+ * live text rather than emitting empty outlines for glyphs its file does not
+ * have.
  */
-export const STITCHABLE_TEXT = /^[A-Za-zÀ-ÖØ-öø-ÿŁłŃńŚśŹźŻżĄąĆćĘęÓó0-9 '&.\-]+$/u;
+export const STITCHABLE_TEXT = /^[\p{L}\p{M}\p{N} '&.\-]+$/u;
+
+/**
+ * A mark that sits on the letter before it — an Arabic harakat, a Devanagari
+ * matra, a decomposed accent. It is stitched, but it advances nothing, so
+ * anything measuring a line's width has to skip it.
+ */
+export const COMBINING_MARK = /\p{M}/u;
 
 /** Monograms are letters only — a "." between two initials is a period, not a glyph. */
-export const STITCHABLE_MONOGRAM = /^[A-Za-zÀ-ÖØ-öø-ÿŁłŃńŚśŹźŻżĄąĆćĘęÓó]+$/u;
+export const STITCHABLE_MONOGRAM = /^[\p{L}\p{M}]+$/u;
 
 export const MONOGRAM_MIN_CHARS = 2;
 export const MONOGRAM_MAX_CHARS = 3;
@@ -172,7 +188,6 @@ export const PERSONALIZATION_ERRORS = {
   TEXT_UNSTITCHABLE: 'PERSONALIZATION_TEXT_UNSTITCHABLE',
   TEXT_BLOCKED: 'PERSONALIZATION_TEXT_BLOCKED',
   MONOGRAM_LENGTH: 'PERSONALIZATION_MONOGRAM_LENGTH',
-  HEIGHT_OUT_OF_RANGE: 'PERSONALIZATION_HEIGHT_OUT_OF_RANGE',
   TOO_WIDE: 'PERSONALIZATION_TOO_WIDE',
   CONTENT_TYPE_DISABLED: 'PERSONALIZATION_CONTENT_TYPE_DISABLED',
   TOO_MANY_LINES: 'PERSONALIZATION_TOO_MANY_LINES',

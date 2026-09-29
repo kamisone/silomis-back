@@ -41,8 +41,6 @@ const BLOCK = {
   key: 'block-classic',
   name: 'Block',
   webFamily: 'sans-serif',
-  minHeightMm: 8,
-  maxHeightMm: 40,
   avgCharWidthRatio: 0.62,
   uppercaseOnly: false,
   supportsMonogram: true,
@@ -51,7 +49,7 @@ const BLOCK = {
   isActive: true,
 };
 const VARSITY = { ...BLOCK, key: 'serif-varsity', name: 'Varsity', uppercaseOnly: true, avgCharWidthRatio: 0.74 };
-const SIGNATURE = { ...BLOCK, key: 'script-signature', name: 'Signature', supportsMonogram: false, minHeightMm: 12 };
+const SIGNATURE = { ...BLOCK, key: 'script-signature', name: 'Signature', supportsMonogram: false };
 
 const TEAL = { id: 't-1', brand: 'Madeira Polyneon', code: '1791', name: 'Teal', hex: '#0d8f8c', isActive: true, finish: 'matte', priceMultiplier: 1 };
 const PINK = { id: 't-2', brand: 'Madeira Polyneon', code: '1921', name: 'Fuchsia', hex: '#c8186a', isActive: true, finish: 'matte', priceMultiplier: 1 };
@@ -200,11 +198,8 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
   const cases: [string, Record<string, unknown>, string][] = [
     ['empty after trimming', { text: '   ' }, E.TEXT_EMPTY],
     ['emoji', { text: 'Maria 🎀' }, E.TEXT_UNSTITCHABLE],
-    ['a script no face covers', { text: 'Мария' }, E.TEXT_UNSTITCHABLE],
     ['profanity', { text: 'fuck off' }, E.TEXT_BLOCKED],
     ['wider than the machine can hoop', { text: 'Alexandra Rose', heightMm: 40 }, E.TOO_WIDE],
-    ['below the face’s minimum height', { fontKey: 'script-signature', heightMm: 9 }, E.HEIGHT_OUT_OF_RANGE],
-    ['above the face’s maximum height', { heightMm: 45 }, E.HEIGHT_OUT_OF_RANGE],
     ['a monogram of four letters', { contentType: 'monogram', text: 'ABCD' }, E.MONOGRAM_LENGTH],
     ['a monogram on a face that cannot interlock', { contentType: 'monogram', text: 'AB', fontKey: 'script-signature' }, E.FONT_UNKNOWN],
     ['a placement that does not exist', { placementKey: 'peak' }, E.PLACEMENT_UNKNOWN],
@@ -221,6 +216,50 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
    * only when the hoop round it will not fit, and spools are bounded by
    * MAX_ELEMENTS because a box carries one.
    */
+  /**
+   * A shop cannot sell a name written in its customers' own alphabet if the
+   * validator only knows Latin. Any script is spellable now; what is refused is
+   * what no machine lays in thread.
+   */
+  it.each([
+    ['Arabic', 'محمد'],
+    ['Arabic with harakat', 'مُحَمَّد'],
+    ['Cyrillic', 'Мария'],
+    ['Greek', 'Μαρία'],
+    ['Chinese', '張偉'],
+    ['Latin with accents', 'Chloé'],
+  ])('embroiders %s', async (_script, text) => {
+    const r = await makeService().resolve('p1', design({ text, heightMm: 12 }));
+    expect(r.text).toBe(text);
+  });
+
+  it('still refuses what has no thread — a picture is not a letter', async () => {
+    const s = makeService();
+    expect(await codeOf(s.resolve('p1', design({ text: 'Maria 🎀' })))).toBe(E.TEXT_UNSTITCHABLE);
+    expect(await codeOf(s.resolve('p1', design({ text: '→ Maria' })))).toBe(E.TEXT_UNSTITCHABLE);
+  });
+
+  /**
+   * A face used to declare its own 8–40mm range and refuse anything outside it.
+   * That is an arbitrary answer to a question the geometry already answers, and
+   * the same mistake `maxChars` made: the customer picks a size, and the hoop
+   * decides whether it can be sewn.
+   */
+  it('takes a letter height no face would have allowed, if it fits the hoop', async () => {
+    const s = makeService();
+    const tiny = await s.resolve('p1', design({ text: 'Jo', heightMm: 2 }));
+    const huge = await s.resolve('p1', design({ text: 'Jo', heightMm: 90 }));
+    expect(tiny.heightMm).toBe(2);
+    expect(huge.heightMm).toBe(90);
+  });
+
+  it('still refuses a size the hoop cannot hold, which is the real limit', async () => {
+    // Lettering this size is past the machine's frame. It trips the width check
+    // first here, because a taller letter is also a wider one — either way it is
+    // the hoop refusing the design, which is the point.
+    expect(await codeOf(makeService().resolve('p1', design({ text: 'Jo', heightMm: 1500 })))).toBe(E.TOO_WIDE);
+  });
+
   it('takes a name longer than any character count would have allowed, if it fits', async () => {
     const s = makeService();
     // 15 characters on the back panel, which used to cap at 12.
@@ -361,15 +400,14 @@ describe('PersonalizationService.resolve — what it costs', () => {
     expect(r.priceCents).toBe(990);
   });
 
-  it('lets lettering grow past the face’s height on the customer’s own item, up to the photograph', async () => {
+  it('bounds lettering on the customer’s own item by their photograph, not by a face', async () => {
     const s = makeService();
     const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
-    // 40mm is the face's ceiling on a catalogue cap…
-    expect(await codeOf(s.resolve('p1', design({ text: 'Jo', heightMm: 80 })))).toBe('PERSONALIZATION_HEIGHT_OUT_OF_RANGE');
-    // …and just a size on the customer's own (the photo here is 125mm tall).
+    // The photo here stands for 125mm, so 80mm is simply a size…
     const r = await s.resolve('p1', design({ placementKey: 'side-1', text: 'Jo', heightMm: 80, customerItem }));
     expect(r.elements[0].heightMm).toBe(80);
-    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', text: 'Jo', heightMm: 140, customerItem })))).toBe('PERSONALIZATION_HEIGHT_OUT_OF_RANGE');
+    // …and 140mm is taller than the item they sent.
+    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', text: 'Jo', heightMm: 140, customerItem })))).toBe(E.TOO_TALL);
   });
 
   it('lets a shape or a logo grow to the photograph on the customer’s own item, and no further', async () => {

@@ -2686,11 +2686,6 @@ model EmbroideryFont {
   /// CSS URL, typically). Null for a face the browser is trusted to have.
   webFontCss String? @db.VarChar(500)
 
-  /// Below this cap height a stitched letter's counters close up and it stops
-  /// reading. Above the max the satin stitches grow long enough to snag.
-  minHeightMm Float @default(8)
-  maxHeightMm Float @default(40)
-
   /// Mean glyph advance as a fraction of cap height — how the editor and the
   /// validator predict a line's width without laying out the real face.
   avgCharWidthRatio Float @default(0.62)

@@ -24,6 +24,7 @@ import {
   ROTATION_LIMIT_DEG,
   STITCHABLE_MONOGRAM,
   STITCHABLE_TEXT,
+  COMBINING_MARK,
   TRACKING_MAX,
   TRACKING_MIN,
   weightForStep,
@@ -352,8 +353,6 @@ export class PersonalizationService {
         webFamily: f.webFamily,
         /** A stylesheet the editor loads so the face is the same on every device. */
         webFontCss: f.webFontCss,
-        minHeightMm: f.minHeightMm,
-        maxHeightMm: f.maxHeightMm,
         avgCharWidthRatio: f.avgCharWidthRatio,
         supportsPuff: f.supportsPuff,
         supportsCurve: f.supportsCurve,
@@ -728,16 +727,18 @@ export class PersonalizationService {
     if (!input.threadColorId && !ownColours) fail(E.THREAD_UNKNOWN, 'Pick a thread colour.');
     const thread = ownColours || !input.threadColorId ? null : (await this.resolveThreads([input.threadColorId]))[0];
 
+    /**
+     * No height range. A face used to carry a `minHeightMm`/`maxHeightMm` pair
+     * and lettering outside it was refused — a second, arbitrary answer to a
+     * question the geometry already answers, and the same mistake `maxChars`
+     * made. The customer picks a size; what decides whether it can be sewn is
+     * whether the hoop fitted round the design fits the machine, which is
+     * measured below (`TOO_WIDE`/`TOO_TALL`) and is the only real limit there is.
+     *
+     * The DTO still rails this at 1–2000mm, far outside anything stitchable, so
+     * a crafted request cannot hand the renderer a nonsense number.
+     */
     const heightMm = round1(input.heightMm);
-    // A face has a height it stitches well at; on the customer's own item the
-    // customer decides, and the only ceiling is the photograph.
-    const maxHeightMm = placement.usesCustomerPhoto ? bounds.maxHeightMm : font.maxHeightMm;
-    if (input.contentType !== 'motif' && (heightMm < font.minHeightMm || heightMm > maxHeightMm)) {
-      fail(E.HEIGHT_OUT_OF_RANGE, `Letter height must be between ${font.minHeightMm}mm and ${maxHeightMm}mm.`, {
-        minHeightMm: font.minHeightMm,
-        maxHeightMm,
-      });
-    }
 
     const weight = weightForStep(input.weight);
     // Thickness past the heaviest face: a satin border round the letters. The
@@ -1111,7 +1112,10 @@ export class PersonalizationService {
    * floor. Spaces are counted at half an advance, which is what a face does.
    */
   private estimateWidthMm(text: string, heightMm: number, avgCharWidthRatio: number, contentType: ContentType): number {
-    const advances = [...text].reduce((sum, ch) => sum + (ch === ' ' ? 0.5 : 1), 0);
+    // Combining marks take no width of their own: they sit on the letter before
+    // them. Counting them would make "مُحَمَّد" measure eight letters wide instead
+    // of four and get a perfectly hoopable name refused as too wide.
+    const advances = [...text].reduce((sum, ch) => sum + (ch === ' ' ? 0.5 : COMBINING_MARK.test(ch) ? 0 : 1), 0);
     const base = advances * heightMm * avgCharWidthRatio;
     // A monogram's letters interlock and the centre letter is drawn larger, so
     // it is wider than the same three characters set as text.
@@ -1217,8 +1221,13 @@ export class PersonalizationService {
     };
 
     // ── Outlines: the face itself, from its own file ─────────────────────
+    // Only where the file can actually lay the words out: it has to have the
+    // glyphs, and the script has to be one that advances a glyph at a time.
+    // Arabic does neither in a Latin file — see `canLayOut` — and a sheet of
+    // empty boxes for a paid order is worse than one the operator's viewer
+    // renders itself.
     const font = this.glyphs?.font(r.fontKey, r.fontWeight) ?? null;
-    if (font) {
+    if (font && lines.every((line) => this.glyphs!.canLayOut(font, line))) {
       return lines.map((line, i) => {
         const y = round1(firstY + i * lead);
         const target = lineWidth(i) - 2 * r.borderMm;
@@ -1254,7 +1263,11 @@ export class PersonalizationService {
       });
     }
 
-    // ── No file for this face: `<text>`, in whatever the renderer has ───
+    // ── Live `<text>`, in whatever face the renderer has ────────────────
+    // Either the face has no file, or the file cannot lay these words out
+    // (Arabic in a Latin TTF, say). A renderer does have a font stack, does
+    // apply the bidi algorithm and does shape joined scripts, so the words come
+    // out right even though the face may not be the one chosen.
     const attrs =
       `font-family="${escapeXml(r.fontName)}" font-size="${fontSizeMm.toFixed(2)}" ` +
       `font-weight="${r.fontWeight}" text-anchor="middle" dominant-baseline="central"${border}`;

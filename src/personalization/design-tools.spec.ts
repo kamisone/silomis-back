@@ -19,7 +19,7 @@ const WIDE = { ...FRONT, id: 'pl-wide', key: 'wide', fieldWidthMm: 300, fieldHei
 
 const BLOCK = {
   key: 'block-classic', name: 'Block', webFamily: 'sans-serif',
-  minHeightMm: 8, maxHeightMm: 40, avgCharWidthRatio: 0.62,
+  avgCharWidthRatio: 0.62,
   uppercaseOnly: false, supportsMonogram: true, supportsPuff: true, supportsCurve: true, isActive: true,
 };
 const NO_CURVE = { ...BLOCK, key: 'script-joined', name: 'Joined', supportsCurve: false, supportsPuff: false };
