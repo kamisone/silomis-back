@@ -621,10 +621,12 @@ export class PersonalizationAdminController {
     const art = this.readSvg(body.svg);
     const categoryId = await this.categoryIdFor(body);
     const count = await this.prisma.embroideryMotif.count();
-    // Its own colours, or one chosen spool. Default: whatever the artwork is —
-    // a two-colour file is a full-colour design unless the shop says it wants
-    // it sewn flat.
-    const ownColours = body.ownColours ?? art.colorCount > 1;
+    // An uploaded design is stitched as its file draws it: the customer resizes
+    // and places it, and does not recolour it. So this follows the artwork and is
+    // not a setting — anything with shapes keeps their fills. (The only designs
+    // sewn in a thread the customer picks are the older seeded silhouettes,
+    // which have no fills to keep.)
+    const ownColours = art.shapes.length > 0;
 
     try {
       return await this.prisma.embroideryMotif.create({
@@ -633,9 +635,6 @@ export class PersonalizationAdminController {
           name,
           path: art.path,
           viewBox: art.viewBox,
-          // The shapes are stored either way — they are the drawing. Whether
-          // they keep their own fills or take the customer's spool is the flag
-          // below, not the presence of this column.
           paths: art.shapes as unknown as Prisma.InputJsonValue,
           ownColours,
           colorCount: this.positiveInt(body.colorCount) ?? (ownColours ? art.colorCount : 1),
@@ -663,25 +662,13 @@ export class PersonalizationAdminController {
     // shop can rename or re-file a design without having the file to hand.
     if (body.svg !== undefined) {
       const art = this.readSvg(body.svg);
-      const ownColours = body.ownColours ?? art.colorCount > 1;
+      // Replacement artwork brings its own colours with it — see `create`.
+      const ownColours = art.shapes.length > 0;
       data.path = art.path;
       data.viewBox = art.viewBox;
       data.paths = art.shapes as unknown as Prisma.InputJsonValue;
       data.ownColours = ownColours;
       data.colorCount = ownColours ? art.colorCount : 1;
-    } else if (body.ownColours !== undefined) {
-      // Flipping a stored design between its own colours and one spool with no
-      // new file. The shapes are already there; this only decides what fills
-      // them — except for a design seeded before shapes existed, which has
-      // nothing but a silhouette and so has no colours to turn back on.
-      const current = await this.prisma.embroideryMotif.findUnique({ where: { id }, select: { paths: true } });
-      if (!current) throw new NotFoundException('Design not found');
-      const shapes = Array.isArray(current.paths) ? (current.paths as { fill?: unknown }[]) : [];
-      if (body.ownColours && !shapes.length) {
-        throw new BadRequestException('This design has no colours of its own — upload the artwork again to give it some.');
-      }
-      data.ownColours = body.ownColours;
-      data.colorCount = body.ownColours ? new Set(shapes.map((sh) => sh.fill)).size || 1 : 1;
     }
 
     if (body.priceCents !== undefined) {
@@ -783,8 +770,6 @@ interface MotifBody {
   name?: unknown;
   /** The uploaded artwork. Parsed into shapes; the file itself is never stored. */
   svg?: unknown;
-  /** Stitched in the artwork's own colours, rather than one spool the customer picks. */
-  ownColours?: boolean;
   /** What picking this design adds to the embroidery price, in cents. */
   priceCents?: number;
   colorCount?: number;

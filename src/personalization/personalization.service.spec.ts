@@ -416,9 +416,16 @@ describe('PersonalizationService.resolve — what it costs', () => {
     const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
     const big = await s.resolve('p1', design({ placementKey: 'side-1', contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 110, customerItem }));
     expect(big.elements[0].motif?.sizeMm).toBe(110);
-    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 130, customerItem })))).toBe('PERSONALIZATION_MOTIF_SIZE');
-    // A catalogue position keeps the shape cap.
-    expect(await codeOf(s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 150 })))).toBe('PERSONALIZATION_MOTIF_SIZE');
+    // Past the photograph it is refused — and by the photograph, since a shape
+    // has no size band of its own any more.
+    expect(await codeOf(s.resolve('p1', design({ placementKey: 'side-1', contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 130, customerItem })))).toBe('PERSONALIZATION_TOO_TALL');
+    // A catalogue position is bounded by the machine's largest frame, not by the
+    // traced field: the hoop is fitted round whatever the customer placed. So a
+    // 150mm shape is allowed there, exactly as 150mm of lettering always was —
+    // the traced field is a reference for placing, not a cap on size.
+    const roomy = await s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 150 }));
+    expect(roomy.elements[0].motif?.sizeMm).toBe(150);
+    expect(await codeOf(s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'heart', motifSizeMm: 400 })))).toBe('PERSONALIZATION_TOO_WIDE');
     // A logo is clamped to the photo's width rather than refused.
     const logo = await s.resolve('p1', design({ placementKey: 'side-1', contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/a.png', artworkSizeMm: 220, customerItem }));
     expect(logo.elements[0].artwork?.widthMm).toBe(220);

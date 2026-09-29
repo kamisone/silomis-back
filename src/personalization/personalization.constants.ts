@@ -152,9 +152,6 @@ export const CURVE_LIMIT_DEG = 160;
 export const TRACED_PANEL_WIDTH_MM = 100;
 export const TRACED_PANEL_HEIGHT_MM = 50;
 
-export const MOTIF_MIN_MM = 15;
-export const MOTIF_MAX_MM = 120;
-
 /**
  * Words we will not stitch. Deliberately short and obvious: this is a backstop
  * against the worst inputs reaching a machine unattended, not a moderation

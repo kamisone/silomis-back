@@ -655,7 +655,6 @@ export class SendInService {
         variantId: variant.id,
         priceCents: fields.priceCents,
         maxChars: fields.maxChars,
-        allowPuff: fields.allowPuff,
         imageKey: fields.imageKey,
         isActive: dto.isActive ?? true,
         sortOrder: (last?.sortOrder ?? 0) + 10,
@@ -679,7 +678,6 @@ export class SendInService {
     }
     if (dto.hint !== undefined) data.hint = (parseLocalized(dto.hint) ?? Prisma.JsonNull) as Prisma.InputJsonValue;
     if (dto.maxChars !== undefined) data.maxChars = this.int(dto.maxChars, 1, 60, 'Max characters');
-    if (dto.allowPuff !== undefined) data.allowPuff = !!dto.allowPuff;
     if (dto.imageKey !== undefined) data.imageKey = dto.imageKey?.trim() || null;
     if (dto.isActive !== undefined) data.isActive = !!dto.isActive;
     if (dto.sortOrder !== undefined) data.sortOrder = this.int(dto.sortOrder, -100000, 100000, 'Sort order');
@@ -711,7 +709,6 @@ export class SendInService {
     return {
       priceCents: this.int(dto.priceCents ?? 0, 0, 10_000_000, 'Price'),
       maxChars: this.int(dto.maxChars ?? 20, 1, 60, 'Max characters'),
-      allowPuff: !!dto.allowPuff,
       imageKey: dto.imageKey?.trim() || null,
     };
   }
@@ -735,7 +732,6 @@ export class SendInService {
       sku: r.variant.sku,
       priceCents: r.priceCents,
       maxChars: r.maxChars,
-      allowPuff: r.allowPuff,
       imageKey: r.imageKey,
       imageUrl: r.imageKey ? (urls.get(r.imageKey) ?? null) : null,
       isActive: r.isActive,
@@ -750,7 +746,6 @@ export interface ItemTypeInput {
   hint?: unknown;
   priceCents?: number;
   maxChars?: number;
-  allowPuff?: boolean;
   imageKey?: string | null;
   isActive?: boolean;
   sortOrder?: number;

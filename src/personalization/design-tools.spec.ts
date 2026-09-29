@@ -355,10 +355,22 @@ describe('motifs', () => {
     );
   });
 
-  it('refuses a size no hoop would take', async () => {
+  it('refuses a size no hoop would take — by the field, not by a band of its own', async () => {
+    // There is no 15-120mm band any more: what refuses a shape is the frame it
+    // has to be hooped in, and the error says which way it did not fit — here
+    // the 200mm height, which a 300mm square runs past before its width.
     expect(
       await codeOf(makeService().resolve('p1', design({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 300 }))),
-    ).toBe(E.MOTIF_SIZE);
+    ).toBe(E.TOO_TALL);
+  });
+
+  it('takes a shape far smaller than the old floor, and one far larger', async () => {
+    const s = makeService();
+    const tiny = await s.resolve('p1', design({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 4 }));
+    expect(tiny.elements[0].motif?.sizeMm).toBe(4);
+    // The old ceiling was 120mm regardless of the position; this field is wider.
+    const big = await s.resolve('p1', design({ placementKey: 'wide', contentType: 'motif', motifKey: 'heart', motifSizeMm: 150 }));
+    expect(big.elements[0].motif?.sizeMm).toBe(150);
   });
 
   it('draws the shape on the sheet, scaled and centred', async () => {

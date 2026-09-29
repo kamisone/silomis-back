@@ -186,4 +186,70 @@ describe('parseSvgArtwork', () => {
     const art = parseSvgArtwork('<svg viewBox="0 0 10 10"><path d="M0 0h1v1z" fill="#000" data-name="a &amp; b"/></svg>');
     expect(art.shapes).toHaveLength(1);
   });
+
+  /**
+   * Colour from a `<style>` sheet rather than a `fill` attribute. This is what
+   * Illustrator, Affinity and Inkscape export by default, and reading only the
+   * attribute stored every such design as a solid black blob — which is then
+   * what got stitched.
+   */
+  describe('stylesheet fills', () => {
+    const fills = (body: string, defs = '') => parseSvgArtwork(`<svg viewBox="0 0 10 10">${defs}${body}</svg>`).shapes.map((sh) => sh.fill);
+
+    it('reads the internal CSS a drawing tool exports', () => {
+      expect(
+        fills('<path class="cls-1" d="M0 0h5v10H0z"/><path class="cls-2" d="M5 0h5v10H5z"/>', '<defs><style>.cls-1{fill:#e74c3c;}.cls-2{fill:#2980b9;}</style></defs>'),
+      ).toEqual(['#e74c3c', '#2980b9']);
+    });
+
+    it('reads a sheet wrapped in CDATA, which older exports always are', () => {
+      expect(fills('<path class="c" d="M0 0h1v1z"/>', '<style><![CDATA[.c{fill:#8e44ad;}]]></style>')).toEqual(['#8e44ad']);
+    });
+
+    it('inherits a rule that matched the group, not the shape', () => {
+      expect(fills('<g class="g"><path d="M0 0h1v1z"/></g>', '<style>.g{fill:#c0392b}</style>')).toEqual(['#c0392b']);
+    });
+
+    it('resolves an element and an id selector too', () => {
+      expect(fills('<path d="M0 0h1v1z"/>', '<style>path{fill:#16a085}</style>')).toEqual(['#16a085']);
+      expect(fills('<path id="p1" d="M0 0h1v1z"/>', '<style>#p1{fill:#d35400}</style>')).toEqual(['#d35400']);
+    });
+
+    it('picks the right rule out of a declaration block and a selector list', () => {
+      expect(fills('<path class="a b" d="M0 0h1v1z"/>', '<style>.a{fill-rule:evenodd}.b,.z{fill:#f39c12;stroke:none}</style>')).toEqual(['#f39c12']);
+    });
+
+    it('lets a rule beat the presentation attribute, the way a browser does', () => {
+      // Not a preference: the admin previews the file itself in an <img>, so
+      // these shapes have to end up the colour the browser draws.
+      expect(fills('<path class="a" d="M0 0h1v1z" fill="#00ff00"/>', '<style>.a{fill:#ff0000}</style>')).toEqual(['#ff0000']);
+    });
+
+    it('lets the style attribute beat the sheet, and an id beat a class', () => {
+      expect(fills('<path class="a" d="M0 0h1v1z" style="fill:#123456"/>', '<style>.a{fill:#ff0000}</style>')).toEqual(['#123456']);
+      expect(fills('<path id="x" class="a" d="M0 0h1v1z"/>', '<style>#x{fill:#111111}.a{fill:#ff0000}</style>')).toEqual(['#111111']);
+    });
+
+    it('takes the later of two rules of equal weight', () => {
+      expect(fills('<path class="a" d="M0 0h1v1z"/>', '<style>.a{fill:#ff0000}.a{fill:#0000ff}</style>')).toEqual(['#0000ff']);
+    });
+
+    it('leaves a selector it cannot resolve alone rather than guessing', () => {
+      // A descendant selector is not resolved, so the shape keeps its attribute
+      // — painting it from a rule that might not apply would be worse.
+      expect(fills('<path class="a" d="M0 0h1v1z" fill="#00ff00"/>', '<style>g .a{fill:#ff0000}</style>')).toEqual(['#00ff00']);
+    });
+
+    it('ignores a rule shut inside an at-rule, whose colour depends on the viewer', () => {
+      expect(fills('<path class="a" d="M0 0h1v1z" fill="#00ff00"/>', '<style>@media print{.a{fill:#ff0000}}</style>')).toEqual(['#00ff00']);
+    });
+
+    it('still refuses a gradient named by a rule, rather than storing a url', () => {
+      expect(() => fills('<path class="a" d="M0 0h1v1z"/>', '<style>.a{fill:url(#grad)}</style>')).toThrow(SvgArtworkError);
+    });
+
+    it('does not read a sheet out of a comment', () => {
+      expect(fills('<path class="a" d="M0 0h1v1z"/>', '<!-- <style>.a{fill:#ff0000}</style> -->')).toEqual(['#000000']);
+    });
+  });
 });

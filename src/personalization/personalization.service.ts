@@ -18,8 +18,6 @@ import {
   MAX_TRAVEL_FACTOR,
   MONOGRAM_MAX_CHARS,
   MONOGRAM_MIN_CHARS,
-  MOTIF_MAX_MM,
-  MOTIF_MIN_MM,
   PERSONALIZATION_ERRORS as E,
   ROTATION_LIMIT_DEG,
   STITCHABLE_MONOGRAM,
@@ -697,10 +695,7 @@ export class PersonalizationService {
     }
 
     // A motif is stitched instead of words, so it skips the whole text path.
-    // A shape on a catalogue position is capped like any motif; on the
-    // customer's own item it may grow to the photograph.
-    const motifMax = placement.usesCustomerPhoto ? Math.min(bounds.maxWidthMm, bounds.maxHeightMm) : MOTIF_MAX_MM;
-    const motif = input.motifKey ? await this.resolveMotif(input.motifKey, input.motifSizeMm, input.motifHeightMm, motifMax, bounds.maxHeightMm) : null;
+    const motif = input.motifKey ? await this.resolveMotif(input.motifKey, input.motifSizeMm, input.motifHeightMm) : null;
     if (input.contentType === 'motif' && !motif) fail(E.MOTIF_UNKNOWN, 'That shape is not available.');
 
     const font = await this.prisma.embroideryFont.findUnique({ where: { key: input.fontKey } });
@@ -1018,21 +1013,31 @@ export class PersonalizationService {
     return stack + sagitta;
   }
 
-  private async resolveMotif(key: string, sizeMm: number | undefined, heightMm: number | undefined, maxMm: number, maxHeightMm: number): Promise<ResolvedMotif | null> {
+  /**
+   * No size band.
+   *
+   * A design used to have to measure 15–120mm on BOTH sides. The minimum was a
+   * guess at what stitches legibly and the maximum a second, blunter answer to a
+   * question the position already answers — what fits its embroidery field —
+   * which is checked in real millimetres by the width and height gates below and
+   * is the only limit the machine imposes. Worse, the band bit hardest on the
+   * shop's own artwork: a 5:1 design at any sensible width was under 15mm tall,
+   * so a perfectly stitchable logo could not be placed at all. The customer
+   * picks the size; the field decides whether it can be sewn there.
+   */
+  private async resolveMotif(key: string, sizeMm: number | undefined, heightMm: number | undefined): Promise<ResolvedMotif | null> {
     const motif = await this.prisma.embroideryMotif.findUnique({ where: { key } });
     if (!motif?.isActive) return null;
     const size = round1(sizeMm ?? 30);
-    if (size < MOTIF_MIN_MM || size > maxMm) {
-      fail(E.MOTIF_SIZE, `A shape has to be between ${MOTIF_MIN_MM}mm and ${Math.round(maxMm)}mm.`);
-    }
+    // Not a limit — a shape has to have a size at all. A zero or a negative
+    // would put a degenerate transform on the production sheet.
+    if (!(size > 0)) fail(E.MOTIF_SIZE, 'Choose a size for the shape.');
     // Width and height are the customer's separately: the drawing's own
     // proportion unless they stretched it one way.
     const [, , vw, vh] = motif.viewBox.split(/\s+/).map(Number);
     const aspect = (vh || 100) / (vw || 100);
     const height = round1(heightMm ?? size * aspect);
-    if (height < MOTIF_MIN_MM || height > Math.max(maxMm, maxHeightMm)) {
-      fail(E.MOTIF_SIZE, `A shape has to be between ${MOTIF_MIN_MM}mm and ${Math.round(Math.max(maxMm, maxHeightMm))}mm tall.`);
-    }
+    if (!(height > 0)) fail(E.MOTIF_SIZE, 'Choose a size for the shape.');
     return {
       key: motif.key,
       name: pickLocalized(motif.name),

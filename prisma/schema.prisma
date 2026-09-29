@@ -2813,10 +2813,14 @@ model EmbroideryMotif {
   /// which are the single `path` above and nothing else.
   paths   Json?
   /// Stitched in the fills `paths` carries, rather than in one spool the
-  /// customer picks. Separate from `paths` because a one-colour design still
-  /// needs its shapes: a file that places them with transforms cannot be
-  /// flattened into one `d`, and picking only the first would quietly drop the
-  /// rest of the artwork.
+  /// customer picks. Derived from the artwork, not chosen: a design is sewn as
+  /// its file draws it, and the customer sizes and places it without recolouring
+  /// it. So this is true for anything uploaded, and false only for the older
+  /// seeded silhouettes, whose `paths` is null — one outline and no fills, so
+  /// there is nothing to sew them in and they take a thread the customer picks.
+  ///
+  /// Still a column of its own rather than `paths != null`, because a stored
+  /// design's rendering must not change under a job already on the floor.
   ownColours Boolean @default(false)
 
   /// How many thread colours this shape needs. Most are one.

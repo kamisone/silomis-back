@@ -124,6 +124,78 @@ function styleValue(style: string | undefined, property: string): string | undef
 }
 
 /**
+ * One `fill` declaration from a `<style>` sheet, with the selector it came from.
+ *
+ * Why any of this: Illustrator, Affinity and Inkscape all export colour as an
+ * internal stylesheet by default — `<style>.cls-1{fill:#e74c3c}</style>` with
+ * `class="cls-1"` on the shape — rather than as a `fill` attribute. Skipping the
+ * sheet left every one of those shapes with no fill of its own, so it fell back
+ * to black: a colourful logo was stored, and stitched, as a solid black blob.
+ */
+interface CssFillRule {
+  kind: 'id' | 'class' | 'tag';
+  name: string;
+  fill: string;
+  /** CSS specificity, coarsely: an id beats a class beats a bare tag. */
+  spec: number;
+  /** Position in the sheet, so the later of two equally specific rules wins. */
+  order: number;
+}
+
+/**
+ * The `fill` rules of every `<style>` element, flattened.
+ *
+ * Deliberately not a CSS engine. It resolves the three selectors a drawing tool
+ * emits — `.class`, `#id`, `tag` — and ignores anything with a combinator,
+ * pseudo-class or attribute selector, because guessing at those would paint a
+ * shape a colour a browser would not. An ignored rule leaves its shape on
+ * whatever its attributes say, which is the same place it was before.
+ */
+function readStylesheet(source: string): CssFillRule[] {
+  const rules: CssFillRule[] = [];
+  const styleRe = /<\s*style\b[^>]*>([\s\S]*?)<\s*\/\s*style\s*>/gi;
+  let order = 0;
+  let block: RegExpExecArray | null;
+  while ((block = styleRe.exec(source))) {
+    const css = block[1]
+      .replace(/<!\[CDATA\[|\]\]>/g, ' ')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      // At-rules are dropped whole: what a `@media` or `@supports` block applies
+      // depends on the viewer, and a design has one appearance.
+      .replace(/@[^{;]*\{[^{}]*\{[\s\S]*?\}\s*\}/g, ' ')
+      .replace(/@[^{;]*\{[^{}]*\}/g, ' ')
+      .replace(/@[^;{}]*;/g, ' ');
+
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let rule: RegExpExecArray | null;
+    while ((rule = ruleRe.exec(css))) {
+      const fill = styleValue(rule[2], 'fill');
+      if (!fill) continue;
+      for (const raw of rule[1].split(',')) {
+        const sel = raw.trim();
+        if (/^#[\w-]+$/.test(sel)) rules.push({ kind: 'id', name: sel.slice(1), fill, spec: 3, order: order++ });
+        else if (/^\.[\w-]+$/.test(sel)) rules.push({ kind: 'class', name: sel.slice(1), fill, spec: 2, order: order++ });
+        else if (/^[a-zA-Z][\w-]*$/.test(sel)) rules.push({ kind: 'tag', name: sel.toLowerCase(), fill, spec: 1, order: order++ });
+      }
+    }
+  }
+  return rules;
+}
+
+/** The winning stylesheet `fill` for one element, or undefined when no rule matches. */
+function cssFill(rules: CssFillRule[], tag: string, a: Record<string, string>): string | undefined {
+  if (!rules.length) return undefined;
+  const classes = a.class ? new Set(a.class.split(/\s+/).filter(Boolean)) : null;
+  let best: CssFillRule | undefined;
+  for (const r of rules) {
+    const hit = r.kind === 'id' ? r.name === a.id : r.kind === 'class' ? !!classes?.has(r.name) : r.name === tag;
+    if (!hit) continue;
+    if (!best || r.spec > best.spec || (r.spec === best.spec && r.order > best.order)) best = r;
+  }
+  return best?.fill;
+}
+
+/**
  * A paint value as a hex colour, or null when the shape is not filled.
  *
  * Throws rather than guessing for a paint that has no single colour: a gradient
@@ -246,10 +318,17 @@ function rootViewBox(a: Record<string, string>): string {
 export function parseSvgArtwork(raw: string): SvgArtwork {
   if (!raw || !raw.trim()) throw new SvgArtworkError('That file is empty.');
 
-  // Comments and CDATA can contain anything, including something that looks
-  // like a tag, so they go before a single character is interpreted.
-  const source = raw
-    .replace(/<!--[\s\S]*?-->/g, '')
+  // Comments go first: nothing inside one is part of the drawing, and one can
+  // hold something that looks like a tag.
+  const commented = raw.replace(/<!--[\s\S]*?-->/g, '');
+
+  // CDATA goes too, contents and all, for the same reason — it can smuggle a
+  // tag past the scanner. The one thing worth keeping out of it is a stylesheet,
+  // which older exports wrap in CDATA as a matter of course, so the sheet is read
+  // from `commented` instead. Safe because a rule yields nothing but a `fill`
+  // value, and that value has to satisfy `parseFill` — a hex colour, an `rgb()`
+  // or a colour name — before it is stored. Markup cannot survive the trip.
+  const source = commented
     .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
     .replace(/<\?[\s\S]*?\?>/g, '')
     .replace(/<!DOCTYPE[^>]*>/gi, '');
@@ -262,12 +341,15 @@ export function parseSvgArtwork(raw: string): SvgArtwork {
   if (!rootMatch) throw new SvgArtworkError('That does not look like an SVG file.');
   const viewBox = rootViewBox(attrsOf(rootMatch[1]));
 
+  // Read before the scan, because a rule applies wherever in the file it sits.
+  const sheet = readStylesheet(commented);
+
   const shapes: SvgShape[] = [];
   /** Inherited paint and transform, innermost last. The root seeds it. */
   const stack: { fill: string; transform: string; tag: string }[] = [];
   const rootAttrs = attrsOf(rootMatch[1]);
   stack.push({
-    fill: styleValue(rootAttrs.style, 'fill') ?? rootAttrs.fill ?? DEFAULT_FILL,
+    fill: styleValue(rootAttrs.style, 'fill') ?? cssFill(sheet, 'svg', rootAttrs) ?? rootAttrs.fill ?? DEFAULT_FILL,
     transform: safeTransform(rootAttrs.transform),
     tag: 'svg',
   });
@@ -310,7 +392,7 @@ export function parseSvgArtwork(raw: string): SvgArtwork {
 
     if (tag === 'g' || tag === 'svg') {
       const entry = {
-        fill: styleValue(a.style, 'fill') ?? a.fill ?? inherited.fill,
+        fill: styleValue(a.style, 'fill') ?? cssFill(sheet, tag, a) ?? a.fill ?? inherited.fill,
         transform: [inherited.transform, safeTransform(a.transform)].filter(Boolean).join(' '),
         tag,
       };
@@ -332,7 +414,13 @@ export function parseSvgArtwork(raw: string): SvgArtwork {
       continue;
     }
 
-    const fill = parseFill(styleValue(a.style, 'fill') ?? a.fill, inherited.fill);
+    // The cascade a browser applies, in its order: the `style` attribute, then
+    // the stylesheet, then the `fill` presentation attribute — which loses to any
+    // rule that matches — then whatever the parent group is filled with. It has
+    // to be this order and not a simpler one, because the admin now previews the
+    // file itself in an `<img>`: if these shapes did not follow the same cascade,
+    // the preview and the stitching would disagree.
+    const fill = parseFill(styleValue(a.style, 'fill') ?? cssFill(sheet, tag, a) ?? a.fill, inherited.fill);
     if (!fill) continue;
 
     let d: string | null;
