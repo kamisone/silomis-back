@@ -43,7 +43,6 @@ const BLOCK = {
   webFamily: 'sans-serif',
   minHeightMm: 8,
   maxHeightMm: 40,
-  stitchesPerCharAt10mm: 130,
   avgCharWidthRatio: 0.62,
   uppercaseOnly: false,
   supportsMonogram: true,
@@ -51,18 +50,13 @@ const BLOCK = {
   supportsCurve: true,
   isActive: true,
 };
-const VARSITY = { ...BLOCK, key: 'serif-varsity', name: 'Varsity', uppercaseOnly: true, stitchesPerCharAt10mm: 200, avgCharWidthRatio: 0.74 };
+const VARSITY = { ...BLOCK, key: 'serif-varsity', name: 'Varsity', uppercaseOnly: true, avgCharWidthRatio: 0.74 };
 const SIGNATURE = { ...BLOCK, key: 'script-signature', name: 'Signature', supportsMonogram: false, minHeightMm: 12 };
 
 const TEAL = { id: 't-1', brand: 'Madeira Polyneon', code: '1791', name: 'Teal', hex: '#0d8f8c', isActive: true, finish: 'matte', priceMultiplier: 1 };
 const PINK = { id: 't-2', brand: 'Madeira Polyneon', code: '1921', name: 'Fuchsia', hex: '#c8186a', isActive: true, finish: 'matte', priceMultiplier: 1 };
 const WHITE = { id: 't-3', brand: 'Madeira Polyneon', code: '1000', name: 'White', hex: '#ffffff', isActive: true, finish: 'matte', priceMultiplier: 1 };
 
-const BANDS = [
-  { maxStitches: 3000, priceCents: 800, label: 'Small' },
-  { maxStitches: 6000, priceCents: 1200, label: 'Medium' },
-  { maxStitches: 9000, priceCents: 1800, label: 'Large' },
-];
 
 /** A send-in side: the customer's photo stands in for the position's own. */
 const SIDE = { ...BACK, key: 'side-1', mediaKey: null, usesCustomerPhoto: true, priceCents: 0, allowPuff: true };
@@ -84,7 +78,7 @@ function makeService(
       })),
     },
     personalizationTemplate: {
-      // Shop-wide policy only: what may be written, and the stitch bands.
+      // Shop-wide policy only: what may be written, and the extra-box fee.
       findUnique: jest.fn(async () => ({
         id: 'tpl-1',
         key: 'cap-standard',
@@ -93,14 +87,13 @@ function makeService(
         allowText: true,
         allowMonogram,
         allowUpload: false,
-        priceBands: BANDS,
       })),
     },
     // Positions belong to the product, and are looked up one at a time by key.
     embroideryMotif: {
       findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
         where.key === 'heart'
-          ? { key: 'heart', name: { en: 'Heart' }, path: 'M0 0 L10 10', viewBox: '0 0 100 100', stitchesAt30mm: 2200, colorCount: 1, isActive: true }
+          ? { key: 'heart', name: { en: 'Heart' }, path: 'M0 0 L10 10', viewBox: '0 0 100 100', colorCount: 1, isActive: true, priceCents: 0, ownColours: false, paths: null }
           : null,
       ),
     },
@@ -255,14 +248,15 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
     await expect(s.resolve('p1', design({ text: 'Łukasz', heightMm: 12 }))).resolves.toBeDefined();
   });
 
-  it('accepts a design past the largest price band, at that band', async () => {
-    // Narrow enough to clear the width check, dense enough to exceed 9000:
-    // three Varsity letters at 40mm, heaviest weight, in 3D puff (~8,500), next
-    // to a second box of ~700 — one hoop, over the top band together. Machine
-    // time is priced, never refused: the customer decides how much goes on.
+  it('accepts the densest design the machine can hold — nothing is priced by how much thread it takes', async () => {
+    // Three Varsity letters at 40mm, heaviest weight, in 3D puff, next to a
+    // second box. This used to be past the top price band, which was also the
+    // ceiling; there is no ceiling and no band now.
     const r = await makeService().resolve('p1', design({ elements: [box({ fontKey: 'serif-varsity', text: 'ABC', heightMm: 40, weight: 5, puff: true, threadColorId: TEAL.id, offsetYMm: 0 }), box({ text: 'Jo', heightMm: 18, threadColorId: TEAL.id, offsetYMm: 24 })] }));
-    expect(r.stitchEstimate).toBeGreaterThan(9000);
-    expect(r.priceCents).toBeGreaterThan(0);
+    expect(r.elements).toHaveLength(2);
+    // FRONT is free in this fixture, which is the point: the densest design
+    // costs exactly what the plainest one on the same position costs.
+    expect(r.priceCents).toBe(0);
   });
 
   it('refuses a product with no template, and one that is not active', async () => {
@@ -306,50 +300,41 @@ describe('PersonalizationService.resolve — the hoop', () => {
   });
 });
 
-describe('PersonalizationService.resolve — stitches and price', () => {
-  it('scales stitches faster than the height but well short of its square', async () => {
+describe('PersonalizationService.resolve — what it costs', () => {
+  /**
+   * The price was led by an estimated stitch count against a ladder of bands, so
+   * the height, the weight and the foam all moved it — through a guess nothing
+   * ever checked against a digitiser's real count. It is the position's own
+   * price now, plus what the customer knowingly added.
+   */
+  it('does not move with the size, the weight or the foam', async () => {
     const s = makeService();
     const small = await s.resolve('p1', design({ heightMm: 10 }));
     const big = await s.resolve('p1', design({ heightMm: 20 }));
+    const heavy = await s.resolve('p1', design({ heightMm: 30, weight: 5, puff: true }));
 
-    // 5 glyphs × 130 × 1 + 80 overhead = 730; at 20mm the factor is 2^1.3 ≈ 2.46.
-    expect(small.stitchEstimate).toBe(730);
-    expect(big.stitchEstimate).toBe(1681);
+    expect(small.priceCents).toBe(0);
+    expect(big.priceCents).toBe(0);
+    expect(heavy.priceCents).toBe(0);
   });
 
-  it('charges a colour change per extra spool across the boxes, but not for the same spool twice', async () => {
+  it('counts the spools on the hoop, which the sheet needs even though no price rides on it', async () => {
     const s = makeService();
-    const one = await s.resolve('p1', design());
-    const extra = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: TEAL.id })] }));
+    const same = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: TEAL.id })] }));
     const two = await s.resolve('p1', design({ elements: [box({ text: 'Maria', heightMm: 20, threadColorId: TEAL.id, offsetYMm: -8 }), box({ threadColorId: PINK.id })] }));
 
-    // "Jo" at 10mm is 2 × 130 + 80 = 340 stitches of its own.
-    expect(extra.stitchEstimate).toBe(one.stitchEstimate + 340);
-    expect(two.stitchEstimate).toBe(extra.stitchEstimate + 120);
-    expect(extra.threadColors).toHaveLength(1);
+    expect(same.threadColors).toHaveLength(1);
     expect(two.threadColors).toHaveLength(2);
   });
 
-  it('picks the first band the estimate fits in', async () => {
-    const s = makeService();
-    // 730, 1681, 4744 and 6377 stitches — one in each band. Height alone no
-    // longer reaches the top band on a 110mm field (a longer name would be too
-    // wide), so the last two lean on weight and 3D puff, which is also how a
-    // real customer gets there.
-    expect((await s.resolve('p1', design({ heightMm: 10 }))).priceCents).toBe(800);
-    expect((await s.resolve('p1', design({ heightMm: 20 }))).priceCents).toBe(800);
-    expect((await s.resolve('p1', design({ heightMm: 30, weight: 5 }))).priceCents).toBe(1200);
-    expect(
-      (await s.resolve('p1', design({ heightMm: 30, weight: 5, puff: true }))).priceCents,
-    ).toBe(1800);
-  });
-
-  it('adds the position’s own price on top of the band', async () => {
+  it('is the position’s own price', async () => {
     const s = makeService();
     const front = await s.resolve('p1', design({ heightMm: 10 }));
     const back = await s.resolve('p1', design({ placementKey: 'back', heightMm: 10 }));
 
-    expect(back.priceCents).toBe(front.priceCents + 150);
+    // FRONT is free in this fixture and BACK costs 150.
+    expect(front.priceCents).toBe(0);
+    expect(back.priceCents).toBe(150);
   });
 
   it('charges a send-in side its flat fee whatever is drawn on it', async () => {
@@ -362,10 +347,9 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     const small = await s.resolve('p1', design({ placementKey: 'side-1', heightMm: 10, customerItem }));
     const heavy = await s.resolve('p1', design({ placementKey: 'side-1', heightMm: 30, weight: 5, puff: true, customerItem }));
 
-    // Small and Large bands on a catalogue cap — one price on the customer's own.
+    // One flat figure per side, whatever goes on it.
     expect(small.priceCents).toBe(990);
     expect(heavy.priceCents).toBe(990);
-    expect(heavy.stitchEstimate).toBeGreaterThan(small.stitchEstimate);
   });
 
   it('charges a send-in by the side however heavy the design is', async () => {
@@ -373,9 +357,7 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     // The panel is a fifth of the photo, so the photo is five panels wide — room enough.
     const customerItem = { itemType: 'cap', photoKeys: ['send-in/a.jpg'], corners: [{ x: 40, y: 40 }, { x: 60, y: 40 }, { x: 60, y: 60 }, { x: 40, y: 60 }] };
     const r = await s.resolve('p1', design({ placementKey: 'side-1', text: 'ABCDEFGH', heightMm: 40, weight: 5, puff: true, fontKey: 'serif-varsity', customerItem }));
-    // Far past every band, and the side's flat fee all the same — the bands do
-    // not price a send-in and, on a catalogue cap, do not refuse it either.
-    expect(r.stitchEstimate).toBeGreaterThan(9000);
+    // The densest thing the face allows, at the side's flat fee all the same.
     expect(r.priceCents).toBe(990);
   });
 
@@ -412,8 +394,6 @@ describe('PersonalizationService.resolve — stitches and price', () => {
 
     expect(el.artwork).toMatchObject({ name: 'crest.svg', widthMm: 80, heightMm: 40 });
     expect(el.thread).toBeNull();
-    // 80 × 40 mm at 40% drawn, 6 stitches per mm² — plus the overhead.
-    expect(el.stitchEstimate).toBeGreaterThan(80 * 40 * 0.4 * 6);
     expect(r.priceCents).toBe(990);
     expect((r.designJson as { elements: { artwork: { originalKey: string } }[] }).elements[0].artwork.originalKey).toBe('send-in/artwork/a-original.svg');
   });
@@ -427,13 +407,6 @@ describe('PersonalizationService.resolve — stitches and price', () => {
     expect(await codeOf(s.resolve('p1', design({ contentType: 'artwork', text: '', artworkKey: 'send-in/artwork/a.png' })))).toBe('PERSONALIZATION_CONTENT_TYPE_DISABLED');
   });
 
-  it('counts a monogram denser than the same letters set as text', async () => {
-    const s = makeService();
-    const asText = await s.resolve('p1', design({ text: 'MJB', heightMm: 15 }));
-    const asMonogram = await s.resolve('p1', design({ contentType: 'monogram', text: 'MJB', heightMm: 15 }));
-
-    expect(asMonogram.stitchEstimate).toBeGreaterThan(asText.stitchEstimate);
-  });
 });
 
 describe('PersonalizationService.resolve — where the design sits in the field', () => {
@@ -512,22 +485,15 @@ describe('PersonalizationService.resolve — weight', () => {
     expect([r.weightStep, r.fontWeight]).toEqual([2, 400]);
   });
 
-  it('costs more stitches the heavier it is, because it is more thread', async () => {
+  it('is a stitch density the operator is told about, not a price input', async () => {
     const s = makeService();
     const light = await s.resolve('p1', design({ weight: 1 }));
-    const regular = await s.resolve('p1', design({ weight: 2 }));
     const bold = await s.resolve('p1', design({ weight: 5 }));
 
-    expect(light.stitchEstimate).toBeLessThan(regular.stitchEstimate);
-    expect(bold.stitchEstimate).toBeGreaterThan(regular.stitchEstimate);
     expect(bold.fontWeight).toBe(900);
-  });
-
-  it('can push a design into a higher price band', async () => {
-    const s = makeService();
-    // 2792 stitches regular, ~4745 at the heaviest — across the 3000 boundary.
-    expect((await s.resolve('p1', design({ heightMm: 30, weight: 2 }))).priceCents).toBe(800);
-    expect((await s.resolve('p1', design({ heightMm: 30, weight: 5 }))).priceCents).toBe(1200);
+    // The heavier column is more thread and more machine time, but the shop's
+    // price is its own figure: weight used to tip a design into a dearer band.
+    expect(bold.priceCents).toBe(light.priceCents);
   });
 
   it('widens the line only slightly — a satin column grows mostly inward', async () => {
@@ -682,9 +648,10 @@ describe('PersonalizationService.resolveSet — several positions on one item', 
     const one = await s.resolveSet('p1', [front] as never);
     const both = await s.resolveSet('p1', [front, back] as never);
 
-    // Front is band 800 + position 0; back is band 800 + position 150.
-    expect(one.totalCents).toBe(800);
-    expect(both.totalCents).toBe(1750);
+    // Each position's own price, once per position: FRONT is free in this
+    // fixture and BACK costs 150.
+    expect(one.totalCents).toBe(0);
+    expect(both.totalCents).toBe(150);
     expect(both.designs).toHaveLength(2);
   });
 
@@ -725,13 +692,12 @@ describe('PersonalizationService.buildProductionSvg', () => {
     expect(svg).toContain('width="80" height="25"');
   });
 
-  it('records the thread and stitch count for the operator', async () => {
+  it('records the thread for the operator', async () => {
     const s = makeService();
     const r = await s.resolve('p1', design());
     const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
 
     expect(svg).toContain('Madeira Polyneon 1791 Teal');
-    expect(svg).toContain(`~${r.stitchEstimate} stitches`);
   });
 
   it('escapes the customer’s text — it is the one part a stranger wrote', async () => {

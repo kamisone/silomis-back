@@ -1,0 +1,15 @@
+-- The extra-box fee is removed.
+--
+-- It was added one change ago as the shop's volume lever after the stitch
+-- ladder went, and its only surface was the "Embroidery pricing" panel in the
+-- studio. With that panel gone there is no way to set it, so it would have sat
+-- at 0 forever — a pricing term nobody could reach.
+--
+-- Embroidery is now priced from exactly two figures, both stated where the thing
+-- they price is edited: a position's own price, on the position, and a design's
+-- surcharge, on the design. A second box on one position adds nothing, which is
+-- also the truth of the work: the hooping and the run happen once however many
+-- boxes are in the frame.
+--
+-- Guarded, so a partial or repeated run is harmless.
+ALTER TABLE "shop_personalization_templates" DROP COLUMN IF EXISTS "extraBoxCents";

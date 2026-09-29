@@ -4,12 +4,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { pickLocalized } from './localized.util';
 import { ElementInput, PersonalizationInput } from './dto/personalization.dto';
-import { SEND_IN_ARTWORK_MIN_MM, SEND_IN_ARTWORK_STITCHES_PER_MM2 } from '../send-in/send-in.constants';
+import { SEND_IN_ARTWORK_MIN_MM } from '../send-in/send-in.constants';
 import { FontGlyphService } from './font-glyph.service';
 import {
   BLOCKED_TEXT_PATTERNS,
   CURVE_LIMIT_DEG,
-  CURVE_STITCH_FACTOR,
   DEFAULT_WEIGHT_STEP,
   FIELD_MAX_HEIGHT_MM,
   FIELD_MAX_WIDTH_MM,
@@ -19,18 +18,12 @@ import {
   MAX_TRAVEL_FACTOR,
   MONOGRAM_MAX_CHARS,
   MONOGRAM_MIN_CHARS,
-  MONOGRAM_STITCH_FACTOR,
   MOTIF_MAX_MM,
   MOTIF_MIN_MM,
-  OUTLINE_STITCH_FACTOR,
   PERSONALIZATION_ERRORS as E,
-  PUFF_STITCH_FACTOR,
   ROTATION_LIMIT_DEG,
   STITCHABLE_MONOGRAM,
   STITCHABLE_TEXT,
-  STITCHES_PER_COLOR_CHANGE,
-  STITCH_BASE_OVERHEAD,
-  STITCH_HEIGHT_EXPONENT,
   TRACKING_MAX,
   TRACKING_MIN,
   weightForStep,
@@ -86,12 +79,17 @@ export interface ResolvedMotif {
    * `d`, and keeping only the first would drop the rest of the drawing.
    */
   ownColours: boolean;
+  /**
+   * What choosing this design adds to the embroidery price, on top of the
+   * position's own price. The shop's figure, per box — a licensed or fiddly
+   * shape can be worth more than a plain one.
+   */
+  priceCents: number;
   /** The width it is stitched at. */
   sizeMm: number;
   /** The height — the drawing's own proportion unless the customer stretched it. */
   heightMm: number;
   /** Measured from a stitch-out at 30mm; the estimator scales it by area. */
-  stitchesAt30mm: number;
   colorCount: number;
 }
 
@@ -143,7 +141,6 @@ export interface ResolvedElement {
   offsetYMm: number;
   /** The box's own angle in the garment's plane. */
   rotationDeg: number;
-  stitchEstimate: number;
 }
 
 /**
@@ -181,7 +178,6 @@ export interface ResolvedPersonalization {
   fieldWidthMm: number;
   fieldHeightMm: number;
   threadColors: ResolvedThread[];
-  stitchEstimate: number;
   /** Per unit. */
   priceCents: number;
   /** Predicted width of the stitched line, for the operator and the preview. */
@@ -212,7 +208,6 @@ export interface CartLineDesign {
   fieldWidthMm: number;
   fieldHeightMm: number;
   threadColors: unknown;
-  stitchEstimate: number;
   offsetXMm: number;
   offsetYMm: number;
   rotationDeg: number;
@@ -266,10 +261,7 @@ export class PersonalizationService {
     // The template is shop-wide policy — what may be written and what it costs
     // per stitch band. The positions themselves belong to this product.
     const [template, placements] = await Promise.all([
-      this.prisma.personalizationTemplate.findUnique({
-        where: { id: product.personalizationTemplateId },
-        include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
-      }),
+      this.prisma.personalizationTemplate.findUnique({ where: { id: product.personalizationTemplateId } }),
       this.prisma.personalizationPlacement.findMany({
         where: { productId: product.id, isActive: true },
         orderBy: { sortOrder: 'asc' },
@@ -369,7 +361,6 @@ export class PersonalizationService {
         // typing instead of a round trip per keystroke. Not a secret — it is a
         // density measurement, and the server re-derives the real figure
         // anyway before anything reaches a cart.
-        stitchesPerCharAt10mm: f.stitchesPerCharAt10mm,
         uppercaseOnly: f.uppercaseOnly,
         supportsMonogram: f.supportsMonogram,
       })),
@@ -396,7 +387,6 @@ export class PersonalizationService {
        * storefront has no compiled-in list to translate them against.
        */
       motifCategories: motifCategories.map((c) => ({ key: c.key, name: pickLocalized(c.name, lang) })),
-      priceBands: template.priceBands.map((b) => ({ maxStitches: b.maxStitches, priceCents: b.priceCents, label: b.label })),
     };
   }
 
@@ -422,10 +412,7 @@ export class PersonalizationService {
     }
 
     const [template, placement] = await Promise.all([
-      this.prisma.personalizationTemplate.findUnique({
-        where: { id: product.personalizationTemplateId },
-        include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
-      }),
+      this.prisma.personalizationTemplate.findUnique({ where: { id: product.personalizationTemplateId } }),
       this.prisma.personalizationPlacement.findUnique({
         where: { productId_key: { productId, key: input.placementKey } },
       }),
@@ -533,41 +520,40 @@ export class PersonalizationService {
     // Each box carries its own glyph stitches and its own underlay; the
     // colour changes belong to the position, because that is where they
     // happen — between one box's spool and the next.
-    const stitchEstimate = elements.reduce((sum, el) => sum + el.stitchEstimate, 0) + Math.max(0, threads.length - 1) * STITCHES_PER_COLOR_CHANGE;
-
-    // A send-in side is not banded — its price is flat, and the customer
-    // is free to put as much on it as the hoop holds. The estimate is still
-    // kept, for the desk's planning, but it stops nothing.
-    //
-    // On a catalogue item the ladder prices the machine time, and its top band
-    // is open-ended: a design past it is charged there rather than refused.
-    // The customer decides how much goes on their cap; a stitch count is never
-    // a reason to turn the order away. The bands are ordered by maxStitches
-    // ascending, so the last one is the top of the ladder — and a template
-    // always has at least one (the seed writes them, and the admin endpoint
-    // refuses an empty set).
-    const band = customerItem
-      ? { priceCents: 0, maxStitches: Number.POSITIVE_INFINITY }
-      : (template.priceBands.find((b) => stitchEstimate <= b.maxStitches) ?? template.priceBands[template.priceBands.length - 1]);
-
-    // The stitch band covers machine time; the placement's own price covers the
-    // hooping and the run. A customer embroidering two positions pays both
-    // halves twice, because that is what the shop actually does twice — and a
-    // second box on the same position pays neither again, because it does not.
     const placementLabel = pickLocalized(placement.label, lang);
-    // A metallic or glow thread runs slower and breaks more, so the spool the
-    // customer picked moves the price. The dearest one on the design decides —
-    // the machine is only as fast as its slowest pass.
-    // `?? 1` because Math.max with a single undefined is NaN, and a NaN here
-    // does not throw — it silently becomes the price of the whole design.
-    const threadMultiplier = Math.max(1, ...threads.map((t) => t.priceMultiplier ?? 1));
-    // A send-in side is a flat fee — the item type's price, and only that.
-    // Neither the band nor the thread is charged: the customer was quoted one
-    // figure per side when they chose the item, and the design step must not
-    // move it.
-    const priceCents = customerItem
-      ? sideFeeCents
-      : Math.round((band?.priceCents ?? 0) * threadMultiplier) + placement.priceCents;
+
+    /**
+     * What the embroidery costs.
+     *
+     * Every term is a figure the shop typed, and every term answers to
+     * something the customer did:
+     *
+     * - the POSITION's own price, once per position, for the hooping and the
+     *   run — two positions are two of those, because the shop does the work
+     *   twice, while a second box on one position is not, so it adds nothing;
+     * - each DESIGN's own surcharge, per box, for a shape the shop prices above
+     *   the plain ones.
+     *
+     * It used to be led by an estimated stitch count against a ladder of price
+     * bands. That was the honest unit — machine time IS stitches — but only a
+     * real digitised file has a stitch count; ours was a parametric guess from
+     * a per-face average, a height exponent the code itself documented as
+     * "1.2–1.4 in practice", and a handful of uncalibrated multipliers. A
+     * continuous or banded price off that guess put its whole error on the
+     * invoice, and nothing ever compared the guess to a digitiser's actual
+     * figure. A price the shop states is one it can stand behind.
+     *
+     * A metallic or glow thread still costs more to run, and its multiplier is
+     * still on the row, but it is not applied here: it multiplied the band, and
+     * a multiplier on a flat position fee gives a figure nobody chose (€10
+     * becomes €13.50). If that cost should be charged again it belongs as a
+     * flat surcharge on the spool, stated the same way as everything else.
+     */
+    const designCents = elements.reduce((sum, el) => sum + (el.motif?.priceCents ?? 0), 0);
+    // A send-in side is a flat fee — the item type's price. The customer was
+    // quoted one figure per side when they chose the item, so only what they
+    // then knowingly added to it moves the total.
+    const priceCents = customerItem ? sideFeeCents + designCents : placement.priceCents + designCents;
 
     // The row keeps a flat summary of the position for everything that reads a
     // design without opening the document — the queue's card, a search, an
@@ -627,6 +613,7 @@ export class PersonalizationService {
           ? {
               key: el.motif.key, name: el.motif.name, sizeMm: el.motif.sizeMm, heightMm: el.motif.heightMm,
               path: el.motif.path, viewBox: el.motif.viewBox, paths: el.motif.paths, ownColours: el.motif.ownColours,
+              priceCents: el.motif.priceCents,
             }
           : null,
         // Both files by key: the rendering for every later picture of this
@@ -639,10 +626,8 @@ export class PersonalizationService {
         offsetYMm: el.offsetYMm,
         rotationDeg: el.rotationDeg,
         thread: el.thread ? { brand: el.thread.brand, code: el.thread.code, name: el.thread.name, hex: el.thread.hex } : null,
-        stitchEstimate: el.stitchEstimate,
       })),
       threads: threads.map((t) => ({ brand: t.brand, code: t.code, name: t.name, hex: t.hex })),
-      stitchEstimate,
       priceCents,
     };
 
@@ -669,7 +654,6 @@ export class PersonalizationService {
       fieldWidthMm,
       fieldHeightMm,
       threadColors: threads,
-      stitchEstimate,
       priceCents,
       widthMm: round1(Math.max(...elements.map((el) => el.widthMm))),
       offsetXMm,
@@ -845,20 +829,6 @@ export class PersonalizationService {
     // than two cart lines that stitch identically.
     const rotationDeg = round1(normalizeAngle(input.rotationDeg ?? 0));
 
-    const stitchEstimate = this.estimateStitches({
-      lines,
-      heightMm,
-      contentType: input.contentType,
-      stitchesPerCharAt10mm: font.stitchesPerCharAt10mm,
-      colorCount: 1,
-      weightFactor: weight.stitchFactor,
-      curveDeg,
-      hasOutline: false,
-      isPuff,
-      motif,
-      borderMm,
-    });
-
     return {
       contentType: input.contentType,
       text,
@@ -884,7 +854,6 @@ export class PersonalizationService {
       offsetXMm,
       offsetYMm,
       rotationDeg,
-      stitchEstimate,
     };
   }
 
@@ -953,7 +922,6 @@ export class PersonalizationService {
 
     const maxTravelX = placement.fieldWidthMm * MAX_TRAVEL_FACTOR;
     const maxTravelY = placement.fieldHeightMm * MAX_TRAVEL_FACTOR;
-    const stitchEstimate = Math.ceil(widthMm * heightMm * art.coverage * SEND_IN_ARTWORK_STITCHES_PER_MM2 + STITCH_BASE_OVERHEAD);
 
     return {
       contentType: 'artwork',
@@ -988,7 +956,6 @@ export class PersonalizationService {
       offsetXMm: round1(clamp(input.offsetXMm ?? 0, -maxTravelX, maxTravelX)),
       offsetYMm: round1(clamp(input.offsetYMm ?? 0, -maxTravelY, maxTravelY)),
       rotationDeg: round1(normalizeAngle(input.rotationDeg ?? 0)),
-      stitchEstimate,
     };
   }
 
@@ -1072,9 +1039,9 @@ export class PersonalizationService {
       viewBox: motif.viewBox,
       paths: motifPaths(motif.paths),
       ownColours: motif.ownColours,
+      priceCents: motif.priceCents,
       sizeMm: size,
       heightMm: height,
-      stitchesAt30mm: motif.stitchesAt30mm,
       colorCount: motif.colorCount,
     };
   }
@@ -1149,61 +1116,6 @@ export class PersonalizationService {
     // A monogram's letters interlock and the centre letter is drawn larger, so
     // it is wider than the same three characters set as text.
     return contentType === 'monogram' ? base * 1.25 : base;
-  }
-
-  /**
-   * Stitch count, which is what the price is actually based on — machine time
-   * is stitches, not characters.
-   *
-   * Glyph stitches grow with height to the STITCH_HEIGHT_EXPONENT power —
-   * faster than linear, since a taller letter also has longer strokes, but
-   * well short of the square, because a satin column widens with the letter
-   * instead of adding stitches. A 25mm name costs about 3x a 10mm one.
-   */
-  private estimateStitches(args: {
-    lines: string[];
-    heightMm: number;
-    contentType: ContentType;
-    stitchesPerCharAt10mm: number;
-    colorCount: number;
-    /** A heavier satin column is more thread over the same outline. */
-    weightFactor: number;
-    curveDeg: number;
-    hasOutline: boolean;
-    isPuff: boolean;
-    motif: ResolvedMotif | null;
-    /** A satin border round the letters, in millimetres. */
-    borderMm?: number;
-  }): number {
-    const colorStitches = Math.max(0, args.colorCount - 1) * STITCHES_PER_COLOR_CHANGE;
-    // A border is a satin band the length of the letters' outline — about
-    // three times a glyph's height per glyph — at 6 stitches per mm².
-    const borderGlyphs = args.lines.join('').split('').filter((ch) => ch !== ' ').length;
-    const borderStitches = args.borderMm ? Math.ceil(borderGlyphs * args.heightMm * 3 * args.borderMm * 6) : 0;
-
-    // A motif's cost was measured, not derived — it is a fixed piece of
-    // artwork, so it only scales with the area it is stitched at.
-    if (args.contentType === 'motif') {
-      const motif = args.motif;
-      if (!motif) return STITCH_BASE_OVERHEAD;
-      const areaFactor = (motif.sizeMm * (motif.heightMm || motif.sizeMm)) / (30 * 30);
-      return Math.ceil(motif.stitchesAt30mm * areaFactor + colorStitches + STITCH_BASE_OVERHEAD);
-    }
-
-    const glyphs = args.lines.join('').split('').filter((ch) => ch !== ' ').length;
-    const heightFactor = (args.heightMm / 10) ** STITCH_HEIGHT_EXPONENT;
-    const typeFactor = args.contentType === 'monogram' ? MONOGRAM_STITCH_FACTOR : 1;
-
-    let glyphStitches = glyphs * args.stitchesPerCharAt10mm * heightFactor * typeFactor * args.weightFactor;
-    // A curve costs travel: the machine repositions between glyphs that no
-    // longer share a baseline.
-    if (args.curveDeg) glyphStitches *= CURVE_STITCH_FACTOR;
-    // Foam is denser and needs a capping pass over the edges.
-    if (args.isPuff) glyphStitches *= PUFF_STITCH_FACTOR;
-    // A second pass round every glyph, roughly its perimeter.
-    if (args.hasOutline) glyphStitches *= 1 + OUTLINE_STITCH_FACTOR;
-
-    return Math.ceil(glyphStitches + borderStitches + colorStitches + STITCH_BASE_OVERHEAD);
   }
 
   // ── Fingerprint ──────────────────────────────────────────────────────
@@ -1446,7 +1358,7 @@ export class PersonalizationService {
       const subject = el.artwork ? `logo "${el.artwork.name}"` : el.motif ? el.motif.name : `"${el.text.replace(/\n/g, ' / ')}"`;
       const spool = el.thread ? `${el.thread.brand} ${el.thread.code} ${el.thread.name}` : 'own colours';
       const face = el.artwork ? `${el.artwork.widthMm}×${el.artwork.heightMm}mm` : `${el.fontName} ${el.heightMm}mm`;
-      return `box ${i + 1}: ${subject} · ${face} · ${spool} · ~${el.stitchEstimate} stitches · ${extras.join(' · ')}`;
+      return `box ${i + 1}: ${subject} · ${face} · ${spool} · ${extras.join(' · ')}`;
     });
 
     const boxes = r.elements.flatMap((el, i) => [
@@ -1462,7 +1374,7 @@ export class PersonalizationService {
     return [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">`,
       `<title>${escapeXml(r.placementLabel)} — ${escapeXml(r.text || r.motif?.name || '')}</title>`,
-      `<desc>${escapeXml(`${r.elements.length} ${r.elements.length === 1 ? 'box' : 'boxes'} · ~${r.stitchEstimate} stitches${offsetNote}\n${boxNotes.join('\n')}`)}</desc>`,
+      `<desc>${escapeXml(`${r.elements.length} ${r.elements.length === 1 ? 'box' : 'boxes'}${offsetNote}\n${boxNotes.join('\n')}`)}</desc>`,
       // Where the position was traced — faint, square to the page, for reference.
       `<rect x="${originX}" y="${originY}" width="${w}" height="${h}" fill="none" stroke="#e4e8ed" stroke-width="0.25" stroke-dasharray="1 2"/>`,
       `<path d="M${cx0} ${originY} V${originY + h} M${originX} ${cy0} H${originX + w}" stroke="#e4e8ed" stroke-width="0.2" stroke-dasharray="1 3"/>`,
@@ -1603,7 +1515,8 @@ function rowToResolved(row: CartLineDesign): ResolvedPersonalization {
         viewBox: row.motifViewBox ?? '0 0 100 100',
         sizeMm: row.motifSizeMm ?? 30,
         heightMm: row.motifSizeMm ?? 30,
-        stitchesAt30mm: 0,
+        // Nothing re-prices a stored design; this is read back, never charged.
+        priceCents: 0,
         colorCount: 1,
         // The row's flat motif columns are a silhouette by construction: they
         // predate shapes entirely, so there are no fills of its own to use.
@@ -1672,7 +1585,9 @@ export function elementsFromRow(
             // decision in the presence of shapes, so that is what they still
             // mean — a job on the floor must not change colour under it.
             ownColours: el.motif.ownColours ?? !!el.motif.paths?.length,
-            stitchesAt30mm: 0,
+            // Frozen with the document, so a receipt or a sheet can show what
+            // the design added. Never re-charged.
+            priceCents: el.motif.priceCents ?? 0,
             colorCount: 1,
           }
         : null,
@@ -1688,7 +1603,6 @@ export function elementsFromRow(
       offsetXMm: el.offsetXMm ?? 0,
       offsetYMm: el.offsetYMm ?? 0,
       rotationDeg: el.rotationDeg ?? 0,
-      stitchEstimate: el.stitchEstimate ?? 0,
     }));
   }
   const lines = row.text ? String(row.text).split('\n') : [];
@@ -1718,7 +1632,6 @@ export function elementsFromRow(
       offsetXMm: 0,
       offsetYMm: 0,
       rotationDeg: row.rotationDeg,
-      stitchEstimate: row.stitchEstimate,
     },
   ];
 }
@@ -1786,7 +1699,10 @@ interface StoredElement {
   kerning?: number[] | null;
   curveDeg?: number;
   isPuff?: boolean;
-  motif?: { key: string; name: string; sizeMm: number; heightMm?: number; path?: string; viewBox?: string; paths?: MotifPath[] | null; ownColours?: boolean } | null;
+  motif?: {
+    key: string; name: string; sizeMm: number; heightMm?: number; path?: string; viewBox?: string;
+    paths?: MotifPath[] | null; ownColours?: boolean; priceCents?: number;
+  } | null;
   artwork?: ResolvedArtwork | null;
   borderMm?: number;
   leading?: number;
@@ -1797,7 +1713,6 @@ interface StoredElement {
   offsetYMm?: number;
   rotationDeg?: number;
   thread?: { brand: string; code: string; name: string; hex: string } | null;
-  stitchEstimate?: number;
 }
 
 /** The design's measured width, from the document it was frozen into. */

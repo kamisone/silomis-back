@@ -95,7 +95,6 @@ function toJob(r: JobRow) {
     motifName: r.motifName,
     motifSizeMm: r.motifSizeMm,
     threadColors: r.threadColors,
-    stitchEstimate: r.stitchEstimate,
     priceCents: r.priceCents,
     productionStatus: r.productionStatus,
     productionNote: r.productionNote,
@@ -224,7 +223,6 @@ export class PersonalizationAdminController {
       placementLabel: row.placementLabel,
       heightMm: row.heightMm,
       threadColors: row.threadColors,
-      stitchEstimate: row.stitchEstimate,
     };
   }
 
@@ -266,72 +264,12 @@ export class PersonalizationAdminController {
       // Positions are per product now, so they are not part of the shop-wide
       // readout — the studio fetches them for whichever product is open.
       this.prisma.personalizationTemplate.findMany({
-        include: {
-          priceBands: { orderBy: { maxStitches: 'asc' } },
-          _count: { select: { products: true } },
-        },
+        include: { _count: { select: { products: true } } },
       }),
       this.prisma.embroideryFont.findMany({ orderBy: { sortOrder: 'asc' } }),
       this.prisma.threadColor.findMany({ orderBy: { sortOrder: 'asc' } }),
     ]);
     return { templates, fonts, threads };
-  }
-
-  // ── Price bands ──────────────────────────────────────────────────────
-  // Shop-wide, and the least visible setting in the whole feature: the largest
-  // band is also the hard ceiling, so a shop that adds outline and puff without
-  // raising it will start refusing designs that fit the panel easily.
-
-  @Get('templates')
-  async listTemplates() {
-    return this.prisma.personalizationTemplate.findMany({
-      orderBy: { key: 'asc' },
-      include: { priceBands: { orderBy: { maxStitches: 'asc' } } },
-    });
-  }
-
-  /**
-   * Replaces the whole ladder at once.
-   *
-   * A band only means anything relative to the ones either side of it, so they
-   * are edited as a set rather than one at a time — there is no coherent
-   * intermediate state where a shop has deleted the middle band and not yet
-   * decided what replaces it.
-   */
-  @Put('templates/:id/bands')
-  async saveBands(@Param('id') templateId: string, @Body() body: { bands?: { maxStitches: number; priceCents: number; label?: string | null }[] }) {
-    const bands = body.bands ?? [];
-    if (!bands.length) throw new BadRequestException('There has to be at least one price band.');
-
-    for (const b of bands) {
-      if (!Number.isFinite(b.maxStitches) || b.maxStitches <= 0) {
-        throw new BadRequestException('Every band needs a stitch limit above zero.');
-      }
-      if (!Number.isFinite(b.priceCents) || b.priceCents < 0) {
-        throw new BadRequestException('Every band needs a price.');
-      }
-    }
-
-    const limits = bands.map((b) => Math.round(b.maxStitches));
-    if (new Set(limits).size !== limits.length) {
-      throw new BadRequestException('Two bands cannot share the same stitch limit.');
-    }
-
-    // Replace inside a transaction: a half-written ladder would price designs
-    // wrongly for however long it lasted.
-    await this.prisma.$transaction([
-      this.prisma.personalizationPriceBand.deleteMany({ where: { templateId } }),
-      this.prisma.personalizationPriceBand.createMany({
-        data: bands.map((b) => ({
-          templateId,
-          maxStitches: Math.round(b.maxStitches),
-          priceCents: Math.round(b.priceCents),
-          label: b.label?.trim() || null,
-        })),
-      }),
-    ]);
-
-    return this.prisma.personalizationPriceBand.findMany({ where: { templateId }, orderBy: { maxStitches: 'asc' } });
   }
 
   // ── Thread colours ───────────────────────────────────────────────────

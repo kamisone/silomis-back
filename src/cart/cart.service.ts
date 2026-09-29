@@ -40,7 +40,6 @@ type CartItemWithDesign = CartItem & {
   personalizations: {
     designJson: unknown;
     previewKey?: string | null;
-    stitchEstimate: number;
     placementKey: string;
     placementLabel: string;
     contentType: 'text' | 'monogram' | 'motif' | 'artwork';
@@ -334,7 +333,6 @@ export class CartService {
                     offsetYMm: design.offsetYMm,
                     rotationDeg: design.rotationDeg,
                     threadColors: design.threadColors as never,
-                    stitchEstimate: design.stitchEstimate,
                     priceCents: design.priceCents,
                     designJson: design.designJson as never,
                   })),

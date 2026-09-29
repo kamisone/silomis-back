@@ -63,7 +63,7 @@ const JOB_INCLUDE = {
   events: { orderBy: { createdAt: 'asc' as const } },
   order: { select: { id: true, orderNumber: true, status: true, customerName: true, customerEmail: true, createdAt: true } },
   orderItem: {
-    select: { id: true, titleSnapshot: true, personalizations: { select: { id: true, placementKey: true, text: true, productionStatus: true, stitchEstimate: true, priceCents: true, designJson: true, contentType: true, lineCount: true, fontName: true, fontWeight: true, heightMm: true, curveDeg: true, isPuff: true, motifName: true, motifSizeMm: true, threadColors: true, rotationDeg: true } } },
+    select: { id: true, titleSnapshot: true, personalizations: { select: { id: true, placementKey: true, text: true, productionStatus: true, priceCents: true, designJson: true, contentType: true, lineCount: true, fontName: true, fontWeight: true, heightMm: true, curveDeg: true, isPuff: true, motifName: true, motifSizeMm: true, threadColors: true, rotationDeg: true } } },
   },
 } satisfies Prisma.SendInJobInclude;
 
@@ -196,8 +196,7 @@ export class SendInService {
    * digitiser wants (an SVG stays an SVG), and a bounded PNG rendering that
    * the editor, the mockup and the desk's picture all draw from. The
    * rendering is trimmed to its drawn extent, so the size the customer sets
-   * is the size of the logo — not of the white margin around it — and its
-   * drawn share is measured for the stitch estimate.
+   * is the size of the logo — not of the white margin around it.
    */
   async uploadArtwork(file: Express.Multer.File | undefined): Promise<{ key: string; url: string; name: string; widthPx: number; heightPx: number; coverage: number }> {
     if (!file) throw new BadRequestException('Choose a logo or drawing to upload.');
@@ -576,7 +575,7 @@ export class SendInService {
         mockupUrl: sd.mockupKey ? (urls.get(sd.mockupKey) ?? null) : null,
         design: (() => {
           const d = r.orderItem.personalizations.find((x) => x.placementKey === sd.placementKey);
-          return d ? { id: d.id, text: d.text, productionStatus: d.productionStatus, stitchEstimate: d.stitchEstimate } : null;
+          return d ? { id: d.id, text: d.text, productionStatus: d.productionStatus } : null;
         })(),
         artworks: (artworks.get(sd.placementKey) ?? []).map((a) => ({
           name: a.name,
@@ -591,7 +590,7 @@ export class SendInService {
       returnCarrier: r.returnCarrier,
       returnTrackingNumber: r.returnTrackingNumber,
       returnTrackingUrl: r.returnTrackingUrl,
-      designs: r.orderItem.personalizations.map((d) => ({ id: d.id, text: d.text, productionStatus: d.productionStatus, stitchEstimate: d.stitchEstimate })),
+      designs: r.orderItem.personalizations.map((d) => ({ id: d.id, text: d.text, productionStatus: d.productionStatus })),
       events: r.events.map((e) => ({
         id: e.id,
         status: e.status,

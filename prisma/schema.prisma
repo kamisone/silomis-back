@@ -2691,11 +2691,6 @@ model EmbroideryFont {
   minHeightMm Float @default(8)
   maxHeightMm Float @default(40)
 
-  /// Stitches for one character at 10mm cap height, taken from a sample
-  /// stitch-out rather than computed. The estimator scales it by the square of
-  /// the height, because stitch count follows the area a glyph covers.
-  stitchesPerCharAt10mm Int @default(140)
-
   /// Mean glyph advance as a fraction of cap height — how the editor and the
   /// validator predict a line's width without laying out the real face.
   avgCharWidthRatio Float @default(0.62)
@@ -2765,8 +2760,7 @@ model PersonalizationTemplate {
 
   isActive Boolean @default(true)
 
-  priceBands PersonalizationPriceBand[]
-  products   Product[]
+  products Product[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2830,10 +2824,6 @@ model EmbroideryMotif {
   /// rest of the artwork.
   ownColours Boolean @default(false)
 
-  /// Measured from a stitch-out at 30mm; the estimator scales it by area.
-  /// Not an admin field: it feeds the machine-time estimate on the production
-  /// sheet, while what a design COSTS is `priceCents` below.
-  stitchesAt30mm Int @default(2200)
   /// How many thread colours this shape needs. Most are one.
   colorCount     Int @default(1)
   /// What this design adds to the embroidery price, on top of the position's
@@ -2938,26 +2928,10 @@ model PersonalizationPlacement {
   @@map("shop_personalization_placements")
 }
 
-/// Stitch-count price band. The first band whose `maxStitches` the estimate
-/// does not exceed wins; the largest band is also the ceiling, and a design
-/// past it is rejected rather than quietly sold below cost.
-model PersonalizationPriceBand {
-  id         String                  @id @default(uuid())
-  templateId String
-  template   PersonalizationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-
-  maxStitches Int
-  priceCents  Int
-  label       String? @db.VarChar(160)
-
-  @@unique([templateId, maxStitches])
-  @@map("shop_personalization_price_bands")
-}
-
 /// The design attached to one cart line.
 ///
 /// Everything here is written by the server from a validated payload — the
-/// browser sends what the customer chose, never the price, the stitch estimate
+/// browser sends what the customer chose, never the price
 /// or the production SVG.
 model CartItemPersonalization {
   id         String   @id @default(uuid())
@@ -3019,7 +2993,6 @@ model CartItemPersonalization {
   /// then frozen, so retiring a thread never rewrites a basket.
   threadColors Json
 
-  stitchEstimate Int
   /// Per unit, and already folded into CartItem.unitPriceCents. Kept apart so
   /// the basket can show the customer what the embroidery cost.
   priceCents     Int
@@ -3112,7 +3085,6 @@ model OrderItemPersonalization {
 
   threadColors Json
 
-  stitchEstimate Int
   priceCents     Int
 
   /// Where inside the hoop field the customer moved the design, in millimetres

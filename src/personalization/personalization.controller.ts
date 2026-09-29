@@ -44,7 +44,6 @@ export class PersonalizationController {
         placementLabel: r.placementLabel,
         text: r.text,
         priceCents: r.priceCents,
-        stitchEstimate: r.stitchEstimate,
         widthMm: r.widthMm,
         heightMm: r.heightMm,
         fontName: r.fontName,

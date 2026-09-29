@@ -21,33 +21,9 @@ export const STITCHABLE_MONOGRAM = /^[A-Za-zÀ-ÖØ-öø-ÿŁłŃńŚśŹźŻż�
 export const MONOGRAM_MIN_CHARS = 2;
 export const MONOGRAM_MAX_CHARS = 3;
 
-/**
- * A monogram is drawn larger and more densely than the same letters set as
- * text — interlocked, usually with a decorative frame — so its stitch count
- * runs well above a plain three-letter word.
- */
-export const MONOGRAM_STITCH_FACTOR = 1.45;
 
-/**
- * Every colour change costs a trim, a tie-off and a re-tie. Flat per-colour
- * overhead, added on top of the glyph stitches.
- */
-export const STITCHES_PER_COLOR_CHANGE = 120;
 
-/** Underlay and travel stitches that exist in every job regardless of size. */
-export const STITCH_BASE_OVERHEAD = 80;
 
-/**
- * How glyph stitches grow with letter height: stitches = base × (h / 10) ^ exp.
- *
- * Not 2. Doubling a letter's height quadruples the *thread* laid down, but a
- * satin column gets wider with the letter rather than adding stitches — each
- * zig-zag just spans more fabric — so the stitch *count* rises far slower than
- * the area. Digitised lettering lands around the 1.2–1.4 power in practice.
- * At 2 a six-letter name at 35mm was pushed past the top band, which is not a
- * quote-worthy job; at 1.3 it sits in the middle one.
- */
-export const STITCH_HEIGHT_EXPONENT = 1.3;
 
 /**
  * How heavy the lettering is stitched.
@@ -56,17 +32,17 @@ export const STITCH_HEIGHT_EXPONENT = 1.3;
  * thinner from the same outline, which is what an embroiderer means by a bolder
  * letter. So it applies to every font rather than being a property of one.
  *
- * `stitchFactor` is the honest consequence: a thicker column is more thread and
+ * `widthFactor` is the honest consequence: a thicker column is fractionally
  * more machine time, so a bold design costs more, and can push a large one past
  * the top price band. `widthFactor` is much smaller — the column grows mostly
  * inward, and the advance barely moves.
  */
 export const WEIGHT_SCALE = [
-  { step: 1, cssWeight: 300, stitchFactor: 0.82, widthFactor: 0.97 },
-  { step: 2, cssWeight: 400, stitchFactor: 1.0, widthFactor: 1.0 },
-  { step: 3, cssWeight: 500, stitchFactor: 1.18, widthFactor: 1.02 },
-  { step: 4, cssWeight: 700, stitchFactor: 1.42, widthFactor: 1.05 },
-  { step: 5, cssWeight: 900, stitchFactor: 1.72, widthFactor: 1.09 },
+  { step: 1, cssWeight: 300, widthFactor: 0.97 },
+  { step: 2, cssWeight: 400, widthFactor: 1.0 },
+  { step: 3, cssWeight: 500, widthFactor: 1.02 },
+  { step: 4, cssWeight: 700, widthFactor: 1.05 },
+  { step: 5, cssWeight: 900, widthFactor: 1.09 },
 ] as const;
 
 export const DEFAULT_WEIGHT_STEP = 2;
@@ -144,22 +120,8 @@ export const KERNING_LIMIT = 0.4;
  */
 export const CURVE_LIMIT_DEG = 160;
 
-/**
- * An outline is a second pass round every glyph in a second colour. It is not
- * free: the run length is roughly the perimeter, which on text is close to the
- * fill itself.
- */
-export const OUTLINE_STITCH_FACTOR = 0.55;
 
-/**
- * 3D puff lays foam under the satin and burns the edges off. Denser, slower,
- * and only possible on a bold flat face on a frame that can take the height —
- * both gated in the catalogue, never assumed.
- */
-export const PUFF_STITCH_FACTOR = 1.35;
 
-/** A curve costs travel between glyphs that a straight line does not. */
-export const CURVE_STITCH_FACTOR = 1.08;
 
 /** Motifs cost what they were digitised at, plus the usual colour changes. */
 /**

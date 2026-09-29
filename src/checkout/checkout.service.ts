@@ -294,7 +294,6 @@ export class CheckoutService {
                       offsetYMm: d.offsetYMm,
                       rotationDeg: d.rotationDeg,
                       threadColors: d.threadColors as Prisma.InputJsonValue,
-                      stitchEstimate: d.stitchEstimate,
                       priceCents: d.priceCents,
                       designJson: d.designJson as Prisma.InputJsonValue,
                       productionSvg: personalizationSvgs.get(`${item.id}:${d.placementKey}`) ?? null,

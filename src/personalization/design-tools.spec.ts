@@ -11,7 +11,7 @@ const FRONT = {
   id: 'pl-front', key: 'front',
   label: { en: 'Front panel' }, hint: null,
   fieldWidthMm: 110, fieldHeightMm: 55, maxColors: 3, maxChars: 14,
-  priceCents: 0, isActive: true, allowPuff: true, mediaKey: 'm/front.jpg',
+  priceCents: 1000, isActive: true, allowPuff: true, mediaKey: 'm/front.jpg',
 };
 const NO_PUFF = { ...FRONT, id: 'pl-side', key: 'side', allowPuff: false };
 /** A generous panel, so the stitch ceiling is reached long before the edges. */
@@ -19,7 +19,7 @@ const WIDE = { ...FRONT, id: 'pl-wide', key: 'wide', fieldWidthMm: 300, fieldHei
 
 const BLOCK = {
   key: 'block-classic', name: 'Block', webFamily: 'sans-serif',
-  minHeightMm: 8, maxHeightMm: 40, stitchesPerCharAt10mm: 130, avgCharWidthRatio: 0.62,
+  minHeightMm: 8, maxHeightMm: 40, avgCharWidthRatio: 0.62,
   uppercaseOnly: false, supportsMonogram: true, supportsPuff: true, supportsCurve: true, isActive: true,
 };
 const NO_CURVE = { ...BLOCK, key: 'script-joined', name: 'Joined', supportsCurve: false, supportsPuff: false };
@@ -28,15 +28,10 @@ const TEAL = { id: 't-1', brand: 'Madeira', code: '1791', name: 'Teal', hex: '#0
 const PINK = { id: 't-2', brand: 'Madeira', code: '1921', name: 'Fuchsia', hex: '#c8186a', isActive: true, finish: 'matte', priceMultiplier: 1 };
 const GOLD = { id: 't-3', brand: 'Madeira', code: '9842', name: 'Gold', hex: '#c9a227', isActive: true, finish: 'metallic', priceMultiplier: 1.5 };
 
-const BANDS = [
-  { maxStitches: 3000, priceCents: 800 },
-  { maxStitches: 6000, priceCents: 1200 },
-  { maxStitches: 9000, priceCents: 1800 },
-];
 
 const MOTIF = {
   key: 'heart', name: { en: 'Heart' }, path: 'M10 30 A20 20 0 0 1 50 30 Z',
-  viewBox: '0 0 100 100', stitchesAt30mm: 2200, colorCount: 1, isActive: true,
+  viewBox: '0 0 100 100', colorCount: 1, isActive: true, priceCents: 0,
   paths: null, ownColours: false,
 };
 
@@ -48,7 +43,7 @@ const MOTIF = {
  */
 const FLAT_SHAPES = {
   key: 'badge', name: { en: 'Badge' }, path: 'M0 0h10v10z',
-  viewBox: '0 0 64 64', stitchesAt30mm: 2200, colorCount: 1, isActive: true,
+  viewBox: '0 0 64 64', colorCount: 1, isActive: true, priceCents: 0,
   ownColours: false,
   paths: [
     { d: 'M0 0h10v10z', fill: '#ff8800', transform: 'translate(2,2)' },
@@ -59,13 +54,16 @@ const FLAT_SHAPES = {
 /** The same artwork, kept in its own colours. */
 const OWN_COLOURS = { ...FLAT_SHAPES, key: 'badge-colour', ownColours: true, colorCount: 2 };
 
+/** The same design with a surcharge on it, so pricing has something to add. */
+const PAID_BADGE = { ...OWN_COLOURS, key: 'badge-paid', priceCents: 250 };
+
 function makeService() {
   const prisma = {
     product: { findUnique: jest.fn(async () => ({ id: 'p1', status: 'active', personalizationTemplateId: 'tpl-1' })) },
     personalizationTemplate: {
       findUnique: jest.fn(async () => ({
         id: 'tpl-1', key: 'cap', name: 'Cap', isActive: true,
-        allowText: true, allowMonogram: true, allowUpload: false, priceBands: BANDS,
+        allowText: true, allowMonogram: true, allowUpload: false,
       })),
     },
     personalizationPlacement: {
@@ -80,7 +78,7 @@ function makeService() {
     },
     embroideryMotif: {
       findUnique: jest.fn(async ({ where }: { where: { key: string } }) =>
-        [MOTIF, FLAT_SHAPES, OWN_COLOURS].find((m) => m.key === where.key) ?? null,
+        [MOTIF, FLAT_SHAPES, OWN_COLOURS, PAID_BADGE].find((m) => m.key === where.key) ?? null,
       ),
     },
     threadColor: {
@@ -211,13 +209,6 @@ describe('tracking and kerning', () => {
 });
 
 describe('curved text', () => {
-  it('costs more stitches — the machine travels between glyphs', async () => {
-    const s = makeService();
-    const straight = await s.resolve('p1', design());
-    const arched = await s.resolve('p1', design({ curveDeg: 60 }));
-    expect(arched.stitchEstimate).toBeGreaterThan(straight.stitchEstimate);
-  });
-
   it('eats height, so a deep arch on a tall stack overflows the frame', async () => {
     const s = makeService();
     const flat = await s.resolve('p1', design({ placementKey: 'wide', text: 'Alexandra\nAlexandra', heightMm: 20 }));
@@ -333,11 +324,7 @@ describe('3D puff', () => {
     );
   });
 
-  it('costs more and shouts on the sheet', async () => {
-    const s = makeService();
-    const flat = await s.resolve('p1', design());
-    const puffed = await s.resolve('p1', design({ puff: true }));
-    expect(puffed.stitchEstimate).toBeGreaterThan(flat.stitchEstimate);
+  it('shouts on the sheet, because the foam is a different setup', async () => {
     expect(await svgOf({ puff: true })).toContain('3D PUFF');
   });
 });
@@ -351,15 +338,15 @@ describe('motifs', () => {
     expect(r.lines).toEqual([]);
   });
 
-  it('prices a shape from its measured stitch count, scaled by area', async () => {
+  it('costs the same whatever size it is stitched at — the shop sets the figure, not the area', async () => {
     const s = makeService();
     const small = await s.resolve('p1', design({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 20 }));
     const big = await s.resolve('p1', design({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 40 }));
-    // Four times the area, so about four times the stitches. A 60mm shape is
-    // deliberately not used here — it does not fit a 55mm field, which the
-    // height check rightly refuses.
-    expect(small.stitchEstimate).toBe(1058);
-    expect(big.stitchEstimate / small.stitchEstimate).toBeCloseTo(3.8, 1);
+    // The size a customer drags a shape to is no longer a price input. Four
+    // times the area used to be about four times the estimated stitches and a
+    // possible jump to the next band; now the position's price and the design's
+    // own surcharge are all there is, and neither moves with millimetres.
+    expect(big.priceCents).toBe(small.priceCents);
   });
 
   it('refuses a shape that is not in the catalogue', async () => {
@@ -382,18 +369,19 @@ describe('motifs', () => {
 });
 
 describe('thread finish', () => {
-  it('charges more for a thread that runs slower', async () => {
+  /**
+   * A metallic or glow thread does run slower, and its multiplier is still on
+   * the spool — but it multiplied the stitch band, and a multiplier on a flat
+   * position fee produces a figure nobody chose (10.00 becomes 13.50). If that
+   * cost should be charged it belongs as a flat surcharge, stated like every
+   * other figure. Until then the finish is a choice, not a price.
+   */
+  it('does not move the price any more', async () => {
     const s = makeService();
     const matte = await s.resolve('p1', design());
     const metallic = await s.resolve('p1', design({ threadColorIds: [GOLD.id] }));
-    expect(metallic.priceCents).toBe(Math.round(matte.priceCents * 1.5));
-  });
-
-  it('takes the dearest thread on the design — the machine is as slow as its slowest pass', async () => {
-    const r = await makeService().resolve('p1', design({ elements: [box({ threadColorId: TEAL.id }), box({ threadColorId: GOLD.id })] }));
-    // Two boxes of four letters at 12mm plus a colour change sit in the 800
-    // band; ×1.5 for the metallic spool.
-    expect(r.priceCents).toBe(1200);
+    expect(matte.priceCents).toBe(1000);
+    expect(metallic.priceCents).toBe(1000);
   });
 
   it('names the finish on the sheet so the right cone is loaded', async () => {
@@ -485,25 +473,43 @@ describe('rendering a stored row', () => {
   });
 });
 
-describe('the price ladder past its top band', () => {
+describe('what a design costs', () => {
   /**
-   * The ladder prices machine time; it does not cap it. A customer who wants a
-   * bold puffed name three times the stitches of the plain one gets it, charged
-   * at the top band — nothing about the stitch count turns the order away.
+   * Every figure is one the shop typed. The price used to be led by an estimated
+   * stitch count against a ladder of bands, which meant the size, the weight,
+   * the foam and the curve all moved it — through a guess nothing ever checked
+   * against a digitiser's real count.
    */
-  it('prices a design past the largest band at that band rather than refusing it', async () => {
-    // ~11,400 stitches against a ladder whose top band stops at 9,000. The
-    // top band is 1800 and this position costs nothing of its own.
-    const r = await makeService().resolve('p1', design({ placementKey: 'wide', text: 'Alexandra', heightMm: 30, weight: 5, puff: true }));
-    expect(r.stitchEstimate).toBeGreaterThan(9000);
-    expect(r.priceCents).toBe(1800);
+  it('is the position\'s own price, whatever is written on it', async () => {
+    const s = makeService();
+    const plain = await s.resolve('p1', design({ placementKey: 'wide', text: 'Jo', heightMm: 10 }));
+    // The heaviest thing the face allows: 40mm, extra bold, in foam. It used to
+    // be nearly twice the top band and priced accordingly.
+    const heavy = await s.resolve('p1', design({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, puff: true }));
+    expect(plain.priceCents).toBe(1000);
+    expect(heavy.priceCents).toBe(1000);
   });
 
-  it('lets the heaviest design the face allows through, at the same top band', async () => {
-    // 40mm, heaviest weight, puffed: ~16,550 stitches, nearly twice the top
-    // band. Space is still checked — machine time is not.
-    const r = await makeService().resolve('p1', design({ placementKey: 'wide', text: 'Alexandra', heightMm: 40, weight: 5, puff: true }));
-    expect(r.stitchEstimate).toBeGreaterThan(16000);
-    expect(r.priceCents).toBe(1800);
+  it('adds what the shop charges for the design itself, per box', async () => {
+    const s = makeService();
+    const one = await s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'badge-colour', motifSizeMm: 30 }));
+    // PAID_BADGE carries a surcharge; the plain heart does not.
+    const paid = await s.resolve('p1', design({ contentType: 'motif', text: '', motifKey: 'badge-paid', motifSizeMm: 30 }));
+    expect(paid.priceCents - one.priceCents).toBe(250);
+  });
+
+  it('charges the position once, however many boxes are in the hoop', async () => {
+    const s = makeService();
+    const one = await s.resolve('p1', design({ placementKey: 'wide', text: 'Jo', heightMm: 10 }));
+    const three = await s.resolve('p1', design({
+      placementKey: 'wide',
+      elements: [
+        box({ text: 'A', heightMm: 10, threadColorId: TEAL.id, offsetYMm: -12 }),
+        box({ text: 'B', heightMm: 10, threadColorId: TEAL.id, offsetYMm: 0 }),
+        box({ text: 'C', heightMm: 10, threadColorId: TEAL.id, offsetYMm: 12 }),
+      ],
+    }));
+    // The hooping and the run happen once per position, so they are charged once.
+    expect(three.priceCents).toBe(one.priceCents);
   });
 });

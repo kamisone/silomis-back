@@ -6,7 +6,6 @@ import {
   MOTIF_CATEGORY_SEED,
   DEFAULT_TEMPLATE_NAME,
   FONT_SEED,
-  PRICE_BAND_SEED,
   THREAD_BRAND,
   THREAD_SEED,
 } from './personalization.seed';
@@ -164,7 +163,6 @@ export class PersonalizationSeedService implements OnModuleInit {
         allowText: true,
         allowMonogram: true,
         allowUpload: false,
-        priceBands: { create: PRICE_BAND_SEED },
       },
     });
     this.logger.log(`Seeded personalization template "${DEFAULT_TEMPLATE_KEY}"`);

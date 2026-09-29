@@ -3,8 +3,8 @@
  *
  * The item comes by post, so most of what is fixed here is about the round
  * trip — what the shop can hoop, what it charges to handle and return, and
- * the states a parcel moves through. The design itself is priced by the same
- * stitch bands as a catalogue cap.
+ * the states a parcel moves through. A side is a flat fee, and what the
+ * customer then adds to it is priced the same way as on a catalogue cap.
  */
 
 /** The hidden catalogue product every send-in order is a line of. */
@@ -85,10 +85,3 @@ export const SEND_IN_ARTWORK_MIMES = new Set(['image/png', 'image/jpeg', 'image/
 export const SEND_IN_ARTWORK_MAX_PX = 2000;
 /** The smallest a logo may be stitched, in millimetres; the largest is the customer's photograph. */
 export const SEND_IN_ARTWORK_MIN_MM = 10;
-/**
- * Fill density for the stitch estimate: a solid square centimetre of fill
- * is roughly 600 stitches, so 6 per mm² of drawn area. Only a size guard on
- * a send-in — the side's price is flat — but the machine's one-go limit is
- * still real.
- */
-export const SEND_IN_ARTWORK_STITCHES_PER_MM2 = 6;

@@ -27,7 +27,6 @@ export interface DesignElementView {
   offsetXMm: number;
   offsetYMm: number;
   rotationDeg: number;
-  stitchEstimate: number;
 }
 
 interface StoredRow {
@@ -44,7 +43,6 @@ interface StoredRow {
   motifSizeMm: number | null;
   threadColors: unknown;
   rotationDeg: number;
-  stitchEstimate: number;
 }
 
 export function designElementsOf(row: StoredRow): DesignElementView[] {
@@ -71,7 +69,6 @@ export function designElementsOf(row: StoredRow): DesignElementView[] {
         offsetXMm: Number(el.offsetXMm ?? 0),
         offsetYMm: Number(el.offsetYMm ?? 0),
         rotationDeg: Number(el.rotationDeg ?? 0),
-        stitchEstimate: Number(el.stitchEstimate ?? 0),
       };
     });
   }
@@ -93,7 +90,6 @@ export function designElementsOf(row: StoredRow): DesignElementView[] {
       offsetXMm: 0,
       offsetYMm: 0,
       rotationDeg: row.rotationDeg,
-      stitchEstimate: row.stitchEstimate,
     },
   ];
 }
