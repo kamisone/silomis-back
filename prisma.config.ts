@@ -11,5 +11,6 @@ export default defineConfig({
   },
   datasource: {
     url: buildDatabaseUrl(),
+    shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
   },
 });

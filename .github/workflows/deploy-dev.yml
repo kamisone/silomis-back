@@ -4,7 +4,75 @@ on:
     branches: [dev]
 
 jobs:
+  # ── Does the migration history still build the schema? ─────────────────
+  #
+  # A column can reach schema.prisma, the generated client and production
+  # without a migration to create it, and nothing in development will say so:
+  # every local database already has the column, because it was added there by
+  # the `migrate dev` run whose file later went missing. Production finds out
+  # instead, as a 500 on every query that selects it.
+  #
+  # So: replay every migration into an empty Postgres and compare the result
+  # with schema.prisma. A difference means the history does not build the schema
+  # and the deploy is blocked. Replaying from empty also proves the migrations
+  # still apply in order on a fresh database — which is what a new environment
+  # does, and what nothing else here exercises.
+  #
+  # On postgres:14-alpine, the same image as db-deployment.yaml: a check that
+  # accepts syntax production rejects is worse than no check.
+  schema-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm i
+      - name: migrations must reproduce the schema
+        env:
+          # `migrate diff --from-migrations` replays into this one and drops it
+          # again; it holds nothing worth keeping. DATABASE_URL is set to the
+          # same place only so prisma.config.ts resolves to something — the diff
+          # reads the schema file, never the live datasource.
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow?schema=public
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow?schema=public
+        run: |
+          set +e
+          diff_out=$(npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema prisma/schema.prisma \
+            --script --exit-code 2>&1)
+          code=$?
+          set -e
+          # --exit-code: 0 nothing to do, 2 a difference, 1 the command failed.
+          if [ "$code" = "2" ]; then
+            echo "::error::The migration history does not build schema.prisma. The SQL below is what is missing — add it as a migration under prisma/migrations."
+            echo "$diff_out"
+            exit 1
+          fi
+          if [ "$code" != "0" ]; then
+            echo "::error::Could not compare the migrations with the schema."
+            echo "$diff_out"
+            exit 1
+          fi
+          echo "The migration history builds schema.prisma exactly."
+
   deploy:
+    needs: schema-check
     environment: dev
     runs-on: ubuntu-latest
     steps:
