@@ -1530,6 +1530,9 @@ enum HomeSectionType {
   /// Hand-written customer quotes the admin curates — not the product review
   /// system, which is shopper-submitted and lives on a product.
   testimonials
+  /// "Embroider something you already own", given a band of its own: the
+  /// promise, the three steps, and one way into the send-in flow.
+  send_in_band
 }
 
 /// One condition of a dynamic collection. Unused by any service today — see

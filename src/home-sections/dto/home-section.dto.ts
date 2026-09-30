@@ -16,6 +16,8 @@ export const HOME_SECTION_TYPES = [
   'seo_text',
   'faqs',
   'testimonials',
+  /** The send-in service, given a band of its own on the home page. */
+  'send_in_band',
 ] as const;
 
 export const HomeSectionTypeSchema = z.enum(HOME_SECTION_TYPES);
