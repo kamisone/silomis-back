@@ -1009,8 +1009,7 @@ export class PersonalizationService {
     const half = (Math.abs(args.curveDeg) * Math.PI) / 360;
     if (half <= 0) return stack;
     const radius = args.widthMm / (2 * Math.sin(half));
-    const sagitta = radius - radius * Math.cos(half);
-    return stack + sagitta;
+    return stack + curveArc(args.widthMm, args.curveDeg).sagitta;
   }
 
   /**
@@ -1213,16 +1212,11 @@ export class PersonalizationService {
     // Letter spacing, as the editor applies it: a share of the cap height per gap.
     const tracking = (r.trackingPct || 0) * r.heightMm;
 
-    // The arc a curved line rides. The radius comes from the chord the
-    // straight version would have occupied, so bending a word does not also
-    // resize it.
+    /** The arc this line rides, centred on the line's own baseline. */
     const arc = (i: number) => {
-      const chord = Math.max(1, lineWidth(i));
-      const half = (Math.abs(r.curveDeg) * Math.PI) / 360;
-      const radius = chord / (2 * Math.sin(half));
+      const a = curveArc(Math.max(1, lineWidth(i)), r.curveDeg);
       const y = firstY + i * lead;
-      const dy = r.curveDeg > 0 ? radius - radius * Math.cos(half) : -(radius - radius * Math.cos(half));
-      return { chord, half, radius, y: round1(y + dy) };
+      return { ...a, crownY: y + a.crownDy, endY: y + a.endDy };
     };
 
     // ── Outlines: the face itself, from its own file ─────────────────────
@@ -1244,15 +1238,16 @@ export class PersonalizationService {
         }
         // Along the arc, glyph by glyph: each letter sits at its share of the
         // run and turns to the tangent there, the run centred on the crown.
-        const { half, radius, y: ay } = arc(i);
+        const { radius, crownY, up } = arc(i);
         const glyphs = this.glyphs!.glyphs(font, line, fontSizeMm, tracking);
         const natural = glyphs.reduce((n, g) => n + g.advance, 0);
         const run = Math.max(1, target);
         const sx = natural > 0 ? run / natural : 1;
-        const up = r.curveDeg > 0;
-        // The circle's centre sits below an arch and above a bowl, so that
-        // the arc's crown lands on the line's own y.
-        const cyCircle = up ? ay + radius * Math.cos(half) : ay - radius * Math.cos(half);
+        // The circle's centre is one radius from the crown — below an arch,
+        // above a bowl — and the crown is now half a sagitta off the line's own
+        // baseline rather than sitting on it, so the whole curve is centred in
+        // the height the hoop was measured for.
+        const cyCircle = up ? crownY + radius : crownY - radius;
         let along = -run / 2;
         return glyphs
           .map((g) => {
@@ -1282,10 +1277,16 @@ export class PersonalizationService {
       if (!r.curveDeg) {
         return `<text x="0" y="${y}" ${attrs}${lengthAttrs} fill="${escapeXml(color)}">${escapeXml(line)}</text>`;
       }
-      const { chord, radius, y: ay } = arc(i);
-      const sweep = r.curveDeg > 0 ? 1 : 0;
+      const { radius, halfChord, crownY, endY, sweep } = arc(i);
       const pathId = `${idPrefix}-arc-${i}`;
-      const d = `M ${round1(-chord / 2)} ${ay} A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} ${round1(chord / 2)} ${ay}`;
+      // Two sub-arcs through the crown rather than one from end to end. Each is
+      // at most a semicircle, so the large-arc flag is never needed — and at a
+      // full 360° the two ends coincide, where a single `A` command between
+      // identical points is defined to draw nothing at all.
+      const d =
+        `M ${round1(-halfChord)} ${round1(endY)}` +
+        ` A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} 0 ${round1(crownY)}` +
+        ` A ${round1(radius)} ${round1(radius)} 0 0 ${sweep} ${round1(halfChord)} ${round1(endY)}`;
       return (
         `<path id="${pathId}" d="${d}" fill="none"/>` +
         `<text ${attrs} fill="${escapeXml(color)}">` +
@@ -1777,6 +1778,44 @@ function photoExtentMm(corners: { x: number; y: number }[], panel: { fieldWidthM
 }
 
 /** The stored shapes of a full-colour design, or null for a silhouette — never trusting the JSON's shape. */
+/**
+ * The circle a curved line of lettering rides. Mirrors `curveArc` in
+ * front/src/lib/shop/embroidery.ts — the preview and this sheet have to agree
+ * about where a bent word sits, or the customer approves one shape and the
+ * machine runs another.
+ *
+ * Measured along the ARC, not across the chord. `chord / (2·sin(θ/2))` is not
+ * one-to-one past a semicircle (270° yields the same radius as 90°) and is
+ * infinite at 360°, so a full circle could not be expressed at all. `L / θ`
+ * behaves at every angle, and arc length is the honest invariant for embroidery:
+ * bending a word does not change the thread in it.
+ *
+ * `crownDy` and `endDy` straddle the line's own baseline by half a sagitta each.
+ * They used to push the ends down by the whole sagitta, which left a curved line
+ * hanging below the box measured for it and cropped off the bottom of a strongly
+ * bent word.
+ */
+function curveArc(lengthMm: number, curveDeg: number) {
+  const theta = (Math.abs(curveDeg) * Math.PI) / 180;
+  // A hair longer than the text it carries: a glyph laid past the end of the run
+  // would be dropped by a renderer following the path.
+  const radius = (Math.max(1, lengthMm) * 1.01) / theta;
+  const halfTheta = theta / 2;
+  const sagitta = radius * (1 - Math.cos(halfTheta));
+  const up = curveDeg > 0;
+  return {
+    theta,
+    radius,
+    sagitta,
+    /** Half the straight distance between the ends — zero at a full circle. */
+    halfChord: radius * Math.sin(halfTheta),
+    crownDy: up ? -sagitta / 2 : sagitta / 2,
+    endDy: up ? sagitta / 2 : -sagitta / 2,
+    sweep: up ? 1 : 0,
+    up,
+  };
+}
+
 function motifPaths(raw: unknown): MotifPath[] | null {
   if (!Array.isArray(raw)) return null;
   const out = raw

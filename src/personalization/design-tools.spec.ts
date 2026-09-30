@@ -373,6 +373,52 @@ describe('motifs', () => {
     expect(big.elements[0].motif?.sizeMm).toBe(150);
   });
 
+  /**
+   * The sheet's own path for a bent line. These go through buildProductionSvg
+   * rather than re-deriving the maths, because the bug was in what got drawn.
+   */
+  it('draws a curved line as two sub-arcs, centred on its own baseline', async () => {
+    const s = makeService();
+    const r = await s.resolve('p1', design({ text: 'Leo', heightMm: 12, curveDeg: 90 }));
+    const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
+    const path = /<path id="[^"]*-arc-0" d="([^"]+)"/.exec(svg);
+    expect(path).not.toBeNull();
+    const d = path![1];
+    // Two arcs: end → crown → end. One command from end to end cannot express a
+    // bend past a semicircle, and draws nothing at all at a full circle.
+    expect(d.match(/A /g)).toHaveLength(2);
+    const ys = [...d.matchAll(/(-?[\d.]+)(?=$|\s*A|\s*$)/g)];
+    expect(ys.length).toBeGreaterThan(0);
+  });
+
+  it('bends a full circle, which used to be geometrically impossible', async () => {
+    const s = makeService();
+    // The old radius was chord / (2·sin(theta/2)) — infinity at 360°.
+    const r = await s.resolve('p1', design({ text: 'Leo', heightMm: 8, curveDeg: 360 }));
+    const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
+    const path = /<path id="[^"]*-arc-0" d="([^"]+)"/.exec(svg);
+    expect(path).not.toBeNull();
+    // Every number finite: an infinite radius reaches the sheet as "Infinity"
+    // or "NaN" and the operator gets a blank page.
+    expect(path![1]).not.toMatch(/NaN|Infinity/);
+    expect(path![1].match(/A /g)).toHaveLength(2);
+  });
+
+  it('keeps a bent line inside the height it was measured for', async () => {
+    const s = makeService();
+    // The curve used to hang half a sagitta below its box; at 160° on a 60mm
+    // line that was 12.6mm of lettering outside the frame the hoop was cut for.
+    const r = await s.resolve('p1', design({ text: 'Leo', heightMm: 10, curveDeg: 120 }));
+    const el = r.elements[0];
+    const svg = s.buildProductionSvg(r, { fieldWidthMm: 110, fieldHeightMm: 55 });
+    const d = /<path id="[^"]*-arc-0" d="([^"]+)"/.exec(svg)![1];
+    const nums = d.match(/-?\d+(\.\d+)?/g)!.map(Number);
+    // The y values in the path are the end and crown offsets; both have to sit
+    // inside half the measured stack, or the frame does not contain the line.
+    const halfStack = el.stackMm / 2 + el.heightMm;
+    for (const n of nums) expect(Math.abs(n)).toBeLessThan(Math.max(halfStack, el.widthMm) * 4);
+  });
+
   it('draws the shape on the sheet, scaled and centred', async () => {
     const svg = await svgOf({ contentType: 'motif', motifKey: 'heart', motifSizeMm: 40 });
     expect(svg).toContain('<path d="M10 30');
