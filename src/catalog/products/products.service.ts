@@ -463,8 +463,40 @@ export class ProductsService {
 
   // ── Public list ───────────────────────────────────────────────────────
 
+  /**
+   * A category and everything filed under it, however deep.
+   *
+   * Browsing "Caps" has to mean every cap, not only the products somebody
+   * happened to file on the branch itself rather than in "Snapbacks" — which in
+   * a well-kept catalogue is none of them. So the storefront's category filter
+   * is the subtree, not the one id.
+   *
+   * One recursive query rather than walking the tree in JavaScript: the category
+   * table is small, but the alternative is either a round trip per level or
+   * loading every category on every product request.
+   *
+   * A leaf resolves to just itself, so this changes nothing for the majority of
+   * listings; it is the branch pages that were previously unable to show a grid
+   * at all.
+   */
+  private async categorySubtreeIds(categoryId: string): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      WITH RECURSIVE subtree AS (
+        SELECT id FROM "shop_product_categories" WHERE id = ${categoryId}
+        UNION ALL
+        SELECT c.id FROM "shop_product_categories" c
+        JOIN subtree s ON c."parentId" = s.id
+      )
+      SELECT id FROM subtree
+    `;
+    // The id itself, even when the category does not exist: an empty `in` list
+    // would match every product rather than none.
+    return rows.length ? rows.map((r) => r.id) : [categoryId];
+  }
+
   async publicList(filter: ProductListFilter & { lang?: string } = {}) {
     const { categoryId, tagId, collection, search, featured, ids, onSale, isNew, minPriceCents, maxPriceCents, filterValueIds, sort, lang, limit = 24, offset = 0 } = filter;
+    const categoryIds = categoryId ? await this.categorySubtreeIds(categoryId) : null;
 
     // Ranked by Postgres full-text search (falls back to a prefix match so
     // short/partial terms still hit) rather than a plain ILIKE substring —
@@ -501,7 +533,7 @@ export class ProductsService {
       deletedAt: null,
       // The send-in service is sold through the catalogue but never listed in it.
       isService: false,
-      ...(categoryId ? { categories: { some: { id: categoryId } } } : {}),
+      ...(categoryIds ? { categories: { some: { id: { in: categoryIds } } } } : {}),
       ...(tagId ? { tags: { some: { id: tagId } } } : {}),
       ...(collection ? { collectionLinks: { some: { collection: { slug: collection, isActive: true } } } } : {}),
       ...(featured !== undefined ? { featured } : {}),
