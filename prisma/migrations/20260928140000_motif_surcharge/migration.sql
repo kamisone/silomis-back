@@ -1,0 +1,12 @@
+-- What a design adds to the embroidery price.
+--
+-- The shop's own figure, per box: a licensed or fiddly shape can be worth more
+-- than a plain one, and before this the only price on an embroidery was the
+-- position's, so every design cost the same.
+--
+-- Written late: the column reached the schema and the running code without a
+-- migration to go with it, which no local database noticed — they already had
+-- it — and production noticed immediately, with every request for an editor
+-- config failing on `prisma.embroideryMotif.findMany()`. Idempotent, so it is a
+-- no-op wherever the column is already there.
+ALTER TABLE "shop_embroidery_motifs" ADD COLUMN IF NOT EXISTS "priceCents" INTEGER NOT NULL DEFAULT 0;
