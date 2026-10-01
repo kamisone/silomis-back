@@ -68,9 +68,11 @@ export function resolveUnitPriceForQuantity(components: VariantPriceComponents, 
  * Total units of each product across a set of cart lines.
  *
  * Upsell tiers are a property of the product, not of one variant, so a basket
- * split across variants (per-unit variant choice) must resolve its tier against
- * the combined quantity. Resolving per line instead would quietly charge full
- * price for three shirts bought in three sizes while the product page had
+ * split across variants must resolve its tier against the combined quantity.
+ * This is now the ONLY way a shopper reaches a tier with mixed options: the
+ * product page adds one combination at a time, so three shirts in three sizes
+ * are three lines of one. Resolving per line instead would quietly charge full
+ * price for all three while the product page had
  * already shown the tier price.
  *
  * Every line of a product therefore shares one tier price — which is why

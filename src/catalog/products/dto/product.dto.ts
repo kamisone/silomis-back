@@ -159,7 +159,6 @@ export const CreateProductSchema = z.object({
   /** Quantity-based upselling ("buy N, pay X each"). Ignored entirely while false. */
   upsellingEnabled: z.boolean().optional(),
   /** Lets the customer pick a different variant per unit when buying more than one. */
-  perUnitVariantChoice: z.boolean().optional(),
   upsellTiers: z
     .array(ProductUpsellTierSchema)
     .optional()

@@ -1,0 +1,17 @@
+-- One variant per cart line.
+--
+-- The product page used to let a shopper give each unit its own variant in a
+-- single pass — three shirts in three sizes, one trip through the page. It is
+-- gone, in favour of what the cart has always actually stored and what every
+-- marketplace does: pick a combination, add it, pick another if you want another.
+--
+-- Nothing stored the per-unit selection. It was assembled in the browser and
+-- written out as one cart line per variant, so there is no cart or order data to
+-- migrate — only this flag, which nothing reads any more. Left in place it would
+-- be a switch an admin could still turn on, promising a behaviour that no longer
+-- exists.
+--
+-- Quantity-tier discounts are unaffected and deliberately so: they resolve across
+-- a product's cart lines rather than within one, which is what makes "buy 3" count
+-- three separate sizes. That behaviour is now load-bearing, not incidental.
+ALTER TABLE "shop_products" DROP COLUMN IF EXISTS "perUnitVariantChoice";
