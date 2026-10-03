@@ -54,7 +54,7 @@ export class ReplayTrackingService {
         clientIp: meta.ip,
         countryCode: this.geoIp.countryFromIp(meta.ip),
         device: meta.device ?? null,
-        source: meta.source ?? dto.source ?? null,
+        source: meta.source ?? null,
         viewportWidth: dto.viewportWidth ?? null,
         viewportHeight: dto.viewportHeight ?? null,
         pageUrl: dto.pageUrl ?? null,

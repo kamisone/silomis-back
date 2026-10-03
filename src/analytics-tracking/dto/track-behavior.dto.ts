@@ -7,6 +7,8 @@ export const TrackBehaviorSchema = z.object({
   searchQuery: z.string().max(300).nullish(),
   resultCount: z.number().int().min(0).nullish(),
   cartToken: z.string().max(100).nullish(),
-  source: z.string().max(100).nullish(),
+  /** Visitor's first-touch landing referrer / utm_source (front/src/lib/shop/trafficSource.ts), classified server-side. */
+  referrer: z.string().max(2000).nullish(),
+  utmSource: z.string().max(100).nullish(),
 });
 export type TrackBehaviorDto = z.infer<typeof TrackBehaviorSchema>;

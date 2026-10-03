@@ -165,6 +165,9 @@ export const AddCartItemSchema = z.object({
   quantity: z.number().int().min(1).max(999),
   selectedOptionValueIds: z.array(z.string()).optional(),
   personalizations: PersonalizationSetSchema.optional(),
+  // First-touch attribution, resent on every cart mutation — see traffic-source.util.ts.
+  referrer: z.string().max(2000).nullish(),
+  utmSource: z.string().max(100).nullish(),
 });
 
 export type AddCartItemDto = z.infer<typeof AddCartItemSchema>;

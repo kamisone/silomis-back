@@ -29,6 +29,8 @@ import { DesignPreviewService } from '../personalization/design-preview.service'
 export interface RequestMeta {
   ip?: string | null;
   userAgent?: string;
+  /** Classified first-touch acquisition channel (traffic-source.util.ts). */
+  source?: string | null;
 }
 
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
@@ -372,6 +374,7 @@ export class CartService {
       quantity,
       clientIp: meta?.ip,
       userAgent: meta?.userAgent,
+      source: meta?.source,
     });
 
     // Meta Pixel / TikTok: value/currency/ids only — never customer PII.
@@ -491,6 +494,7 @@ export class CartService {
       quantity,
       clientIp: meta?.ip,
       userAgent: meta?.userAgent,
+      source: meta?.source,
     });
     return this.getOrCreate(token, undefined, lang);
   }
@@ -572,6 +576,7 @@ export class CartService {
       quantity: item.quantity,
       clientIp: meta?.ip,
       userAgent: meta?.userAgent,
+      source: meta?.source,
     });
     return this.getOrCreate(token, undefined, lang);
   }

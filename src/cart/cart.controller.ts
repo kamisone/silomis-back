@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from '@ne
 import { Request } from 'express';
 import { Public } from '../auth/public.decorator';
 import { extractIp } from '../common/utils/client-ip.util';
+import { platformFromSource } from '../common/utils/traffic-source.util';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { AddCartItemDto, AddCartItemSchema } from '../personalization/dto/personalization.dto';
 import { CartService } from './cart.service';
@@ -24,12 +25,20 @@ export class CartController {
    */
   @Post(':token/items')
   addItem(@Param('token') token: string, @Body(new ZodValidationPipe(AddCartItemSchema)) body: AddCartItemDto, @Query('lang') lang: string | undefined, @Req() req: Request) {
-    return this.carts.addItem(token, body.variantId, body.quantity, body.selectedOptionValueIds, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'] }, body.personalizations);
+    return this.carts.addItem(token, body.variantId, body.quantity, body.selectedOptionValueIds, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'], source: platformFromSource(body.referrer, body.utmSource) }, body.personalizations);
   }
 
   @Put(':token/items/:itemId')
-  updateItem(@Param('token') token: string, @Param('itemId') itemId: string, @Body('quantity') quantity: number, @Query('lang') lang: string | undefined, @Req() req: Request) {
-    return this.carts.updateItem(token, itemId, quantity, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'] });
+  updateItem(
+    @Param('token') token: string,
+    @Param('itemId') itemId: string,
+    @Body('quantity') quantity: number,
+    @Body('referrer') referrer: string | undefined,
+    @Body('utmSource') utmSource: string | undefined,
+    @Query('lang') lang: string | undefined,
+    @Req() req: Request,
+  ) {
+    return this.carts.updateItem(token, itemId, quantity, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'], source: platformFromSource(referrer, utmSource) });
   }
 
   @Delete(':token/items/:itemId')

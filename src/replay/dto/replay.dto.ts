@@ -7,7 +7,9 @@ export const StartReplaySessionSchema = z.object({
   viewportHeight: z.number().int().positive().nullish(),
   pageUrl: z.string().max(2000).nullish(),
   pageTitle: z.string().max(500).nullish(),
-  source: z.string().max(100).nullish(),
+  /** Visitor's first-touch landing referrer / utm_source (front/src/lib/shop/trafficSource.ts), classified server-side. */
+  referrer: z.string().max(2000).nullish(),
+  utmSource: z.string().max(100).nullish(),
 });
 export type StartReplaySessionDto = z.infer<typeof StartReplaySessionSchema>;
 

@@ -4,7 +4,7 @@ import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { extractIp, ORIGINAL_CLIENT_IP_HEADER } from '../common/utils/client-ip.util';
 import { deviceFromUserAgent } from '../common/utils/device.util';
-import { resolveTrafficSource } from '../common/utils/traffic-source.util';
+import { platformFromSource } from '../common/utils/traffic-source.util';
 import { GeoIpService } from './geo-ip.service';
 import { BehaviorTrackingService } from './behavior-tracking.service';
 import { TrackBehaviorDto, TrackBehaviorSchema } from './dto/track-behavior.dto';
@@ -77,7 +77,7 @@ export class BehaviorTrackingController {
       clientIp,
       userAgent,
       device: deviceFromUserAgent(userAgent),
-      source: dto.source ?? resolveTrafficSource(req.headers.referer ?? null, undefined),
+      source: platformFromSource(dto.referrer, dto.utmSource),
     });
   }
 }

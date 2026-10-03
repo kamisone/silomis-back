@@ -4,7 +4,7 @@ import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { extractIp } from '../common/utils/client-ip.util';
 import { deviceFromUserAgent } from '../common/utils/device.util';
-import { resolveTrafficSource } from '../common/utils/traffic-source.util';
+import { platformFromSource } from '../common/utils/traffic-source.util';
 import { ReplayTrackingService } from './replay-tracking.service';
 import {
   StartReplaySessionDto,
@@ -23,15 +23,16 @@ export class ReplayTrackingController {
   @Post()
   start(@Body(new ZodValidationPipe(StartReplaySessionSchema)) dto: StartReplaySessionDto, @Req() req: Request) {
     const userAgent = req.headers['user-agent'];
-    // Device and acquisition channel are derived here rather than trusted from
-    // the recorder, exactly as BehaviorTrackingController does — the client
-    // sees only its own referrer, and these columns are meant to be comparable
-    // across the replay and behaviour-event tables.
+    // Device and acquisition channel are derived here exactly as
+    // BehaviorTrackingController does, so these columns stay comparable
+    // across the replay and behaviour-event tables. The channel comes from
+    // the recorder's first-touch referrer/utm_source, not this request's
+    // Referer — that is always our own page.
     return this.replay.startSession(dto, {
       ip: extractIp(req),
       userAgent,
       device: deviceFromUserAgent(userAgent),
-      source: dto.source ?? resolveTrafficSource(req.headers.referer ?? null, undefined),
+      source: platformFromSource(dto.referrer, dto.utmSource),
     });
   }
 
