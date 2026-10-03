@@ -93,3 +93,48 @@ describe('ShopPaymentService.intentState', () => {
     expect(ordersService.confirmPayment).toHaveBeenCalled();
   });
 });
+
+/**
+ * Checkout takes cards only: no Link, no wallets-by-dashboard, nothing else the
+ * account happens to have switched on.
+ */
+describe('ShopPaymentService.createPaymentIntent — card only', () => {
+  function makeIntentService(existing: Record<string, unknown> | null) {
+    const order = { id: 'o1', orderNumber: 'ORD-1', status: 'awaiting_payment', totalCents: 990, paymentIntentId: existing ? 'pi_1' : null };
+    const stripe = {
+      paymentIntents: {
+        retrieve: jest.fn(async () => existing),
+        create: jest.fn(async () => ({ id: 'pi_new', client_secret: 'cs_new' })),
+        update: jest.fn(async () => ({ id: 'pi_1', client_secret: 'cs_1' })),
+      },
+    };
+    const prisma = { order: { findUnique: jest.fn(async () => order), update: jest.fn(async () => order) } };
+    const s = new ShopPaymentService(
+      stripe as never, prisma as never, { extendReservation: jest.fn() } as never,
+      { assertCheckoutAllowed: jest.fn() } as never, {} as never, {} as never, {} as never, {} as never,
+    );
+    return { s, stripe };
+  }
+
+  it('asks Stripe for a card payment and nothing else', async () => {
+    const { s, stripe } = makeIntentService(null);
+    await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method_types: ['card'] }),
+      expect.anything(),
+    );
+  });
+
+  it('narrows an intent created before checkout went card-only', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', status: 'requires_payment_method', amount: 990, payment_method_types: ['card', 'link'] });
+    await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.update).toHaveBeenCalledWith('pi_1', expect.objectContaining({ payment_method_types: ['card'] }));
+  });
+
+  it('leaves a card-only intent at the right amount untouched', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', client_secret: 'cs_1', status: 'requires_payment_method', amount: 990, payment_method_types: ['card'] });
+    const res = await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.update).not.toHaveBeenCalled();
+    expect(res.clientSecret).toBe('cs_1');
+  });
+});

@@ -24,6 +24,13 @@ const REFUNDABLE_STATUSES: OrderStatus[] = ['paid', 'processing', 'shipped', 'de
  * (`processing`, `succeeded`, `requires_capture`) means the customer has already
  * committed, so the total must not move under them.
  */
+/**
+ * Checkout takes cards and nothing else. Left unset, this API version turns on
+ * automatic payment methods, and the form then offers Link and whatever else
+ * the dashboard has enabled — extra choices between the customer and paying.
+ */
+const CARD_ONLY = { payment_method_types: ['card'] };
+
 const AMOUNT_MUTABLE_INTENT_STATUSES = new Set<string>(['requires_payment_method', 'requires_confirmation', 'requires_action']);
 
 @Injectable()
@@ -136,12 +143,16 @@ export class ShopPaymentService {
         // amount from the first visit and charge the wrong sum. Updating
         // keeps the same intent — and therefore the same client secret — so
         // the payment form does not have to be rebuilt.
-        if (existing.amount !== order.totalCents) {
+        // An intent minted before checkout went card-only still offers every
+        // method the dashboard enables; narrow it while it can be changed.
+        const cardOnly = existing.payment_method_types?.join() === 'card';
+        if (existing.amount !== order.totalCents || (!cardOnly && AMOUNT_MUTABLE_INTENT_STATUSES.has(existing.status))) {
           if (!AMOUNT_MUTABLE_INTENT_STATUSES.has(existing.status)) {
             throw new BadRequestException('Payment is already in progress for this order — it can no longer be changed');
           }
           const updated = await this.stripe.paymentIntents.update(existing.id, {
             amount: order.totalCents,
+            ...CARD_ONLY,
           });
           this.logger.log(`Re-synced PaymentIntent ${existing.id} for order ${order.orderNumber}: ${existing.amount} -> ${order.totalCents} cents`);
           const tracked1 = await this.trackAddPaymentInfo(order);
@@ -166,6 +177,7 @@ export class ShopPaymentService {
       {
         amount: order.totalCents,
         currency: 'eur',
+        ...CARD_ONLY,
         metadata: {
           orderId: order.id,
           orderNumber: order.orderNumber,
