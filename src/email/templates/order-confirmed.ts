@@ -144,7 +144,6 @@ export function renderOrderConfirmed(data: OrderConfirmedEmailData): {
       <tbody>${itemRows}</tbody>
     </table>
 
-    <!-- Price breakdown -->
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:16px 0 0;">
       ${summaryRows.join('')}
       <tr>
