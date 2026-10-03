@@ -21,6 +21,7 @@ export class NewsletterSegmentationService {
     switch (audience.segment) {
       case 'fr':
       case 'en':
+      case 'pt':
         return {
           join: Prisma.empty,
           where: Prisma.sql`AND s.locale = ${audience.segment}`,

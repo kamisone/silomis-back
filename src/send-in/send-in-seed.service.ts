@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { DEFAULT_TEMPLATE_KEY } from '../personalization/personalization.seed';
 import { SEND_IN_ITEM_TYPES, SEND_IN_PLACEMENT_KEYS, SEND_IN_PRODUCT_SLUG } from './send-in.constants';
 import { ET_SHOP_PRODUCT } from '../translations/translation-entities';
+import { fillMissingLocales } from '../personalization/localized.util';
 
 /** The service product's name, in every language the shop speaks — the base row is French like every other product. */
 const SEND_IN_PRODUCT_TITLE: Record<string, string> = {
@@ -13,6 +14,7 @@ const SEND_IN_PRODUCT_TITLE: Record<string, string> = {
   de: 'Stickerei auf Ihrem eigenen Artikel',
   nl: 'Borduurwerk op je eigen artikel',
   pl: 'Haft na Twoim własnym artykule',
+  pt: 'Bordado no seu próprio artigo',
 };
 const SEND_IN_PRODUCT_DESCRIPTION: Record<string, string> = {
   fr: 'Envoyez-nous une casquette, un bonnet, une veste ou un sac que vous avez déjà et nous y brodons votre design.',
@@ -22,6 +24,7 @@ const SEND_IN_PRODUCT_DESCRIPTION: Record<string, string> = {
   de: 'Schicken Sie uns eine Kappe, Mütze, Jacke oder Tasche, die Sie bereits besitzen, und wir sticken Ihr Design darauf.',
   nl: 'Stuur ons een pet, muts, jas of tas die je al hebt en wij borduren je ontwerp erop.',
   pl: 'Wyślij nam czapkę, kurtkę lub torbę, którą już masz, a my wyhaftujemy na niej Twój projekt.',
+  pt: 'Envie-nos um boné, gorro, casaco ou mala que já tenha e bordamos nele o seu design.',
 };
 
 /**
@@ -131,17 +134,29 @@ export class SendInSeedService implements OnModuleInit {
       }
       this.logger.log(`Seeded ${added} send-in item type(s)`);
     }
+    // A language added since: fill just that language into the seeded types'
+    // names, leaving every name the admin has written alone.
+    for (const type of SEND_IN_ITEM_TYPES) {
+      const row = await this.prisma.sendInItemType.findUnique({ where: { key: type.key }, select: { id: true, label: true } });
+      const label = row && fillMissingLocales(row.label, type.label);
+      if (label) await this.prisma.sendInItemType.update({ where: { id: row.id }, data: { label } });
+    }
 
     // One position per side the customer may photograph. No photo of their
     // own — the customer's upload stands in — and a generous field, since the
     // editor replaces it with the item type's panel.
     const sideLabels: Record<string, Record<string, string>> = {
-      'side-1': { en: 'Side 1', fr: 'Face 1', es: 'Lado 1', it: 'Lato 1', de: 'Seite 1', nl: 'Kant 1', pl: 'Strona 1' },
-      'side-2': { en: 'Side 2', fr: 'Face 2', es: 'Lado 2', it: 'Lato 2', de: 'Seite 2', nl: 'Kant 2', pl: 'Strona 2' },
-      'side-3': { en: 'Side 3', fr: 'Face 3', es: 'Lado 3', it: 'Lato 3', de: 'Seite 3', nl: 'Kant 3', pl: 'Strona 3' },
+      'side-1': { en: 'Side 1', fr: 'Face 1', es: 'Lado 1', it: 'Lato 1', de: 'Seite 1', nl: 'Kant 1', pl: 'Strona 1', pt: 'Lado 1' },
+      'side-2': { en: 'Side 2', fr: 'Face 2', es: 'Lado 2', it: 'Lato 2', de: 'Seite 2', nl: 'Kant 2', pl: 'Strona 2', pt: 'Lado 2' },
+      'side-3': { en: 'Side 3', fr: 'Face 3', es: 'Lado 3', it: 'Lato 3', de: 'Seite 3', nl: 'Kant 3', pl: 'Strona 3', pt: 'Lado 3' },
     };
     for (const [i, key] of SEND_IN_PLACEMENT_KEYS.entries()) {
-      if (product.placements.some((p) => p.key === key)) continue;
+      const existingSide = product.placements.find((p) => p.key === key);
+      if (existingSide) {
+        const label = fillMissingLocales(existingSide.label, sideLabels[key]);
+        if (label) await this.prisma.personalizationPlacement.update({ where: { id: existingSide.id }, data: { label } });
+        continue;
+      }
       await this.prisma.personalizationPlacement.create({
         data: {
           productId: product.id,

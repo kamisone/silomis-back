@@ -5,6 +5,7 @@ export const AudienceSchema = z.object({
     'all',
     'fr',
     'en',
+    'pt',
     'customers',
     'non_customers',
     'purchasers',

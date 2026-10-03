@@ -22,6 +22,19 @@ export function parseLocalized(value: unknown): LocalizedText | null {
 }
 
 /**
+ * A seeded name with the languages the shop has added since filled in.
+ *
+ * Only absent languages are taken from the seed — a language the admin has
+ * written, or rewritten, is left as it is. Returns null when nothing is missing,
+ * so a caller writes only the rows that changed.
+ */
+export function fillMissingLocales(current: unknown, seed: LocalizedText): LocalizedText | null {
+  const map = parseLocalized(current) ?? {};
+  const missing = Object.entries(seed).filter(([locale]) => !map[locale]);
+  return missing.length ? { ...map, ...Object.fromEntries(missing) } : null;
+}
+
+/**
  * The best available string for a language.
  *
  * Falls through to the default locale and then to whatever exists, because an

@@ -44,6 +44,7 @@ describe('receipt and invoice email', () => {
     ['de', 'Deine Quittung', 'Hallo Marie,'],
     ['nl', 'Je bon', 'Hallo Marie,'],
     ['pl', 'Twój paragon', 'Cześć Marie,'],
+    ['pt', 'O seu recibo', 'Olá Marie,'],
   ])(
     'writes to a %s customer in %s',
     async (locale, subjectStart, greeting) => {
@@ -91,7 +92,7 @@ describe('receipt and invoice email', () => {
   });
 
   it('leaves no undecoded entity and no unrendered value, in any language', async () => {
-    for (const locale of ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl']) {
+    for (const locale of ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl', 'pt']) {
       const { service, sent } = makeService();
       await service.send(
         doc({ customerLocale: locale }),

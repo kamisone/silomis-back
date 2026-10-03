@@ -62,6 +62,10 @@ const BROWSER_HEADERS: Record<string, string> = {
 
 const REQUEST_TIMEOUT_MS = 12_000;
 
+/** Shop language → Google target code, where they differ. A bare `pt` comes
+ *  back as Brazilian Portuguese; the shop's `pt` is Portugal's. */
+const PROVIDER_LANG: Record<string, string> = { pt: 'pt-PT' };
+
 /**
  * The two endpoints, in order of preference. They return different shapes, so
  * each carries its own parser.
@@ -150,7 +154,7 @@ export class FreeTranslateService {
     for (const endpoint of ENDPOINTS) {
       try {
         const body = await this.fetchJson(
-          endpoint.url(text, to),
+          endpoint.url(text, PROVIDER_LANG[to] ?? to),
           endpoint.name,
         );
         const result = endpoint.parse(body);

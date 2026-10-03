@@ -148,6 +148,24 @@ const COPY = {
     sendTo: 'Wyślij na adres',
     tracking: 'Numer przesyłki',
   },
+  pt: {
+    greeting: (name: string) => `Olá ${name},`,
+    orderRef: 'Referência da encomenda',
+    track: 'Seguir o meu artigo',
+    help: 'Alguma questão? Basta responder a este email.',
+    steps: {
+      awaiting_item: { subject: 'Envie-nos o seu artigo', heading: 'É a sua vez: envie-nos o seu artigo', message: 'O seu bordado está reservado. Coloque a nota de envio (na sua página de seguimento) dentro da encomenda e envie o artigo para a morada abaixo.' },
+      received: { subject: 'Recebemos o seu artigo', heading: 'O seu artigo chegou', message: 'Já está connosco — eis como chegou. Estamos a preparar o bordado.' },
+      in_production: { subject: 'O seu bordado está em curso', heading: 'Na máquina', message: 'O seu artigo está a ser bordado.' },
+      done: { subject: 'O seu bordado está concluído', heading: 'Está feito!', message: 'Eis o seu artigo bordado. Estamos a prepará-lo para a devolução.' },
+      returned: { subject: 'O seu artigo está a caminho', heading: 'O seu artigo está de regresso', message: 'Foi entregue à transportadora.' },
+      delivered: { subject: 'O seu artigo foi entregue', heading: 'Entregue', message: 'O seu artigo bordado já chegou. Esperamos que adore!' },
+      problem: { subject: 'Um assunto a resolver sobre o seu artigo', heading: 'Precisamos de si', message: 'Surgiu um problema com o seu artigo. Os detalhes estão abaixo — responda-nos para decidirmos o próximo passo.' },
+      cancelled: { subject: 'A sua encomenda de bordado foi cancelada', heading: 'Encomenda cancelada', message: 'Esta encomenda foi cancelada. Se não foi você, responda a este email.' },
+    },
+    sendTo: 'Enviar para',
+    tracking: 'Número de seguimento',
+  },
 } as const;
 
 export function renderSendInStatus(data: SendInStatusEmailData): { subject: string; html: string } {

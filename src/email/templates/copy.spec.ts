@@ -3,7 +3,7 @@ import { renderOrderStatus } from './order-status';
 import { renderOrderConfirmed } from './order-confirmed';
 import { renderSendInStatus } from './send-in-status';
 
-const LANGS = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl'] as const;
+const LANGS = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl', 'pt'] as const;
 
 /** Every key the French copy has, every other language has too — a missing one would render as "undefined" in a customer's inbox. */
 function keysOf(obj: unknown, prefix = ''): string[] {
@@ -40,6 +40,17 @@ describe('email copy', () => {
     });
     expect(subject).toContain('Zamówienie potwierdzone');
     expect(html).toContain('Dzień dobry Ola,');
+  });
+
+  it('confirms an order in Portuguese', () => {
+    const { subject, html } = renderOrderConfirmed({
+      orderNumber: 'ORD-9', customerName: 'Rita', items: [{ title: 'Boné', quantity: 1, unitPriceCents: 1000 }],
+      subtotalCents: 1000, shippingCents: 0, discountCents: 0, couponCode: null, totalCents: 1000, trackingUrl: null, locale: 'pt',
+    });
+    expect(subject).toBe('Encomenda confirmada – ORD-9');
+    expect(html).toContain('Olá Rita,');
+    expect(html).toContain('Todos os direitos reservados');
+    expect(html).toContain('<html lang="pt"');
   });
 
   it('tells a send-in customer in German that their item has arrived, with the photo', () => {

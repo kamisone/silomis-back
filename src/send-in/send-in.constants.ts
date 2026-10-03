@@ -37,12 +37,12 @@ export interface SendInItemType {
  * position's own field, set on the position like any other.
  */
 export const SEND_IN_ITEM_TYPES: SendInItemType[] = [
-  { key: 'cap', sku: 'SENDIN-CAP', priceCents: 990, allowPuff: true, maxChars: 14, label: { en: 'Cap', fr: 'Casquette', es: 'Gorra', it: 'Cappellino', de: 'Kappe', nl: 'Pet', pl: 'Czapka z daszkiem' } },
-  { key: 'beanie', sku: 'SENDIN-BEANIE', priceCents: 990, allowPuff: false, maxChars: 12, label: { en: 'Beanie', fr: 'Bonnet', es: 'Gorro', it: 'Berretto', de: 'Mütze', nl: 'Muts', pl: 'Czapka' } },
-  { key: 'jacket', sku: 'SENDIN-JACKET', priceCents: 1490, allowPuff: true, maxChars: 24, label: { en: 'Jacket or hoodie', fr: 'Veste ou sweat', es: 'Chaqueta o sudadera', it: 'Giacca o felpa', de: 'Jacke oder Hoodie', nl: 'Jas of hoodie', pl: 'Kurtka lub bluza' } },
-  { key: 'shirt', sku: 'SENDIN-SHIRT', priceCents: 1190, allowPuff: false, maxChars: 24, label: { en: 'Shirt or t-shirt', fr: 'Chemise ou t-shirt', es: 'Camisa o camiseta', it: 'Camicia o t-shirt', de: 'Hemd oder T-Shirt', nl: 'Overhemd of t-shirt', pl: 'Koszula lub t-shirt' } },
-  { key: 'bag', sku: 'SENDIN-BAG', priceCents: 1290, allowPuff: true, maxChars: 20, label: { en: 'Bag', fr: 'Sac', es: 'Bolso', it: 'Borsa', de: 'Tasche', nl: 'Tas', pl: 'Torba' } },
-  { key: 'other', sku: 'SENDIN-OTHER', priceCents: 1290, allowPuff: false, maxChars: 20, label: { en: 'Something else', fr: 'Autre chose', es: 'Otra cosa', it: 'Altro', de: 'Etwas anderes', nl: 'Iets anders', pl: 'Coś innego' } },
+  { key: 'cap', sku: 'SENDIN-CAP', priceCents: 990, allowPuff: true, maxChars: 14, label: { en: 'Cap', fr: 'Casquette', es: 'Gorra', it: 'Cappellino', de: 'Kappe', nl: 'Pet', pl: 'Czapka z daszkiem', pt: 'Boné' } },
+  { key: 'beanie', sku: 'SENDIN-BEANIE', priceCents: 990, allowPuff: false, maxChars: 12, label: { en: 'Beanie', fr: 'Bonnet', es: 'Gorro', it: 'Berretto', de: 'Mütze', nl: 'Muts', pl: 'Czapka', pt: 'Gorro' } },
+  { key: 'jacket', sku: 'SENDIN-JACKET', priceCents: 1490, allowPuff: true, maxChars: 24, label: { en: 'Jacket or hoodie', fr: 'Veste ou sweat', es: 'Chaqueta o sudadera', it: 'Giacca o felpa', de: 'Jacke oder Hoodie', nl: 'Jas of hoodie', pl: 'Kurtka lub bluza', pt: 'Casaco ou sweat' } },
+  { key: 'shirt', sku: 'SENDIN-SHIRT', priceCents: 1190, allowPuff: false, maxChars: 24, label: { en: 'Shirt or t-shirt', fr: 'Chemise ou t-shirt', es: 'Camisa o camiseta', it: 'Camicia o t-shirt', de: 'Hemd oder T-Shirt', nl: 'Overhemd of t-shirt', pl: 'Koszula lub t-shirt', pt: 'Camisa ou t-shirt' } },
+  { key: 'bag', sku: 'SENDIN-BAG', priceCents: 1290, allowPuff: true, maxChars: 20, label: { en: 'Bag', fr: 'Sac', es: 'Bolso', it: 'Borsa', de: 'Tasche', nl: 'Tas', pl: 'Torba', pt: 'Mala' } },
+  { key: 'other', sku: 'SENDIN-OTHER', priceCents: 1290, allowPuff: false, maxChars: 20, label: { en: 'Something else', fr: 'Autre chose', es: 'Otra cosa', it: 'Altro', de: 'Etwas anderes', nl: 'Iets anders', pl: 'Coś innego', pt: 'Outra coisa' } },
 ];
 
 export const SEND_IN_ITEM_TYPE_KEYS = SEND_IN_ITEM_TYPES.map((t) => t.key);

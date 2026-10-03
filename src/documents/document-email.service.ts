@@ -134,6 +134,21 @@ const COPY: Record<Lang, DocCopy> = {
       'Ten link jest ważny przez ograniczony czas. Napisz do nas, jeśli potrzebujesz nowej kopii.',
     fallbackName: 'Klient',
   },
+  pt: {
+    invoiceSubject: (n, seller) => `A sua fatura ${n} – ${seller}`,
+    receiptSubject: (n, seller) => `O seu recibo ${n} – ${seller}`,
+    greeting: (name) => `Olá ${name},`,
+    invoiceIntro: 'Obrigado pela sua encomenda. A sua fatura já está disponível.',
+    receiptIntro: 'Obrigado pela sua encomenda. O seu recibo já está disponível.',
+    invoiceCta: 'Descarregar a minha fatura (PDF)',
+    receiptCta: 'Descarregar o meu recibo (PDF)',
+    reference: 'Referência',
+    amountPaid: 'Montante pago',
+    date: 'Data',
+    linkNote:
+      'Este link tem validade limitada. Contacte-nos se precisar de uma nova cópia.',
+    fallbackName: 'Cliente',
+  },
 };
 
 interface DocCopy {
@@ -160,6 +175,7 @@ const DATE_LOCALE: Record<Lang, string> = {
   de: 'de-DE',
   nl: 'nl-NL',
   pl: 'pl-PL',
+  pt: 'pt-PT',
 };
 
 @Injectable()

@@ -9,6 +9,7 @@ import {
   THREAD_BRAND,
   THREAD_SEED,
 } from './personalization.seed';
+import { fillMissingLocales } from './localized.util';
 
 /** One marker per catalogue, holding the keys this build has ever inserted. */
 const SEEDED_FONTS_KEY = 'personalization_seeded_font_keys';
@@ -109,7 +110,13 @@ export class PersonalizationSeedService implements OnModuleInit {
     }
     await this.writeMarker(SEEDED_MOTIF_CATEGORIES_KEY, [...already, ...pending.map((c) => c.key)]);
 
-    const rows = await this.prisma.embroideryMotifCategory.findMany({ select: { id: true, key: true } });
+    const rows = await this.prisma.embroideryMotifCategory.findMany({ select: { id: true, key: true, name: true } });
+    const seedNames = new Map(MOTIF_CATEGORY_SEED.map((c) => [c.key, c.name]));
+    for (const r of rows) {
+      const seed = seedNames.get(r.key);
+      const name = seed && fillMissingLocales(r.name, seed);
+      if (name) await this.prisma.embroideryMotifCategory.update({ where: { id: r.id }, data: { name } });
+    }
     return new Map(rows.map((r) => [r.key, r.id]));
   }
 
@@ -130,7 +137,16 @@ export class PersonalizationSeedService implements OnModuleInit {
     }
     await this.writeMarker(SEEDED_MOTIFS_KEY, [...already, ...pending.map((m) => m.key)]);
 
-    // Nothing is written over an existing row.
+    // A language added to the shop after a design was seeded: fill in just
+    // that language's name, so the library is not half-English in it.
+    const seedNames = new Map(MOTIF_SEED.map((m) => [m.key, m.name]));
+    const rows = await this.prisma.embroideryMotif.findMany({ where: { key: { in: [...seedNames.keys()] } }, select: { id: true, key: true, name: true } });
+    for (const r of rows) {
+      const name = fillMissingLocales(r.name, seedNames.get(r.key)!);
+      if (name) await this.prisma.embroideryMotif.update({ where: { id: r.id }, data: { name } });
+    }
+
+    // Beyond that, nothing is written over an existing row.
     //
     // This loop used to re-apply every seeded name, category and colour set on
     // each boot, which was defensible while the shapes were ours: there was no

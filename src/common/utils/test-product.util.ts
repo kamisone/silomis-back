@@ -21,6 +21,7 @@ const GENERIC_FAILURE_MESSAGE: Record<string, string> = {
   de: 'Bei uns ist ein Fehler aufgetreten. Wir bitten um Entschuldigung — bitte versuchen Sie es später erneut.',
   nl: 'Er is aan onze kant iets misgegaan. Onze excuses — probeer het later opnieuw.',
   pl: 'Wystąpił błąd po naszej stronie. Przepraszamy — spróbuj ponownie później.',
+  pt: 'Ocorreu um erro do nosso lado. Pedimos desculpa — tente novamente mais tarde.',
 };
 
 export function testCheckoutBlockedException(locale?: string | null): BadRequestException {

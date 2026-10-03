@@ -1,9 +1,9 @@
-export type Lang = 'fr' | 'en' | 'es' | 'it' | 'de' | 'nl' | 'pl';
+export type Lang = 'fr' | 'en' | 'es' | 'it' | 'de' | 'nl' | 'pl' | 'pt';
 
-const LANGS: Lang[] = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl'];
+const LANGS: Lang[] = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl', 'pt'];
 
 /**
- * The seven storefront locales, so a customer who shopped in Dutch is written
+ * The eight storefront locales, so a customer who shopped in Dutch is written
  * to in Dutch. Anything else — a locale the shop has not added, or none —
  * falls back to French, silomis's own language.
  */
@@ -949,6 +949,141 @@ export const COPY = {
           : `Do wiadomości dołączono ${n} zdjęcia.`,
       cta: 'Zobacz rozmowę',
       reply: 'Odpowiedz ze strony swojego zamówienia — zobaczymy to tam.',
+    },
+  },
+  pt: {
+    /** Shared by the confirmation and status emails — both name the chosen point. */
+    pickup: {
+      title: 'O seu ponto de recolha',
+      intro: 'A sua encomenda irá aguardá-lo aqui:',
+      ref: 'Número do ponto',
+      hours: 'Horário',
+      closed: 'Fechado',
+      weekdays: [
+        'Segunda-feira',
+        'Terça-feira',
+        'Quarta-feira',
+        'Quinta-feira',
+        'Sexta-feira',
+        'Sábado',
+        'Domingo',
+      ],
+    },
+    /** Under the name in every email header, as on the site. */
+    tagline: 'Bordados',
+    footer: (year: number, name: string) =>
+      `© ${year} ${name}. Todos os direitos reservados.`,
+
+    orderConfirmed: {
+      subject: (n: string) => `Encomenda confirmada – ${n}`,
+      greeting: (name: string) => `Olá ${name},`,
+      intro:
+        'Obrigado pela sua encomenda! Recebemo-la e vamos começar a tratá-la em breve.',
+      colProduct: 'Produto',
+      colQty: 'Qtd.',
+      colPrice: 'Preço unitário',
+      colTotal: 'Total',
+      subtotal: 'Subtotal',
+      shipping: 'Portes',
+      freeShipping: 'Grátis',
+      discount: 'Desconto',
+      discountCode: (code: string) => `Desconto (código: ${code})`,
+      grandTotal: 'Total',
+      orderRef: 'Referência da encomenda',
+      embroidery: 'Bordado',
+      embroideryThread: 'Linha:',
+      trackOrder: 'Seguir a minha encomenda',
+      helpText:
+        'Se tiver alguma questão, não hesite em contactar a nossa equipa de apoio.',
+    },
+
+    orderStatus: {
+      preparing: {
+        subjectSuffix: 'está a ser preparada',
+        heading: 'A sua encomenda está a ser preparada',
+        message: 'Boas notícias — estamos a preparar a sua encomenda para envio.',
+      },
+      shipped: {
+        subjectSuffix: 'foi enviada',
+        heading: 'A sua encomenda foi enviada',
+        message: 'Boas notícias — a sua encomenda está a caminho.',
+      },
+      delivered: {
+        subjectSuffix: 'foi entregue',
+        heading: 'A sua encomenda foi entregue',
+        message: 'A sua encomenda chegou. Esperamos que adore!',
+      },
+      cancelled: {
+        subjectSuffix: 'foi cancelada',
+        heading: 'A sua encomenda foi cancelada',
+        message:
+          'Esta encomenda foi cancelada. Se não fez este pedido, contacte a nossa equipa de apoio.',
+      },
+      greeting: (name: string) => `Olá ${name},`,
+      subject: (n: string, suffix: string) => `A encomenda ${n} ${suffix}`,
+      orderRef: 'Referência da encomenda',
+      trackOrder: 'Seguir a minha encomenda',
+      helpText:
+        'Se tiver alguma questão, não hesite em contactar a nossa equipa de apoio.',
+    },
+
+    paymentFailed: {
+      subject: (n: string) =>
+        `Não foi possível processar o pagamento da encomenda ${n}`,
+      greeting: (name: string) => `Olá ${name},`,
+      intro:
+        'Tentámos cobrar o seu método de pagamento pela encomenda abaixo, mas a operação não foi concluída. Nada foi cobrado — o seu carrinho continua guardado, pronto para quando quiser tentar novamente.',
+      orderRef: 'Referência da encomenda',
+      cta: 'Tentar pagar novamente',
+      note: 'Se o problema persistir, contacte a nossa equipa de apoio — teremos todo o gosto em ajudar.',
+    },
+
+    abandonedCart: {
+      subject: 'Esqueceu-se de algo!',
+      greeting: (name: string) => `Olá ${name},`,
+      intro:
+        'Ainda tem artigos à espera no seu carrinho. Conclua a sua encomenda antes que esgotem.',
+      cta: 'Concluir a minha encomenda',
+      note: 'Se já concluiu a sua compra, pode ignorar este email.',
+    },
+
+    reviewRequest: {
+      subject: (p: string) => `O que achou de ${p}?`,
+      greeting: (name: string) => `Olá ${name},`,
+      intro: (order: string, product: string) =>
+        `A sua encomenda <strong style="color:#0f172a;">${order}</strong> foi entregue. Gostaríamos muito de saber o que pensa de <strong style="color:#0f172a;">${product}</strong>.`,
+      body: 'A sua avaliação ajuda outros clientes a fazer melhores escolhas.',
+      cta: 'Escrever uma avaliação',
+      fallback: 'Ou copie este link para o seu navegador:',
+    },
+
+    backInStock: {
+      subject: (p: string) => `De novo em stock – ${p}`,
+      intro: 'Boas notícias!',
+      body: (p: string) =>
+        `<strong>${p}</strong>, que adicionou aos seus favoritos, está novamente em stock.`,
+      cta: 'Ver produto',
+    },
+    orderAccessLink: {
+      subject: (n: string) => `O seu link seguro – ${n}`,
+      greeting: (name: string) => `Olá ${name},`,
+      intro: (n: string) =>
+        `Aqui está o seu link seguro para a encomenda <strong>${n}</strong>. Abre a página de seguimento e a conversa com o nosso atelier.`,
+      cta: 'Abrir a minha encomenda',
+      ignore:
+        'Se não pediu este link, ignore simplesmente esta mensagem — ninguém pode abrir a conversa sem ele.',
+    },
+    orderMessage: {
+      subject: (n: string) => `O nosso atelier respondeu – ${n}`,
+      greeting: (name: string) => `Olá ${name},`,
+      intro: (n: string) =>
+        `Acabámos de responder sobre a sua encomenda <strong>${n}</strong>.`,
+      images: (n: number) =>
+        n === 1
+          ? 'Esta mensagem inclui uma foto.'
+          : `Esta mensagem inclui ${n} fotos.`,
+      cta: 'Ver a conversa',
+      reply: 'Responda a partir da página da sua encomenda e veremos lá.',
     },
   },
 } as const;

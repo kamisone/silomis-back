@@ -10,7 +10,7 @@ import {
  * base/source language and the sole input language for every "Generate"
  * button on the product-edit page.
  */
-export type SectionTranslationLang = 'fr' | 'es' | 'it' | 'de' | 'nl' | 'pl';
+export type SectionTranslationLang = 'fr' | 'es' | 'it' | 'de' | 'nl' | 'pl' | 'pt';
 
 const SECTION_TARGET_LANGS: SectionTranslationLang[] = [
   'fr',
@@ -19,6 +19,7 @@ const SECTION_TARGET_LANGS: SectionTranslationLang[] = [
   'de',
   'nl',
   'pl',
+  'pt',
 ];
 
 /**

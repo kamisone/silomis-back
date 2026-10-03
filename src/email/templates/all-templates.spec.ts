@@ -25,7 +25,7 @@ import type { Lang } from './copy';
  * formatted, is the link absolute, does the text part say anything. Doing it for
  * 7 languages × 15 renders by hand is what nobody does twice.
  */
-const LANGS: Lang[] = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl'];
+const LANGS: Lang[] = ['fr', 'en', 'es', 'it', 'de', 'nl', 'pl', 'pt'];
 
 /**
  * A value that leaked out of the code instead of being rendered.
@@ -351,6 +351,7 @@ describe('email header lockup', () => {
     expect(sample('fr')).toContain('Broderie');
     expect(sample('de')).toContain('Stickerei');
     expect(sample('pl')).toContain('Haft');
+    expect(sample('pt')).toContain('Bordados');
   });
 
   it('lays the lockup out in a table, which is the only thing Outlook honours', () => {
