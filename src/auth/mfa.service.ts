@@ -34,6 +34,22 @@ const COOLDOWN_MAX = 5; // sends allowed within that window before blocking
 const RL_MAX = 5;
 const RL_TTL_SEC = 15 * 60;
 
+/**
+ * The methods this admin can actually receive a code by.
+ *
+ * Email is always possible — it is the address they sign in with. SMS needs a
+ * phone number on their profile, which is optional, so the admin UI treats the
+ * stored method as a *preference* rather than a guarantee.
+ */
+function methodsFor(admin: { phone: string | null }): MfaMethod[] {
+  return admin.phone ? ['email', 'sms'] : ['email'];
+}
+
+/** The preference if it can be honoured, else the first method that can be. */
+function resolveMethod(available: MfaMethod[], preferred: MfaMethod): MfaMethod {
+  return available.includes(preferred) ? preferred : available[0];
+}
+
 @Injectable()
 export class MfaService {
   private readonly logger = new Logger(MfaService.name);
@@ -52,8 +68,7 @@ export class MfaService {
       throw new UnauthorizedException({ code: 'challenge_invalid' });
     }
 
-    const availableMethods: MfaMethod[] = ['email'];
-    if (admin.phone) availableMethods.push('sms');
+    const availableMethods = methodsFor(admin);
 
     const jti = crypto.randomUUID();
     const payload: MfaChallengePayload = { sub: adminId, email, jti, type: 'mfa-challenge' };
@@ -62,7 +77,7 @@ export class MfaService {
       expiresIn: '5m',
     });
 
-    const method = availableMethods.includes(preferredMethod) ? preferredMethod : availableMethods[0];
+    const method = resolveMethod(availableMethods, preferredMethod);
     const maskedDestination = await this.sendOtp(admin, jti, method);
 
     return { challengeToken, availableMethods, preferredMethod: method, maskedDestination };
@@ -76,15 +91,22 @@ export class MfaService {
       throw new UnauthorizedException({ code: 'challenge_invalid' });
     }
 
-    const availableMethods: MfaMethod[] = ['email'];
-    if (admin.phone) availableMethods.push('sms');
+    const availableMethods = methodsFor(admin);
 
+    // An explicit ask for a method this admin has no destination for is the
+    // caller being wrong, and is worth saying so — the sign-in page only ever
+    // offers what `initChallenge` reported as available.
     if (method && !availableMethods.includes(method)) {
       this.logger.warn(`resend: method ${method} not available for admin ${payload.sub} (no phone)`);
       throw new BadRequestException({ code: 'method_unavailable' });
     }
 
-    const chosenMethod = method ?? admin.preferredMfaMethod;
+    // No explicit ask falls back exactly as the first send did. Taking
+    // `preferredMfaMethod` at face value here would text an admin whose
+    // preference is SMS but who has no phone on file: `sendOtp` stores the OTP
+    // and spends the rate-limit budget BEFORE it sends, so that throws with a
+    // live code prompt and nothing on its way to anyone.
+    const chosenMethod = resolveMethod(availableMethods, method ?? admin.preferredMfaMethod);
     const maskedDestination = await this.sendOtp(admin, payload.jti, chosenMethod);
     return { maskedDestination };
   }
