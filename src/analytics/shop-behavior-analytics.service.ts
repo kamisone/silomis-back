@@ -150,9 +150,12 @@ export class ShopBehaviorAnalyticsService {
    *
    * - `reachedShipping` — submitted the address form and landed on the shipping
    *   step (`checkout_started`, one per distinct cart).
-   * - `reachedCheckout` — selected shipping and clicked through to payment,
-   *   the furthest a test product can be taken before checkout is refused
-   *   (`test_checkout_blocked`, recorded server-side at the block).
+   * - `reachedCheckout` — selected shipping and clicked through to payment.
+   *   Tests tab: `test_checkout_blocked`, recorded server-side at the block —
+   *   the furthest a test product can be taken. Live tab:
+   *   `payment_step_reached`, recorded when the order moves to
+   *   awaiting_payment. A live order never writes test_checkout_blocked, so
+   *   counting only that left the Live column at 0.
    *
    * Every test product is listed even with zero activity, so a product that
    * simply is not selling is visible rather than silently absent.
@@ -217,6 +220,7 @@ export class ShopBehaviorAnalyticsService {
 
     const { since, until } = window;
     const ids = testProducts.map((p) => p.id);
+    const checkoutEvent = isTest ? 'test_checkout_blocked' : 'payment_step_reached';
 
     const rows = await this.prisma.$queryRaw<Array<{ productId: string; eventType: string; count: bigint; distinctCarts: bigint }>>`
       SELECT be."productId" AS "productId", be."eventType" AS "eventType", COUNT(be.id)::bigint AS count, ${VISITOR_KEY_COUNT}::bigint AS "distinctCarts"
@@ -224,7 +228,7 @@ export class ShopBehaviorAnalyticsService {
       WHERE be."productId" IN (${Prisma.join(ids)})
         -- The phase recorded on the event, never the product's flag today.
         AND be."productIsTest" = ${isTest}
-        AND be."eventType" IN ('product_view', 'add_to_cart', 'checkout_started', 'test_checkout_blocked')
+        AND be."eventType" IN ('product_view', 'add_to_cart', 'checkout_started', ${Prisma.raw(`'${checkoutEvent}'`)})
         AND be."createdAt" >= ${since}
         AND be."createdAt" < ${until}
         ${codes ? Prisma.sql`AND be."countryCode" IN (${Prisma.join(codes)})` : Prisma.empty}
@@ -238,7 +242,7 @@ export class ShopBehaviorAnalyticsService {
       const views = distinct.get(`${p.id}:product_view`) ?? 0;
       const addsToCart = distinct.get(`${p.id}:add_to_cart`) ?? 0;
       const reachedShipping = distinct.get(`${p.id}:checkout_started`) ?? 0;
-      const reachedCheckout = distinct.get(`${p.id}:test_checkout_blocked`) ?? 0;
+      const reachedCheckout = distinct.get(`${p.id}:${checkoutEvent}`) ?? 0;
       return {
         productId: p.id,
         title: p.title,

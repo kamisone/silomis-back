@@ -84,6 +84,35 @@ describe('checkout_started (reached shipping)', () => {
   });
 });
 
+describe('payment_step_reached (reached checkout, live)', () => {
+  function makeListener(items: Array<{ productId: string | null }>) {
+    const record = jest.fn(async (_input: Record<string, unknown>) => undefined);
+    const prisma = {
+      order: { findUnique: jest.fn(async () => ORDER) },
+      orderItem: { findMany: jest.fn(async () => items) },
+    };
+    return { listener: new CheckoutStartedListener(prisma as never, { record } as never), record };
+  }
+
+  it('writes one event per distinct product with the client context', async () => {
+    const { listener, record } = makeListener([{ productId: 'p1' }, { productId: 'p2' }]);
+
+    await listener.onPaymentStepReached({ orderId: 'o1', orderNumber: 'SO-1' });
+
+    expect(record.mock.calls.map(([c]) => (c as { productId: string }).productId).sort()).toEqual(['p1', 'p2']);
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'payment_step_reached', clientIp: '81.2.69.142', shopCustomerId: 'cust-1', device: 'mobile' }),
+    );
+  });
+
+  it('swallows an analytics failure — it must never surface on the payment path', async () => {
+    const { listener, record } = makeListener([{ productId: 'p1' }]);
+    record.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(listener.onPaymentStepReached({ orderId: 'o1', orderNumber: 'SO-1' })).resolves.toBeUndefined();
+  });
+});
+
 describe('test_checkout_blocked (reached checkout)', () => {
   function makeGuard(testProductIds: string[]) {
     const record = jest.fn(async (_input: Record<string, unknown>) => undefined);

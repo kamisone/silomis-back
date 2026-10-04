@@ -551,6 +551,16 @@ export class CheckoutService {
       },
     });
 
+    // The live-product counterpart of test_checkout_blocked: a test order never
+    // gets this far (the guard above throws), so on the demand report's Live
+    // tab this is what "Reached checkout" counts. Emitted on the transition
+    // only, not on the idempotent resume above.
+    this.eventBus.emit(
+      COMMERCE_EVENTS.CHECKOUT_PAYMENT_STEP_REACHED,
+      { orderId: order.id, orderNumber: order.orderNumber },
+      { entityId: order.id, source: 'CheckoutService.readyForPayment' },
+    );
+
     // NOTE: the cart is intentionally left "active" here — it's only marked
     // "completed" once payment is confirmed (OrdersService.confirmPayment).
     // This keeps the customer's cart items intact if payment fails, is

@@ -9,6 +9,9 @@ export const COMMERCE_EVENTS = {
   ORDER_STATUS_CHANGED: 'commerce.order.status.changed',
   ORDER_CANCELLED: 'commerce.order.cancelled',
 
+  // Checkout — the draft passed every gate and moved to awaiting_payment
+  CHECKOUT_PAYMENT_STEP_REACHED: 'commerce.checkout.payment_step_reached',
+
   // Payments
   PAYMENT_SUCCEEDED: 'commerce.payment.succeeded',
   PAYMENT_FAILED: 'commerce.payment.failed',
@@ -43,6 +46,11 @@ export interface OrderCreatedEvent {
   customerEmail: string;
   totalCents: number;
   vendorIds: string[];
+}
+
+export interface CheckoutPaymentStepReachedEvent {
+  orderId: string;
+  orderNumber: string;
 }
 
 export interface OrderStatusChangedEvent {

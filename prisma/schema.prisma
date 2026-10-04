@@ -2094,6 +2094,7 @@ enum BehaviorEventType {
   remove_from_cart
   checkout_started
   test_checkout_blocked
+  payment_step_reached
 }
 
 /// Written only through BehaviorTrackingService.record(), which is the single

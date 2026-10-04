@@ -3,7 +3,11 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { deviceFromUserAgent } from '../common/utils/device.util';
 import { BehaviorTrackingService } from './behavior-tracking.service';
-import { COMMERCE_EVENTS, OrderCreatedEvent } from '../commerce-events/commerce-events.constants';
+import {
+  CheckoutPaymentStepReachedEvent,
+  COMMERCE_EVENTS,
+  OrderCreatedEvent,
+} from '../commerce-events/commerce-events.constants';
 
 @Injectable()
 export class CheckoutStartedListener {
@@ -30,14 +34,32 @@ export class CheckoutStartedListener {
    */
   @OnEvent(COMMERCE_EVENTS.ORDER_CREATED)
   async onOrderCreated(event: OrderCreatedEvent): Promise<void> {
+    await this.recordPerProduct(event.orderId, 'checkout_started');
+  }
+
+  /**
+   * The draft passed every gate and moved to awaiting_payment — the live
+   * product's "reached checkout". Test orders never get here (TestCheckoutGuard
+   * throws first and writes test_checkout_blocked), so the two events never
+   * both describe the same order.
+   */
+  @OnEvent(COMMERCE_EVENTS.CHECKOUT_PAYMENT_STEP_REACHED)
+  async onPaymentStepReached(event: CheckoutPaymentStepReachedEvent): Promise<void> {
+    await this.recordPerProduct(event.orderId, 'payment_step_reached');
+  }
+
+  private async recordPerProduct(
+    orderId: string,
+    eventType: 'checkout_started' | 'payment_step_reached',
+  ): Promise<void> {
     const order = await this.prisma.order.findUnique({
-      where: { id: event.orderId },
+      where: { id: orderId },
       select: { cartToken: true, customerId: true, clientIpAddress: true, clientUserAgent: true },
     });
     if (!order) return;
 
     const items = await this.prisma.orderItem.findMany({
-      where: { orderId: event.orderId },
+      where: { orderId },
       select: { productId: true },
       distinct: ['productId'],
     });
@@ -52,7 +74,7 @@ export class CheckoutStartedListener {
     // check, which belongs on request-scoped call sites. This one is
     // server-authoritative — the customer already submitted an address form.
     const base = {
-      eventType: 'checkout_started' as const,
+      eventType,
       cartToken: order.cartToken,
       shopCustomerId: order.customerId,
       clientIp: order.clientIpAddress,
@@ -68,7 +90,7 @@ export class CheckoutStartedListener {
         await this.tracking.record({ ...base, productId });
       }
     } catch (err) {
-      this.logger.warn(`Failed to record checkout_started for order ${event.orderId}: ${(err as Error).message}`);
+      this.logger.warn(`Failed to record ${eventType} for order ${orderId}: ${(err as Error).message}`);
     }
   }
 }
