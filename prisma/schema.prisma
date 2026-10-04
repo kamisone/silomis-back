@@ -515,6 +515,11 @@ model Product {
   /// added months ago can become the new thing this season — only they know.
   isNew Boolean @default(false)
 
+  /// Shows the "Wrong size? No problem" returns block on the product page.
+  /// Off by default: the promise only fits products that can actually be
+  /// exchanged — a personalised piece cannot.
+  showReturnsGuarantee Boolean @default(false)
+
   upsellingEnabled Boolean @default(false)
   upsellTiers      Json    @default("[]") // ProductUpsellTier[]
 
