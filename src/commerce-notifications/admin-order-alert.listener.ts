@@ -67,6 +67,10 @@ export class AdminOrderAlertListener {
   @OnEvent(COMMERCE_EVENTS.ORDER_STATUS_CHANGED)
   async onStatusChanged(event: OrderStatusChangedEvent): Promise<void> {
     if (event.toStatus !== 'cancelled') return;
+    // An admin who cancels an order by hand already knows — alerting the desk
+    // (email + SMS) about its own action is noise. Only cancellations the
+    // system makes on its own (payment failed, reservation expired) alert.
+    if (event.triggeredBy === 'admin') return;
     try {
       const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true } });
       if (!order) return;
