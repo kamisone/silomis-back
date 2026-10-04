@@ -13,6 +13,12 @@ import { Public } from './public.decorator';
 // whole controller — `me` is a passive session check that navigation calls on
 // every request, and throttling it would log admins out for browsing quickly.
 const AUTH_LIMIT = [10, 15] as const;
+// Refresh is not a credential guess — the token is a signed JWT backed by a
+// DB row, so there is nothing to brute-force. And every refresh arrives from
+// the Next server, so this counter is shared by every admin and every open
+// tab. At 10 per 15 minutes a few parallel requests at token expiry exhausted
+// it, the 429 was read as a rejected session, and admins were logged out.
+const REFRESH_LIMIT = [300, 15] as const;
 
 @Controller('auth')
 export class AuthController {
@@ -39,7 +45,7 @@ export class AuthController {
   }
 
   @Public()
-  @RateLimit(...AUTH_LIMIT)
+  @RateLimit(...REFRESH_LIMIT)
   @Post('refresh')
   refresh(@Body(new ZodValidationPipe(RefreshSchema)) body: RefreshDto) {
     return this.authService.refresh(body.refresh_token);
