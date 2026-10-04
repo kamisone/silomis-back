@@ -1,8 +1,31 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { GcsService } from '../gcs/gcs.service';
-import { ReplaySessionStatus } from '../../generated/prisma/client';
+import { BehaviorEventType, OrderStatus, ReplaySessionStatus } from '../../generated/prisma/client';
 import { DateWindow } from '../analytics/analytics-filters';
+
+/** Behaviour events this long before a session's start still belong to it — the product_view fires as the page mounts, a beat before the recorder's session round trip lands. */
+const ACTIVITY_LEAD_MS = 60_000;
+/**
+ * …and this long after its last recorded frame. Checkout is server-side work
+ * (checkout_started is written when the order is created, test_checkout_blocked
+ * when payment is refused), so it can land after the recorder's last batch.
+ */
+const ACTIVITY_TRAIL_MS = 30 * 60_000;
+
+/** One step of what the visitor did during a session, collapsed by type: a product page viewed three times is one "Product view ×3". */
+export interface SessionActivity {
+  type: BehaviorEventType;
+  count: number;
+  firstAt: Date;
+}
+
+export interface SessionOrder {
+  id: string;
+  orderNumber: string;
+  status: OrderStatus;
+  createdAt: Date;
+}
 
 @Injectable()
 export class ReplayAdminService {
@@ -51,7 +74,7 @@ export class ReplayAdminService {
       ...(scope ? { productIsTest: scope === 'test' } : {}),
     };
     const [sessions, total] = await Promise.all([this.prisma.replaySession.findMany({ where, orderBy: { startedAt: 'desc' }, take: limit, skip: offset }), this.prisma.replaySession.count({ where })]);
-    const items = await this.withProduct(sessions);
+    const items = await this.withActivity(await this.withProduct(sessions));
     return { items, total };
   }
 
@@ -83,6 +106,83 @@ export class ReplayAdminService {
 
     const updated = await this.prisma.replaySession.update({ where: { id }, data: { viewedAt: new Date() } });
     return { viewedAt: updated.viewedAt! };
+  }
+
+  /**
+   * What each session's visitor did (product views, add to cart, reached
+   * shipping/checkout…) and any order their cart produced, whatever its
+   * status — draft and cancelled included.
+   *
+   * Behaviour events are tied to a session by its cart token, falling back to
+   * the visitor hash for events written without one (and older product views,
+   * which were not sent with a token). An event carrying a *different* cart
+   * token is another browser behind the same address and is left out.
+   * Scoped to the session's product (plus product-less events like searches)
+   * and to the session's own time span, so a later visit by the same visitor
+   * does not leak into this row.
+   */
+  private async withActivity<T extends { productId: string | null; cartToken: string | null; visitorHash: string | null; startedAt: Date; endedAt: Date | null; lastEventAt: Date }>(
+    sessions: T[],
+  ): Promise<Array<T & { activity: SessionActivity[]; orders: SessionOrder[] }>> {
+    if (!sessions.length) return [];
+
+    const span = (s: T) => ({
+      from: new Date(s.startedAt.getTime() - ACTIVITY_LEAD_MS),
+      to: new Date(Math.max(s.lastEventAt.getTime(), s.endedAt?.getTime() ?? 0) + ACTIVITY_TRAIL_MS),
+    });
+    const spans = sessions.map(span);
+    const from = new Date(Math.min(...spans.map((x) => x.from.getTime())));
+    const to = new Date(Math.max(...spans.map((x) => x.to.getTime())));
+    const tokens = [...new Set(sessions.map((s) => s.cartToken).filter((t): t is string => !!t))];
+    const hashes = [...new Set(sessions.map((s) => s.visitorHash).filter((h): h is string => !!h))];
+    const productIds = [...new Set(sessions.map((s) => s.productId).filter((id): id is string => !!id))];
+
+    const visitorConds = [...(tokens.length ? [{ cartToken: { in: tokens } }] : []), ...(hashes.length ? [{ visitorHash: { in: hashes } }] : [])];
+    const [events, orders] = await Promise.all([
+      visitorConds.length
+        ? this.prisma.shopBehaviorEvent.findMany({
+            where: {
+              createdAt: { gte: from, lt: to },
+              OR: visitorConds,
+              AND: [{ OR: [{ productId: null }, ...(productIds.length ? [{ productId: { in: productIds } }] : [])] }],
+            },
+            select: { eventType: true, cartToken: true, visitorHash: true, productId: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+          })
+        : [],
+      tokens.length
+        ? this.prisma.order.findMany({
+            where: { cartToken: { in: tokens } },
+            select: { id: true, orderNumber: true, status: true, cartToken: true, createdAt: true, updatedAt: true },
+            orderBy: { createdAt: 'asc' },
+          })
+        : [],
+    ]);
+
+    return sessions.map((s, i) => {
+      const { from: sFrom, to: sTo } = spans[i];
+      const inSpan = (d: Date) => d >= sFrom && d < sTo;
+
+      const byType = new Map<BehaviorEventType, SessionActivity>();
+      for (const e of events) {
+        if (!inSpan(e.createdAt)) continue;
+        if (e.productId && e.productId !== s.productId) continue;
+        const sameVisitor = e.cartToken && s.cartToken ? e.cartToken === s.cartToken : !!e.visitorHash && e.visitorHash === s.visitorHash;
+        if (!sameVisitor) continue;
+        const entry = byType.get(e.eventType);
+        if (entry) entry.count++;
+        else byType.set(e.eventType, { type: e.eventType, count: 1, firstAt: e.createdAt });
+      }
+
+      // An order is resumed rather than recreated while its cart is still
+      // active (CheckoutService idempotency), so one created before this
+      // session can still be the one it touched — updatedAt catches that.
+      const sessionOrders = orders
+        .filter((o) => o.cartToken === s.cartToken && (inSpan(o.createdAt) || inSpan(o.updatedAt)))
+        .map(({ id, orderNumber, status, createdAt }) => ({ id, orderNumber, status, createdAt }));
+
+      return { ...s, activity: [...byType.values()], orders: sessionOrders };
+    });
   }
 
   private async withProduct<T extends { productId: string | null }>(sessions: T[]): Promise<Array<T & { product: { id: string; title: string } | null }>> {
