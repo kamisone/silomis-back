@@ -791,6 +791,14 @@ export class CartService {
       freeShipping:
         enrichedItems.length > 0 &&
         enrichedItems.every((i) => i.freeShipping === true),
+      // The optional address fields the checkout asks for. Any-of, unlike
+      // free shipping: one product that needs a phone number for its carrier
+      // or a company name for its invoice is enough to ask for it.
+      checkoutFields: {
+        companyName: products.some((p) => p.askCompanyName),
+        phone: products.some((p) => p.askPhone),
+        addressLine2: products.some((p) => p.askAddressLine2),
+      },
     };
   }
 }

@@ -520,6 +520,13 @@ model Product {
   /// exchanged — a personalised piece cannot.
   showReturnsGuarantee Boolean @default(false)
 
+  /// Optional address-step fields at checkout, asked only when a product in
+  /// the basket switches them on. Off by default: most orders need none of
+  /// them, and every extra box on that step costs completed checkouts.
+  askCompanyName  Boolean @default(false)
+  askPhone        Boolean @default(false)
+  askAddressLine2 Boolean @default(false)
+
   upsellingEnabled Boolean @default(false)
   upsellTiers      Json    @default("[]") // ProductUpsellTier[]
 

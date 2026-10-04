@@ -121,6 +121,10 @@ export const CreateProductSchema = z.object({
   isNew: z.boolean().optional(),
   /** Shows the "Wrong size? No problem" returns block on the product page. */
   showReturnsGuarantee: z.boolean().optional(),
+  /** Checkout asks for these only when a product in the basket switches them on. */
+  askCompanyName: z.boolean().optional(),
+  askPhone: z.boolean().optional(),
+  askAddressLine2: z.boolean().optional(),
   articlesTitle: z.string().max(300).nullish(),
   /** Blog posts to show on this product's page. Writes the same
    *  BlogProductReference join a post used to own from its own side, so a link
