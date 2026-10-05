@@ -164,35 +164,57 @@ export class ShippingService implements OnModuleInit {
 
   // ── Quoting ──────────────────────────────────────────────────────────────
 
-  async resolveZoneForCountry(countryCode: string): Promise<ShippingZone | null> {
-    const zones = await this.prisma.shippingZone.findMany({ where: { isActive: true, countryCodes: { has: countryCode } } });
-    if (zones.length) return zones[0];
-    return this.prisma.shippingZone.findFirst({ where: { isActive: true, countryCodes: { equals: [] } } });
+  /**
+   * Every active zone that delivers to this country: the zones that list it,
+   * then the catch-all zone (an empty country list means every country).
+   *
+   * All of them, not the first. Taking only the first match meant a country
+   * named in a narrow zone (say Mondial Relay's six) lost every method of the
+   * catch-all zone — Standard and Express vanished for France the moment a
+   * relay zone listed it, and an opt-in relay method the basket did not
+   * qualify for left the customer with nothing to choose.
+   */
+  async resolveZonesForCountry(countryCode: string): Promise<ShippingZone[]> {
+    const [listed, catchAll] = await Promise.all([
+      this.prisma.shippingZone.findMany({ where: { isActive: true, countryCodes: { has: countryCode } }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.shippingZone.findMany({ where: { isActive: true, countryCodes: { equals: [] } }, orderBy: { createdAt: 'asc' } }),
+    ]);
+    return [...listed, ...catchAll];
   }
 
   async getMethodsForCountry(countryCode: string, cartTotalCents: number, lang?: string, opts: FreeShippingOptions = {}): Promise<ShippingQuote> {
-    const zone = await this.resolveZoneForCountry(countryCode);
-    if (!zone) return { zone: null, methods: [] };
+    const zones = await this.resolveZonesForCountry(countryCode);
+    if (!zones.length) return { zone: null, methods: [] };
 
-    const allMethods = await this.prisma.shippingMethod.findMany({ where: { zoneId: zone.id, isActive: true }, orderBy: { sortOrder: 'asc' } });
+    // Zone order first (listed zones before the catch-all), then each zone's
+    // own sortOrder — the order the admin arranged within a zone is kept.
+    const zoneRank = new Map(zones.map((z, i) => [z.id, i]));
+    const allMethods = (
+      await this.prisma.shippingMethod.findMany({ where: { zoneId: { in: zones.map((z) => z.id) }, isActive: true }, orderBy: { sortOrder: 'asc' } })
+    ).sort((a, b) => (zoneRank.get(a.zoneId) ?? 0) - (zoneRank.get(b.zoneId) ?? 0) || a.sortOrder - b.sortOrder);
     const eligible = await this.filterEligible(allMethods, opts.productIds ?? []);
     const translated = (await this.translations.maybeApply(eligible, ET_SHIPPING_METHOD, lang)) as ShippingMethod[];
-    const localZone = (await this.translations.maybeApplyOne(zone, ET_SHIPPING_ZONE, lang)) as ShippingZone;
+    const localZones = (await this.translations.maybeApply(zones, ET_SHIPPING_ZONE, lang)) as ShippingZone[];
+    // Each method is priced by its own zone: surcharge and free-above
+    // threshold are zone settings, and the methods now come from several.
+    const zoneOf = new Map(localZones.map((z) => [z.id, z]));
+    const zoneFor = (m: ShippingMethod) => zoneOf.get(m.zoneId) ?? localZones[0];
 
     if (opts.forceFree) {
-      return { zone: localZone, methods: this.buildFreeShippingOptions(localZone, translated, cartTotalCents, opts) };
+      return { zone: localZones[0], methods: this.buildFreeShippingOptions(zoneFor, translated, opts) };
     }
 
-    return { zone: localZone, methods: this.applyZonePricing(localZone, translated, cartTotalCents) };
+    return { zone: localZones[0], methods: this.applyZonePricing(zoneFor, translated, cartTotalCents) };
   }
 
   /**
    * Narrows a zone's methods to those actually offerable for this basket.
    *
-   * Destination is not a question here: the zone owns the country list, and
-   * the caller has already resolved the destination to a zone, so every method
-   * reaching this point serves the customer's country by definition. A method
-   * that covers only part of a zone belongs in a zone of its own.
+   * Destination is not a question here: zones own the country lists, and the
+   * caller has already resolved the destination to the zones serving it, so
+   * every method reaching this point serves the customer's country by
+   * definition. A method that covers only part of a zone belongs in a zone of
+   * its own.
    *
    * `requiresProductOptIn` enforces the all-or-nothing product rule, and it
    * fails closed: the method is offered only if every distinct product being
@@ -233,16 +255,16 @@ export class ShippingService implements OnModuleInit {
     return new Set(rows.filter((r) => r._count.eligibleProducts === productIds.length).map((r) => r.id));
   }
 
-  private applyZonePricing(zone: ShippingZone, methods: ShippingMethod[], cartTotalCents: number): QuotedMethod[] {
+  private applyZonePricing(zoneFor: (m: ShippingMethod) => ShippingZone, methods: ShippingMethod[], cartTotalCents: number): QuotedMethod[] {
     const quotable = methods.filter((m) => !m.availableForFreeShipping);
     const pool = quotable.length ? quotable : methods;
     if (!quotable.length && methods.length) {
-      this.logger.warn(`Zone ${zone.id} has no ordinary methods once free-shipping-only methods are excluded — falling back to all methods`);
+      this.logger.warn(`No ordinary methods once free-shipping-only methods are excluded — falling back to all methods`);
     }
 
-    const zoneFree = zone.freeShippingThresholdCents !== null && cartTotalCents >= zone.freeShippingThresholdCents;
-
     return pool.map((m) => {
+      const zone = zoneFor(m);
+      const zoneFree = zone.freeShippingThresholdCents !== null && cartTotalCents >= zone.freeShippingThresholdCents;
       const methodFree = m.freeAboveCents !== null && cartTotalCents >= m.freeAboveCents;
       const isFree = zoneFree || methodFree;
       const originalPriceCents = m.priceCents + zone.surchargeCents;
@@ -262,7 +284,7 @@ export class ShippingService implements OnModuleInit {
     });
   }
 
-  private buildFreeShippingOptions(zone: ShippingZone, methods: ShippingMethod[], cartTotalCents: number, opts: FreeShippingOptions): QuotedMethod[] {
+  private buildFreeShippingOptions(zoneFor: (m: ShippingMethod) => ShippingZone, methods: ShippingMethod[], opts: FreeShippingOptions): QuotedMethod[] {
     const upgrades = methods.filter((m) => m.availableForFreeShipping && opts.upgradeMethodIds?.includes(m.id));
     const nonUpgrade = methods.filter((m) => !m.availableForFreeShipping);
     // Whose delivery window the free option borrows. Normally the zone's first
@@ -289,7 +311,7 @@ export class ShippingService implements OnModuleInit {
     };
 
     const upgradeOptions: QuotedMethod[] = upgrades.map((m) => {
-      const originalPriceCents = m.priceCents + zone.surchargeCents;
+      const originalPriceCents = m.priceCents + zoneFor(m).surchargeCents;
       return {
         id: m.id,
         code: m.code,

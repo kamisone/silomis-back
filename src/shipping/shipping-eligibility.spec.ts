@@ -19,6 +19,9 @@ interface MethodRow {
   requiresProductOptIn: boolean;
   requiresPickupPoint: boolean;
   availableForFreeShipping: boolean;
+  /** Defaults to the catch-all zone. */
+  zoneId: string;
+  sortOrder: number;
   estimatedDaysMin: number;
   estimatedDaysMax: number;
   /** Products opted into this method, used to fake Prisma's relation _count. */
@@ -32,6 +35,8 @@ function method(overrides: Partial<MethodRow> & Pick<MethodRow, 'id'>): MethodRo
     requiresProductOptIn: false,
     requiresPickupPoint: false,
     availableForFreeShipping: false,
+    zoneId: ZONE.id,
+    sortOrder: 0,
     estimatedDaysMin: 2,
     estimatedDaysMax: 5,
     optedInProductIds: [],
@@ -43,7 +48,11 @@ function method(overrides: Partial<MethodRow> & Pick<MethodRow, 'id'>): MethodRo
  * Fakes only what the quoting path touches: the zone lookup, the method list,
  * and the grouped opt-in count. Keeps the rules under test rather than Prisma.
  */
-function buildService(methods: MethodRow[], overlay: Record<string, Record<string, Record<string, string>>> = {}): ShippingService {
+function buildService(
+  methods: MethodRow[],
+  overlay: Record<string, Record<string, Record<string, string>>> = {},
+  listedZones: Array<typeof ZONE> = [],
+): ShippingService {
   const rows = methods.map((m) => ({
     ...m,
     description: null,
@@ -54,8 +63,13 @@ function buildService(methods: MethodRow[], overlay: Record<string, Record<strin
 
   const prisma = {
     shippingZone: {
-      findMany: jest.fn().mockResolvedValue([]),
-      findFirst: jest.fn().mockResolvedValue(ZONE),
+      // The catch-all query asks for an empty country list; the other asks for
+      // zones listing the country.
+      findMany: jest.fn().mockImplementation((args: { where: { countryCodes: { equals?: string[]; has?: string } } }) =>
+        Promise.resolve(
+          args.where.countryCodes.equals ? [ZONE] : listedZones.filter((z) => z.countryCodes.includes(args.where.countryCodes.has!)),
+        ),
+      ),
     },
     shippingMethod: {
       findMany: jest.fn().mockImplementation((args: { where?: { id?: { in: string[] } }; select?: unknown }) => {
@@ -73,7 +87,8 @@ function buildService(methods: MethodRow[], overlay: Record<string, Record<strin
               })),
           );
         }
-        return Promise.resolve(rows);
+        const zoneIds = (args?.where as { zoneId?: { in: string[] } } | undefined)?.zoneId?.in;
+        return Promise.resolve(zoneIds ? rows.filter((r) => zoneIds.includes(r.zoneId)) : rows);
       }),
       count: jest.fn().mockResolvedValue(1),
     },
@@ -104,6 +119,35 @@ describe('ShippingService — method eligibility', () => {
 
       await expect(quotedIds(svc, 'FR')).resolves.toEqual(['standard', 'relay']);
       await expect(quotedIds(svc, 'MA')).resolves.toEqual(['standard', 'relay']);
+    });
+  });
+
+  describe('several zones serving one country', () => {
+    const RELAY_ZONE = { ...ZONE, id: 'zone-eu', name: 'Europe', countryCodes: ['FR', 'BE'], surchargeCents: 100 };
+    const methods = [
+      method({ id: 'standard', sortOrder: 0 }),
+      method({ id: 'express', sortOrder: 1 }),
+      method({ id: 'relay', zoneId: RELAY_ZONE.id, sortOrder: 0 }),
+    ];
+
+    it('offers the methods of every matching zone, not just the first zone found', async () => {
+      const svc = buildService(methods, {}, [RELAY_ZONE]);
+
+      // Listed zones first, then the catch-all, each in its own sortOrder.
+      await expect(quotedIds(svc, 'FR')).resolves.toEqual(['relay', 'standard', 'express']);
+    });
+
+    it('still offers only the catch-all methods to a country no zone lists', async () => {
+      const svc = buildService(methods, {}, [RELAY_ZONE]);
+
+      await expect(quotedIds(svc, 'MA')).resolves.toEqual(['standard', 'express']);
+    });
+
+    it('prices each method with its own zone surcharge', async () => {
+      const svc = buildService(methods, {}, [RELAY_ZONE]);
+      const { methods: quoted } = await svc.getMethodsForCountry('FR', 1000);
+
+      expect(Object.fromEntries(quoted.map((m) => [m.id, m.priceCents]))).toEqual({ relay: 600, standard: 500, express: 500 });
     });
   });
 
