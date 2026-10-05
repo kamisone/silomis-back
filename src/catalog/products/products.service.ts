@@ -993,6 +993,9 @@ export class ProductsService {
   // ── Create ────────────────────────────────────────────────────────────
 
   async create(dto: CreateProductDto): Promise<Product> {
+    if (dto.embroideryModeSimple === false && dto.embroideryModeAdvanced === false) {
+      throw new BadRequestException('At least one embroidery mode must stay enabled');
+    }
     const slug = dto.slug ? slugify(dto.slug) : slugify(dto.title);
     const existing = await this.prisma.product.findUnique({ where: { slug } });
     if (existing) throw new ConflictException(`Slug "${slug}" already in use`);
@@ -1035,6 +1038,8 @@ export class ProductsService {
           askCompanyName: dto.askCompanyName ?? false,
           askPhone: dto.askPhone ?? false,
           askAddressLine2: dto.askAddressLine2 ?? false,
+          embroideryModeSimple: dto.embroideryModeSimple ?? true,
+          embroideryModeAdvanced: dto.embroideryModeAdvanced ?? true,
           isTestProduct: dto.isTestProduct ?? false,
           freeShipping: dto.freeShipping ?? false,
           freeShippingDaysMin: dto.freeShippingDaysMin ?? null,
@@ -1093,6 +1098,12 @@ export class ProductsService {
       include: { categories: { select: { id: true } } },
     });
     if (!existing) throw new NotFoundException('Product not found');
+    // At least one embroidery editor stays on — with neither, the editor would
+    // have no way to design anything. Checked against the stored values, since
+    // a PATCH may carry only one of the two.
+    if ((dto.embroideryModeSimple ?? existing.embroideryModeSimple) === false && (dto.embroideryModeAdvanced ?? existing.embroideryModeAdvanced) === false) {
+      throw new BadRequestException('At least one embroidery mode must stay enabled');
+    }
 
     let slug = existing.slug;
     if (dto.slug && dto.slug !== existing.slug) {
@@ -1159,6 +1170,8 @@ export class ProductsService {
         askCompanyName: dto.askCompanyName,
         askPhone: dto.askPhone,
         askAddressLine2: dto.askAddressLine2,
+        embroideryModeSimple: dto.embroideryModeSimple,
+        embroideryModeAdvanced: dto.embroideryModeAdvanced,
         isTestProduct: dto.isTestProduct,
         freeShipping: dto.freeShipping,
         freeShippingDaysMin: dto.freeShippingDaysMin !== undefined ? (dto.freeShippingDaysMin ?? null) : undefined,

@@ -253,7 +253,10 @@ export class PersonalizationService {
   async getConfigForProduct(productId: string, lang?: string) {
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, slug: true, title: true, featuredImageKey: true, personalizationTemplateId: true, status: true },
+      select: {
+        id: true, slug: true, title: true, featuredImageKey: true, personalizationTemplateId: true, status: true,
+        embroideryModeSimple: true, embroideryModeAdvanced: true,
+      },
     });
     if (!product || product.status !== 'active' || !product.personalizationTemplateId) return null;
 
@@ -291,6 +294,11 @@ export class PersonalizationService {
 
     return {
       productId: product.id,
+      /** Which editors to offer. Both off cannot be saved; read as both on if it ever is. */
+      modes:
+        product.embroideryModeSimple || product.embroideryModeAdvanced
+          ? { simple: product.embroideryModeSimple, advanced: product.embroideryModeAdvanced }
+          : { simple: true, advanced: true },
       template: {
         id: template.id,
         key: template.key,

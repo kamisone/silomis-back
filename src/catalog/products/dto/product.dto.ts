@@ -125,6 +125,9 @@ export const CreateProductSchema = z.object({
   askCompanyName: z.boolean().optional(),
   askPhone: z.boolean().optional(),
   askAddressLine2: z.boolean().optional(),
+  /** Embroidery editors offered: "Just add my text" / "Design it myself". At least one stays on. */
+  embroideryModeSimple: z.boolean().optional(),
+  embroideryModeAdvanced: z.boolean().optional(),
   articlesTitle: z.string().max(300).nullish(),
   /** Blog posts to show on this product's page. Writes the same
    *  BlogProductReference join a post used to own from its own side, so a link

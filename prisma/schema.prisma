@@ -527,6 +527,12 @@ model Product {
   askPhone        Boolean @default(false)
   askAddressLine2 Boolean @default(false)
 
+  /// Which embroidery editors this product offers: "Just add my text"
+  /// (simple) and "Design it myself" (advanced). Both on by default; at least
+  /// one is always on. With only one, the editor skips the mode question.
+  embroideryModeSimple   Boolean @default(true)
+  embroideryModeAdvanced Boolean @default(true)
+
   upsellingEnabled Boolean @default(false)
   upsellTiers      Json    @default("[]") // ProductUpsellTier[]
 
