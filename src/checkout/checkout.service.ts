@@ -68,6 +68,34 @@ interface ShippingContext {
   freeDaysMax: number | null;
 }
 
+interface LineForComparison {
+  variantId: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  personalizations?: { placementKey: string; text: string | null; designJson: unknown }[] | null;
+}
+
+/**
+ * Whether a draft order's lines are still exactly the cart's: same variants,
+ * quantities, prices and embroidery. Order-insensitive — lines are compared as
+ * a multiset of signatures.
+ */
+export function sameLines(cartItems: LineForComparison[], orderItems: LineForComparison[]): boolean {
+  const signature = (l: LineForComparison) =>
+    JSON.stringify([
+      l.variantId,
+      l.quantity,
+      l.unitPriceCents,
+      (l.personalizations ?? [])
+        .map((d) => [d.placementKey, d.text, d.designJson])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ]);
+  if (cartItems.length !== orderItems.length) return false;
+  const a = cartItems.map(signature).sort();
+  const b = orderItems.map(signature).sort();
+  return a.every((sig, i) => sig === b[i]);
+}
+
 @Injectable()
 export class CheckoutService {
   private readonly logger = new Logger(CheckoutService.name);
@@ -109,12 +137,31 @@ export class CheckoutService {
     // Idempotency: the cart stays "active" (and its items visible) until
     // payment is confirmed, so a page refresh during checkout must resume
     // this order rather than creating a duplicate (and double-reserving stock).
-    const existing = await this.prisma.order.findFirst({
+    let existing = await this.prisma.order.findFirst({
       where: {
         cartToken: dto.cartToken,
         status: { in: ['draft', 'awaiting_payment'] },
       },
     });
+    // A draft whose lines no longer match the cart cannot be resumed: this
+    // branch rewrites totals and addresses but never the order's items, so a
+    // customer who went back and changed the basket — personalised a cap from
+    // the cart, changed a quantity — would pay for and receive the old one,
+    // embroidery missing. Such a draft is cancelled quietly (its stock goes
+    // back) and a fresh order is built below. Only before a payment has been
+    // started: a draft with a PaymentIntent keeps the old behaviour rather
+    // than leaving a live intent pointing at a cancelled order.
+    if (existing && !existing.paymentIntentId) {
+      const orderLines = await this.prisma.orderItem.findMany({
+        where: { orderId: existing.id },
+        include: { personalizations: true },
+      });
+      if (!sameLines(items, orderLines)) {
+        await this.ordersService.transition(existing.id, 'cancelled', 'Cart changed during checkout — order rebuilt from the cart', undefined, { silent: true });
+        existing = null;
+      }
+    }
+
     if (existing) {
       const productIds = [...new Set(items.map((i) => i.productId))];
       const subtotalCents = items.reduce(

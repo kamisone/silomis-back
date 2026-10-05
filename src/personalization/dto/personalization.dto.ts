@@ -172,6 +172,13 @@ export const AddCartItemSchema = z.object({
 
 export type AddCartItemDto = z.infer<typeof AddCartItemSchema>;
 
+/** Embroider one unit of a plain line already in the basket — see CartService.personaliseItem. */
+export const PersonaliseCartItemSchema = z.object({
+  personalizations: PersonalizationSetSchema,
+});
+
+export type PersonaliseCartItemDto = z.infer<typeof PersonaliseCartItemSchema>;
+
 /**
  * Live quote for the whole set, used by the editor on every edit (debounced).
  * The whole set rather than one design at a time, so the figure the customer

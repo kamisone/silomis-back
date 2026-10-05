@@ -34,6 +34,7 @@ export interface RequestMeta {
 }
 
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
+import { personalizationFromPrices } from '../personalization/from-price.util';
 
 const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
 
@@ -138,6 +139,8 @@ export class CartService {
     lang?: string,
     meta?: RequestMeta,
     personalizationInputs?: PersonalizationInput[],
+    /** false when this is not a new add — personaliseItem moves a unit already in the basket. */
+    opts: { track?: boolean } = {},
   ) {
     if (quantity < 1)
       throw new BadRequestException('Quantity must be at least 1');
@@ -367,6 +370,9 @@ export class CartService {
       },
     );
 
+    const cartData = await this.getOrCreate(token, undefined, lang);
+    if (opts.track === false) return cartData;
+
     await this.behaviorTracking.record({
       eventType: 'add_to_cart',
       cartToken: token,
@@ -419,12 +425,120 @@ export class CartService {
       clientUserAgent: meta?.userAgent ?? null,
     });
 
-    const cartData = await this.getOrCreate(token, undefined, lang);
     return {
       ...cartData,
       metaAddToCartEventId: metaEventId,
       tiktokAddToCartEventId: tiktokEventId,
     };
+  }
+
+  // ── Personalise a line already in the basket ─────────────────────────
+
+  /**
+   * Embroiders one unit of a plain line: the customer skipped "Personalise
+   * this piece" on the product page and is offered it again in the cart or at
+   * checkout. One unit, not the whole line — two plain caps become one plain
+   * and one embroidered, and the customer can repeat it for the other.
+   *
+   * The personalised unit is added before the plain one is taken away, so a
+   * design that fails validation (or a variant that sold out) leaves the
+   * basket exactly as it was. It goes through addItem for the pricing, the
+   * design snapshot and the preview, but untracked: nothing new was added to
+   * the basket, so no add_to_cart event and no AddToCart for the ad platforms.
+   */
+  async personaliseItem(
+    token: string,
+    itemId: string,
+    personalizationInputs: PersonalizationInput[],
+    lang?: string,
+  ) {
+    const cart = await this.ensureActiveCart(token);
+    const item = cart.items.find((i) => i.id === itemId);
+    if (!item) throw new NotFoundException('Cart item not found');
+    if (item.personalizationHash) {
+      throw new BadRequestException({ code: 'ALREADY_PERSONALISED', message: 'This item is already personalised' });
+    }
+
+    // The same options the plain line was bought with — the variant's own
+    // options are the fallback addItem already applies when there are none.
+    await this.addItem(
+      token,
+      item.variantId,
+      1,
+      this.optionValueIdsOf(item),
+      lang,
+      undefined,
+      personalizationInputs,
+      { track: false },
+    );
+
+    if (item.quantity > 1) {
+      await this.prisma.cartItem.update({ where: { id: item.id }, data: { quantity: item.quantity - 1 } });
+    } else {
+      await this.prisma.cartItem.delete({ where: { id: item.id } });
+    }
+    // The product's total quantity is unchanged, but its lines are not:
+    // settle the tier price across them again.
+    await this.repriceProductLines(cart.id, item.productId);
+
+    return this.getOrCreate(token, undefined, lang);
+  }
+
+  /**
+   * The designs on a personalised line, as stored — what the editor reopens
+   * when the customer chooses to change their embroidery.
+   */
+  async getItemDesigns(token: string, itemId: string) {
+    const cart = await this.ensureActiveCart(token);
+    const item = cart.items.find((i) => i.id === itemId) as (CartItemWithDesign & { personalizations?: { placementKey: string; designJson: unknown }[] }) | undefined;
+    if (!item) throw new NotFoundException('Cart item not found');
+    return (item.personalizations ?? []).map((d) => ({ placementKey: d.placementKey, designJson: d.designJson }));
+  }
+
+  /**
+   * Swaps the design on a personalised line for a new one, for every unit on
+   * the line (they all carry the same design — that is what makes them one
+   * line). Same order as personaliseItem: the new line is added before the old
+   * one goes, so a refused design leaves the basket as it was. An unchanged
+   * design is a no-op — re-adding it would merge into, then delete, itself.
+   */
+  async replaceItemDesign(token: string, itemId: string, personalizationInputs: PersonalizationInput[], lang?: string) {
+    const cart = await this.ensureActiveCart(token);
+    const item = cart.items.find((i) => i.id === itemId);
+    if (!item) throw new NotFoundException('Cart item not found');
+    if (!item.personalizationHash) {
+      throw new BadRequestException({ code: 'NOT_PERSONALISED', message: 'This item has no embroidery to change' });
+    }
+
+    const designSet = await this.personalization.resolveSet(item.productId, personalizationInputs, lang);
+    if (designSet.hash === item.personalizationHash) return this.getOrCreate(token, undefined, lang);
+
+    await this.addItem(token, item.variantId, item.quantity, this.optionValueIdsOf(item), lang, undefined, personalizationInputs, { track: false });
+    await this.prisma.cartItem.delete({ where: { id: item.id } });
+    await this.repriceProductLines(cart.id, item.productId);
+    return this.getOrCreate(token, undefined, lang);
+  }
+
+  /**
+   * Takes the embroidery off a line: its units go back to the plain item,
+   * merging into the plain line of the same variant when there is one.
+   */
+  async removeItemDesign(token: string, itemId: string, lang?: string) {
+    const cart = await this.ensureActiveCart(token);
+    const item = cart.items.find((i) => i.id === itemId);
+    if (!item) throw new NotFoundException('Cart item not found');
+    if (!item.personalizationHash) return this.getOrCreate(token, undefined, lang);
+
+    await this.addItem(token, item.variantId, item.quantity, this.optionValueIdsOf(item), lang, undefined, undefined, { track: false });
+    await this.prisma.cartItem.delete({ where: { id: item.id } });
+    await this.repriceProductLines(cart.id, item.productId);
+    return this.getOrCreate(token, undefined, lang);
+  }
+
+  /** The option values a line was bought with — so a moved unit keeps them. */
+  private optionValueIdsOf(item: { optionsSnapshot: unknown }): string[] | undefined {
+    const ids = ((item.optionsSnapshot as OptionSnapshot[] | null) ?? []).map((o) => o.optionValueId).filter((id): id is string => !!id);
+    return ids.length ? ids : undefined;
   }
 
   // ── Update item quantity ─────────────────────────────────────────────
@@ -646,6 +760,10 @@ export class CartService {
         })
       : [];
     const slugMap = new Map(products.map((p) => [p.id, p.slug]));
+    // Same rule as the product page's "Personalise this piece" button: a
+    // template switched on, and not the send-in service (which is its own flow).
+    const personalizableIds = new Set(products.filter((p) => p.personalizationTemplateId && !p.isService).map((p) => p.id));
+    const fromPrices = await personalizationFromPrices(this.prisma, [...personalizableIds]);
     const freeShipMap = new Map(products.map((p) => [p.id, p.freeShipping]));
     // Position names in the language of this request — the frozen label was
     // written in whatever language the customer was browsing in when they
@@ -665,6 +783,10 @@ export class CartService {
       lineTotalCents: item.quantity * item.unitPriceCents,
       productSlug: slugMap.get(item.productId) ?? null,
       freeShipping: freeShipMap.get(item.productId) ?? false,
+      /** Embroidery can still be added to this line from the cart or checkout. */
+      personalizable: personalizableIds.has(item.productId),
+      /** Cheapest embroidery for this product, for the offer's "from €X". */
+      personalizeFromCents: fromPrices.get(item.productId) ?? null,
       // The basket has to show what is being embroidered, verbatim and for
       // every position — it is the customer's last chance to catch a spelling
       // mistake before an item that cannot be returned is made for them.

@@ -14,6 +14,7 @@ import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVaria
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
+import { personalizationFromPrices } from '../../personalization/from-price.util';
 
 /**
  * Prefix -> JSON collection, for the composite translation keys the product
@@ -742,6 +743,11 @@ export class ProductsService {
     await this.translateVariantOptionsInPlace(translated as never, lang);
     await this.translateCategoriesInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
+    // "from €X" on the Personalise button — see personalizationFromPrices.
+    if (product.personalizationTemplateId) {
+      const from = (await personalizationFromPrices(this.prisma, [product.id])).get(product.id);
+      (translated as unknown as Record<string, unknown>).personalizationFromCents = from ?? null;
+    }
     return translated;
   }
 

@@ -141,6 +141,7 @@ export class OrderEmailListener {
 
   @OnEvent(COMMERCE_EVENTS.ORDER_STATUS_CHANGED)
   async onStatusChanged(event: OrderStatusChangedEvent): Promise<void> {
+    if (event.silent) return;
     const kind = STATUS_TO_EMAIL_KIND[event.toStatus as OrderStatus];
     if (kind) {
       try {

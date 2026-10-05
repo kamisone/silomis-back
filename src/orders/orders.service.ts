@@ -219,7 +219,7 @@ export class OrdersService {
 
   // ── Transition status ─────────────────────────────────────────────────
 
-  async transition(orderId: string, toStatus: OrderStatus, note?: string, adminId?: string): Promise<Order> {
+  async transition(orderId: string, toStatus: OrderStatus, note?: string, adminId?: string, opts: { silent?: boolean } = {}): Promise<Order> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -296,6 +296,7 @@ export class OrdersService {
         fromStatus: prev,
         toStatus,
         triggeredBy: adminId ? 'admin' : 'system',
+        ...(opts.silent ? { silent: true } : {}),
       } satisfies OrderStatusChangedEvent,
       { entityId: orderId, source: 'OrdersService.transition' },
     );

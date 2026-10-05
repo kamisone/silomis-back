@@ -58,6 +58,8 @@ export interface OrderStatusChangedEvent {
   fromStatus: string | null;
   toStatus: string;
   triggeredBy: 'system' | 'admin' | 'webhook';
+  /** Bookkeeping nobody needs telling about — no customer email, no admin alert (e.g. a draft rebuilt because the cart changed). */
+  silent?: boolean;
 }
 
 export interface SendInStatusChangedEvent {

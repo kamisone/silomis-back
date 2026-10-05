@@ -13,6 +13,12 @@ describe('AdminOrderAlertListener — order_cancelled', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
+  it('does not alert about a draft rebuilt because the cart changed (silent)', async () => {
+    const { listener, notify } = make();
+    await listener.onStatusChanged({ orderId: 'o1', fromStatus: 'draft', toStatus: 'cancelled', triggeredBy: 'system', silent: true });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it('still alerts when the system cancels (payment failed, reservation expired)', async () => {
     const { listener, notify } = make();
     await listener.onStatusChanged({ orderId: 'o1', fromStatus: 'awaiting_payment', toStatus: 'cancelled', triggeredBy: 'system' });

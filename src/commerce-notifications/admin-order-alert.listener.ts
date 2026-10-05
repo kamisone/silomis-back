@@ -71,6 +71,7 @@ export class AdminOrderAlertListener {
     // (email + SMS) about its own action is noise. Only cancellations the
     // system makes on its own (payment failed, reservation expired) alert.
     if (event.triggeredBy === 'admin') return;
+    if (event.silent) return;
     try {
       const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true } });
       if (!order) return;
