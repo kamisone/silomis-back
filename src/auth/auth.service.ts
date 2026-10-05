@@ -1,4 +1,5 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -87,20 +88,22 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token expired');
     }
 
+    // The replacement's id is chosen before the claim and written by the claim
+    // itself, so "revoked" and "replaced by" become visible in the same
+    // instant. They used to be two writes with the new token minted in
+    // between: a concurrent request landing in that gap saw a revoked token
+    // with no replacement, took it for theft, and revoked every session the
+    // admin had — the winner's brand-new token included. That is what logged
+    // admins out after an idle spell: the first click after the access token
+    // expires fires several refreshes at once, from several front pods.
+    const replacementId = randomUUID();
     const claim = await this.prisma.refreshToken.updateMany({
       where: { id: stored.id, revokedAt: null },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: new Date(), replacedByTokenId: replacementId },
     });
 
     if (claim.count === 1) {
-      // We won the claim — mint the replacement and record the link.
-      const tokens = await this.issueTokens(payload.sub, payload.email);
-      const decoded = this.jwtService.decode<RefreshTokenPayload>(tokens.refresh_token);
-      await this.prisma.refreshToken.update({
-        where: { id: stored.id },
-        data: { replacedByTokenId: decoded.jti },
-      });
-      return tokens;
+      return this.issueTokens(payload.sub, payload.email, replacementId);
     }
 
     // Someone else already claimed this token between our read and our
@@ -155,11 +158,12 @@ export class AuthService {
     }
   }
 
-  private async issueTokens(sub: string, email: string): Promise<TokenPair> {
+  private async issueTokens(sub: string, email: string, refreshTokenId?: string): Promise<TokenPair> {
     const access_token = this.jwtService.sign({ sub, email });
 
     const record = await this.prisma.refreshToken.create({
       data: {
+        ...(refreshTokenId ? { id: refreshTokenId } : {}),
         adminId: sub,
         expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
       },
