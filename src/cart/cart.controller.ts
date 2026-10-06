@@ -28,7 +28,7 @@ export class CartController {
     return this.carts.addItem(token, body.variantId, body.quantity, body.selectedOptionValueIds, lang, { ip: extractIp(req), userAgent: req.headers['user-agent'], source: platformFromSource(body.referrer, body.utmSource) }, body.personalizations);
   }
 
-  /** Embroider one unit of a plain line already in the basket. */
+  /** Embroider units of a plain line already in the basket, one design per unit. */
   @Post(':token/items/:itemId/personalise')
   personaliseItem(
     @Param('token') token: string,
@@ -36,7 +36,7 @@ export class CartController {
     @Body(new ZodValidationPipe(PersonaliseCartItemSchema)) body: PersonaliseCartItemDto,
     @Query('lang') lang: string | undefined,
   ) {
-    return this.carts.personaliseItem(token, itemId, body.personalizations, lang);
+    return this.carts.personaliseItem(token, itemId, body.items ?? [body.personalizations!], lang);
   }
 
   /** The stored designs on a personalised line — reopened by the editor to change them. */

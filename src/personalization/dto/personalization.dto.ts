@@ -172,10 +172,17 @@ export const AddCartItemSchema = z.object({
 
 export type AddCartItemDto = z.infer<typeof AddCartItemSchema>;
 
-/** Embroider one unit of a plain line already in the basket — see CartService.personaliseItem. */
-export const PersonaliseCartItemSchema = z.object({
-  personalizations: PersonalizationSetSchema,
-});
+/**
+ * Embroider units of a plain line already in the basket — see
+ * CartService.personaliseItem. `items` is one design per unit (the editor's
+ * per-item flow); `personalizations` alone is one unit, as before.
+ */
+export const PersonaliseCartItemSchema = z
+  .object({
+    personalizations: PersonalizationSetSchema.optional(),
+    items: z.array(PersonalizationSetSchema).min(1).max(20).optional(),
+  })
+  .refine((b) => !!b.personalizations !== !!b.items, { message: 'Send either personalizations or items.' });
 
 export type PersonaliseCartItemDto = z.infer<typeof PersonaliseCartItemSchema>;
 

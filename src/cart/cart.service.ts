@@ -435,21 +435,22 @@ export class CartService {
   // ── Personalise a line already in the basket ─────────────────────────
 
   /**
-   * Embroiders one unit of a plain line: the customer skipped "Personalise
-   * this piece" on the product page and is offered it again in the cart or at
-   * checkout. One unit, not the whole line — two plain caps become one plain
-   * and one embroidered, and the customer can repeat it for the other.
+   * Embroiders units of a plain line: the customer skipped "Personalise this
+   * piece" on the product page and is offered it again in the cart or at
+   * checkout. One design per unit — the editor asks for every item of the
+   * line, as it does on the product page — and units sharing a design become
+   * one line. Fewer designs than units leaves the rest plain.
    *
-   * The personalised unit is added before the plain one is taken away, so a
-   * design that fails validation (or a variant that sold out) leaves the
-   * basket exactly as it was. It goes through addItem for the pricing, the
+   * Every design is validated before anything moves, and the personalised
+   * units are added before the plain ones are taken away, so a design that
+   * fails validation (or a variant that sold out) leaves the basket as it was. It goes through addItem for the pricing, the
    * design snapshot and the preview, but untracked: nothing new was added to
    * the basket, so no add_to_cart event and no AddToCart for the ad platforms.
    */
   async personaliseItem(
     token: string,
     itemId: string,
-    personalizationInputs: PersonalizationInput[],
+    units: PersonalizationInput[][],
     lang?: string,
   ) {
     const cart = await this.ensureActiveCart(token);
@@ -458,22 +459,29 @@ export class CartService {
     if (item.personalizationHash) {
       throw new BadRequestException({ code: 'ALREADY_PERSONALISED', message: 'This item is already personalised' });
     }
+    // The line changed since the editor opened (quantity lowered elsewhere).
+    if (units.length > item.quantity) {
+      throw new BadRequestException({ code: 'LINE_QUANTITY_CHANGED', message: 'This line has fewer items than designs' });
+    }
+
+    // Resolve every design first (throws on the first refused one), and group
+    // units that carry the same design into one add.
+    const groups = new Map<string, { count: number; inputs: PersonalizationInput[] }>();
+    for (const inputs of units) {
+      const { hash } = await this.personalization.resolveSet(item.productId, inputs, lang);
+      const g = groups.get(hash) ?? { count: 0, inputs };
+      g.count += 1;
+      groups.set(hash, g);
+    }
 
     // The same options the plain line was bought with — the variant's own
     // options are the fallback addItem already applies when there are none.
-    await this.addItem(
-      token,
-      item.variantId,
-      1,
-      this.optionValueIdsOf(item),
-      lang,
-      undefined,
-      personalizationInputs,
-      { track: false },
-    );
+    for (const g of groups.values()) {
+      await this.addItem(token, item.variantId, g.count, this.optionValueIdsOf(item), lang, undefined, g.inputs, { track: false });
+    }
 
-    if (item.quantity > 1) {
-      await this.prisma.cartItem.update({ where: { id: item.id }, data: { quantity: item.quantity - 1 } });
+    if (item.quantity > units.length) {
+      await this.prisma.cartItem.update({ where: { id: item.id }, data: { quantity: item.quantity - units.length } });
     } else {
       await this.prisma.cartItem.delete({ where: { id: item.id } });
     }

@@ -2,12 +2,13 @@ import { CartService } from './cart.service';
 import { sameLines } from '../checkout/checkout.service';
 
 /**
- * Personalising a line already in the basket: one unit moves from the plain
- * line to a new embroidered one, and the basket is untouched if the design
+ * Personalising a line already in the basket: units move from the plain
+ * line to embroidered ones (one design per unit), and the basket is untouched if the design
  * is refused.
  */
 describe('CartService.personaliseItem', () => {
   const DESIGN = [{ placementKey: 'front', text: 'LEA' }] as never;
+  const OTHER = [{ placementKey: 'front', text: 'TOM' }] as never;
 
   function setup(line: { quantity: number; personalizationHash?: string }) {
     const item = {
@@ -22,7 +23,14 @@ describe('CartService.personaliseItem', () => {
       cart: { findFirst: jest.fn(async () => ({ id: 'cart-1', items: [item] })) },
       cartItem: { update: jest.fn(), delete: jest.fn() },
     };
-    const service = new CartService(prisma as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    // The design's text stands in for its hash.
+    const personalization = {
+      resolveSet: jest.fn(async (_p: string, inputs: { text: string }[]) => {
+        if (inputs[0].text === 'BAD') throw new Error('TEXT_TOO_LONG');
+        return { hash: inputs[0].text, designs: [], totalCents: 0 };
+      }),
+    };
+    const service = new CartService(prisma as never, {} as never, {} as never, {} as never, personalization as never, {} as never, {} as never, {} as never, {} as never);
     const addItem = jest.spyOn(service, 'addItem').mockResolvedValue({} as never);
     jest.spyOn(service as never, 'repriceProductLines').mockResolvedValue(undefined as never);
     jest.spyOn(service, 'getOrCreate').mockResolvedValue({ items: [] } as never);
@@ -32,7 +40,7 @@ describe('CartService.personaliseItem', () => {
   it('adds one embroidered unit with the same options, untracked', async () => {
     const { service, addItem } = setup({ quantity: 2 });
 
-    await service.personaliseItem('tok', 'line-1', DESIGN, 'fr');
+    await service.personaliseItem('tok', 'line-1', [DESIGN], 'fr');
 
     expect(addItem).toHaveBeenCalledWith('tok', 'var-1', 1, ['red'], 'fr', undefined, DESIGN, { track: false });
   });
@@ -40,7 +48,7 @@ describe('CartService.personaliseItem', () => {
   it('takes one unit off a plain line of two', async () => {
     const { service, prisma } = setup({ quantity: 2 });
 
-    await service.personaliseItem('tok', 'line-1', DESIGN);
+    await service.personaliseItem('tok', 'line-1', [DESIGN]);
 
     expect(prisma.cartItem.update).toHaveBeenCalledWith({ where: { id: 'line-1' }, data: { quantity: 1 } });
     expect(prisma.cartItem.delete).not.toHaveBeenCalled();
@@ -49,16 +57,42 @@ describe('CartService.personaliseItem', () => {
   it('replaces a plain line of one', async () => {
     const { service, prisma } = setup({ quantity: 1 });
 
-    await service.personaliseItem('tok', 'line-1', DESIGN);
+    await service.personaliseItem('tok', 'line-1', [DESIGN]);
 
     expect(prisma.cartItem.delete).toHaveBeenCalledWith({ where: { id: 'line-1' } });
   });
 
-  it('leaves the basket untouched when the design is refused', async () => {
-    const { service, prisma, addItem } = setup({ quantity: 1 });
-    addItem.mockRejectedValueOnce(new Error('TEXT_TOO_LONG'));
+  it('personalises every unit, one line per distinct design, and drops the plain line', async () => {
+    const { service, prisma, addItem } = setup({ quantity: 3 });
 
-    await expect(service.personaliseItem('tok', 'line-1', DESIGN)).rejects.toThrow('TEXT_TOO_LONG');
+    await service.personaliseItem('tok', 'line-1', [DESIGN, OTHER, DESIGN]);
+
+    expect(addItem).toHaveBeenCalledTimes(2);
+    expect(addItem).toHaveBeenCalledWith('tok', 'var-1', 2, ['red'], undefined, undefined, DESIGN, { track: false });
+    expect(addItem).toHaveBeenCalledWith('tok', 'var-1', 1, ['red'], undefined, undefined, OTHER, { track: false });
+    expect(prisma.cartItem.delete).toHaveBeenCalledWith({ where: { id: 'line-1' } });
+  });
+
+  it('refuses more designs than the line has units', async () => {
+    const { service, addItem } = setup({ quantity: 1 });
+
+    await expect(service.personaliseItem('tok', 'line-1', [DESIGN, OTHER])).rejects.toBeDefined();
+    expect(addItem).not.toHaveBeenCalled();
+  });
+
+  it('adds nothing when any one design is refused', async () => {
+    const { service, prisma, addItem } = setup({ quantity: 2 });
+
+    await expect(service.personaliseItem('tok', 'line-1', [DESIGN, [{ placementKey: 'front', text: 'BAD' }] as never])).rejects.toThrow('TEXT_TOO_LONG');
+    expect(addItem).not.toHaveBeenCalled();
+    expect(prisma.cartItem.update).not.toHaveBeenCalled();
+  });
+
+  it('leaves the basket untouched when the add is refused', async () => {
+    const { service, prisma, addItem } = setup({ quantity: 1 });
+    addItem.mockRejectedValueOnce(new Error('OUT_OF_STOCK'));
+
+    await expect(service.personaliseItem('tok', 'line-1', [DESIGN])).rejects.toThrow('OUT_OF_STOCK');
     expect(prisma.cartItem.delete).not.toHaveBeenCalled();
     expect(prisma.cartItem.update).not.toHaveBeenCalled();
   });
@@ -66,7 +100,7 @@ describe('CartService.personaliseItem', () => {
   it('refuses a line that is already personalised', async () => {
     const { service, addItem } = setup({ quantity: 1, personalizationHash: 'abc' });
 
-    await expect(service.personaliseItem('tok', 'line-1', DESIGN)).rejects.toBeDefined();
+    await expect(service.personaliseItem('tok', 'line-1', [DESIGN])).rejects.toBeDefined();
     expect(addItem).not.toHaveBeenCalled();
   });
 });
