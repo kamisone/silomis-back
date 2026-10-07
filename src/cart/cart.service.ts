@@ -34,7 +34,7 @@ export interface RequestMeta {
 }
 
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
-import { personalizationFromPrices } from '../personalization/from-price.util';
+import { personalizationOffers } from '../personalization/from-price.util';
 
 const ABANDONMENT_DELAY_MS = 60 * 60 * 1000; // 1 hour
 
@@ -771,7 +771,7 @@ export class CartService {
     // Same rule as the product page's "Personalise this piece" button: a
     // template switched on, and not the send-in service (which is its own flow).
     const personalizableIds = new Set(products.filter((p) => p.personalizationTemplateId && !p.isService).map((p) => p.id));
-    const fromPrices = await personalizationFromPrices(this.prisma, [...personalizableIds]);
+    const offers = await personalizationOffers(this.prisma, [...personalizableIds], lang);
     const freeShipMap = new Map(products.map((p) => [p.id, p.freeShipping]));
     // Position names in the language of this request — the frozen label was
     // written in whatever language the customer was browsing in when they
@@ -794,7 +794,10 @@ export class CartService {
       /** Embroidery can still be added to this line from the cart or checkout. */
       personalizable: personalizableIds.has(item.productId),
       /** Cheapest embroidery for this product, for the offer's "from €X". */
-      personalizeFromCents: fromPrices.get(item.productId) ?? null,
+      personalizeFromCents: offers.get(item.productId)?.fromCents ?? null,
+      /** Positions embroidered for free, so the offer can say where. */
+      personalizeFreePositions: offers.get(item.productId)?.freePositions ?? [],
+      personalizeAllFree: offers.get(item.productId)?.allFree ?? false,
       // The basket has to show what is being embroidered, verbatim and for
       // every position — it is the customer's last chance to catch a spelling
       // mistake before an item that cannot be returned is made for them.

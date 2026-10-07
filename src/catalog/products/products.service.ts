@@ -14,7 +14,7 @@ import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVaria
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
-import { personalizationFromPrices } from '../../personalization/from-price.util';
+import { personalizationOffers } from '../../personalization/from-price.util';
 
 /**
  * Prefix -> JSON collection, for the composite translation keys the product
@@ -743,10 +743,13 @@ export class ProductsService {
     await this.translateVariantOptionsInPlace(translated as never, lang);
     await this.translateCategoriesInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
-    // "from €X" on the Personalise button — see personalizationFromPrices.
+    // "from €X" / "Free on …" on the Personalise button — see personalizationOffers.
     if (product.personalizationTemplateId) {
-      const from = (await personalizationFromPrices(this.prisma, [product.id])).get(product.id);
-      (translated as unknown as Record<string, unknown>).personalizationFromCents = from ?? null;
+      const offer = (await personalizationOffers(this.prisma, [product.id], lang)).get(product.id);
+      const out = translated as unknown as Record<string, unknown>;
+      out.personalizationFromCents = offer?.fromCents ?? null;
+      out.personalizationFreePositions = offer?.freePositions ?? [];
+      out.personalizationAllFree = offer?.allFree ?? false;
     }
     return translated;
   }
