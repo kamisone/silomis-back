@@ -2,7 +2,15 @@ import { z } from 'zod';
 
 export const AdjustStockSchema = z.object({
   delta: z.number().int().refine((d) => d !== 0, 'delta must not be zero'),
-  note: z.string().min(1).max(500),
+  // Optional, like bulk-adjust's: the note is a reason for the movement log,
+  // not something an admin must type to change a number. A blank one gets the
+  // same default the inventory page already sent.
+  note: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .transform((n) => n || 'Manual adjustment'),
 });
 export type AdjustStockDto = z.infer<typeof AdjustStockSchema>;
 
