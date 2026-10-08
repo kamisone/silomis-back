@@ -2218,6 +2218,11 @@ enum ReplayEventType {
   click
   scroll
   navigation
+  /// What happened inside the payment step — form loaded or failed, method
+  /// chosen, Pay pressed, the error shown. The card form is Stripe's iframe,
+  /// which the recording cannot see into, so without these a replay of the
+  /// payment step is an empty box. `meta.stage` says which.
+  payment
 }
 
 /// Lightweight timeline markers (NOT the rrweb recording itself — see

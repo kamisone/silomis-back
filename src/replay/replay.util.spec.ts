@@ -52,7 +52,7 @@ describe('batchByteSize', () => {
 
 describe('ReplayMarkerSchema (via IngestReplayBatchSchema)', () => {
   it('accepts every type in the ReplayEventType Prisma enum', () => {
-    for (const type of ['session_start', 'session_end', 'click', 'scroll', 'navigation']) {
+    for (const type of ['session_start', 'session_end', 'click', 'scroll', 'navigation', 'payment']) {
       const parsed = IngestReplayBatchSchema.safeParse({ markers: [{ type, timestampMs: 0 }] });
       expect(parsed.success).toBe(true);
     }

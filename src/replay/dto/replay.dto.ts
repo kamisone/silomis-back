@@ -15,7 +15,7 @@ export type StartReplaySessionDto = z.infer<typeof StartReplaySessionSchema>;
 
 /** Must stay in sync with the ReplayEventType Prisma enum — an unlisted type fails validation and drops the whole batch. */
 export const ReplayMarkerSchema = z.object({
-  type: z.enum(['session_start', 'session_end', 'click', 'scroll', 'navigation']),
+  type: z.enum(['session_start', 'session_end', 'click', 'scroll', 'navigation', 'payment']),
   timestampMs: z.number().int().min(0),
   label: z.string().max(500).nullish(),
   meta: z.record(z.string(), z.unknown()).nullish(),

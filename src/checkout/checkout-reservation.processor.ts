@@ -65,5 +65,10 @@ export class CheckoutReservationProcessor extends DlqAwareWorker {
     // transition() handles inventory release + status history.
     await this.ordersService.transition(orderId, 'cancelled', 'Reservation expired — payment timeout');
     this.logger.log(`Order ${orderId} cancelled and inventory released`);
+    // A failed attempt no longer cancels on the spot (the customer may retry);
+    // this is where "your payment did not go through" is finally sent.
+    await this.payment.announceFailedPaymentIfAny(orderId, order.paymentIntentId).catch((err) =>
+      this.logger.warn(`Could not announce the failed payment of ${orderId}: ${(err as Error).message}`),
+    );
   }
 }

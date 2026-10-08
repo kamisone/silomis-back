@@ -25,11 +25,32 @@ const REFUNDABLE_STATUSES: OrderStatus[] = ['paid', 'processing', 'shipped', 'de
  * committed, so the total must not move under them.
  */
 /**
- * Checkout takes cards and nothing else. Left unset, this API version turns on
- * automatic payment methods, and the form then offers Link and whatever else
- * the dashboard has enabled — extra choices between the customer and paying.
+ * Checkout offers whatever payment methods the Stripe dashboard enables
+ * (cards, Apple Pay / Google Pay, iDEAL, Bancontact, PayPal, Klarna, BLIK…)
+ * and Stripe shows each customer the ones that fit their country, currency
+ * and device. Card-only cost sales: much of Europe does not pay online by
+ * card, and a phone shopper on an unknown shop would rather tap Apple Pay
+ * than type sixteen digits.
+ *
+ * Except methods that settle days later — a direct debit, a Multibanco
+ * voucher, a bank transfer. An order is embroidered the day it is paid, and
+ * its stock reservation cannot be held for a week on a promise.
+ *
+ * Link is not on this list (Stripe does not accept it here); it is switched
+ * off in the Payment Element instead (`wallets.link: "never"`) and should be
+ * switched off in the dashboard too.
  */
-const CARD_ONLY = { payment_method_types: ['card'] };
+const PAYMENT_METHODS = {
+  automatic_payment_methods: { enabled: true },
+  excluded_payment_method_types: ['sepa_debit', 'multibanco', 'customer_balance'],
+} satisfies Pick<Stripe.PaymentIntentCreateParams, 'automatic_payment_methods' | 'excluded_payment_method_types'>;
+
+/**
+ * Intent states nobody is in the middle of paying: safe to cancel and
+ * replace. `requires_action` is excluded — that is a 3-D Secure challenge or
+ * a bank redirect in progress.
+ */
+const REPLACEABLE_INTENT_STATUSES = new Set<string>(['requires_payment_method', 'requires_confirmation']);
 
 const AMOUNT_MUTABLE_INTENT_STATUSES = new Set<string>(['requires_payment_method', 'requires_confirmation', 'requires_action']);
 
@@ -114,7 +135,25 @@ export class ShopPaymentService {
 
   // ── Create payment intent for a shop order ──────────────────────────────
 
+  /**
+   * The intent for the payment form, plus when the order's stock hold now
+   * runs out: a new intent restarts the clock, and so does a failed attempt
+   * (handlePaymentFailed), so the countdown the customer sees has to be read
+   * back rather than kept from when the order was first created.
+   */
   async createPaymentIntent(orderId: string): Promise<{
+    clientSecret: string;
+    paymentIntentId: string;
+    reservationExpiresAt: string | null;
+    metaAddPaymentInfoEventId?: string;
+    tiktokAddPaymentInfoEventId?: string;
+  }> {
+    const result = await this.mintOrReuseIntent(orderId);
+    const hold = await this.prisma.order.findUnique({ where: { id: orderId }, select: { reservationExpiresAt: true } });
+    return { ...result, reservationExpiresAt: hold?.reservationExpiresAt?.toISOString() ?? null };
+  }
+
+  private async mintOrReuseIntent(orderId: string): Promise<{
     clientSecret: string;
     paymentIntentId: string;
     metaAddPaymentInfoEventId?: string;
@@ -137,23 +176,24 @@ export class ShopPaymentService {
     // Reuse existing intent if already created
     if (order.paymentIntentId) {
       const existing = await this.stripe.paymentIntents.retrieve(order.paymentIntentId);
-      if (existing.status !== 'canceled') {
+      // An intent minted while checkout was card-only offers cards and
+      // nothing else, and an intent's methods cannot be switched to automatic
+      // afterwards — replace it, as long as nobody is mid-payment on it.
+      const legacyCardOnly = !existing.automatic_payment_methods?.enabled && REPLACEABLE_INTENT_STATUSES.has(existing.status);
+      if (legacyCardOnly) {
+        await this.stripe.paymentIntents.cancel(existing.id).catch((err) => this.logger.warn(`Could not cancel card-only intent ${existing.id}: ${(err as Error).message}`));
+        this.logger.log(`Replacing card-only PaymentIntent ${existing.id} for order ${order.orderNumber}`);
+      } else if (existing.status !== 'canceled') {
         // The customer can step back from payment and change shipping, which
         // moves the total. Without re-syncing, Stripe would still hold the
         // amount from the first visit and charge the wrong sum. Updating
         // keeps the same intent — and therefore the same client secret — so
         // the payment form does not have to be rebuilt.
-        // An intent minted before checkout went card-only still offers every
-        // method the dashboard enables; narrow it while it can be changed.
-        const cardOnly = existing.payment_method_types?.join() === 'card';
-        if (existing.amount !== order.totalCents || (!cardOnly && AMOUNT_MUTABLE_INTENT_STATUSES.has(existing.status))) {
+        if (existing.amount !== order.totalCents) {
           if (!AMOUNT_MUTABLE_INTENT_STATUSES.has(existing.status)) {
             throw new BadRequestException('Payment is already in progress for this order — it can no longer be changed');
           }
-          const updated = await this.stripe.paymentIntents.update(existing.id, {
-            amount: order.totalCents,
-            ...CARD_ONLY,
-          });
+          const updated = await this.stripe.paymentIntents.update(existing.id, { amount: order.totalCents });
           this.logger.log(`Re-synced PaymentIntent ${existing.id} for order ${order.orderNumber}: ${existing.amount} -> ${order.totalCents} cents`);
           const tracked1 = await this.trackAddPaymentInfo(order);
           return {
@@ -177,14 +217,17 @@ export class ShopPaymentService {
       {
         amount: order.totalCents,
         currency: 'eur',
-        ...CARD_ONLY,
+        ...PAYMENT_METHODS,
         metadata: {
           orderId: order.id,
           orderNumber: order.orderNumber,
           platform: 'silomis-shop',
         },
       },
-      { idempotencyKey: `shop-order-${order.id}` },
+      // One key per intent this order has had: a replacement for a cancelled
+      // or card-only intent must not be answered, within Stripe's 24-hour
+      // idempotency window, with the very intent it replaces.
+      { idempotencyKey: order.paymentIntentId ? `shop-order-${order.id}-after-${order.paymentIntentId}` : `shop-order-${order.id}` },
     );
 
     await this.prisma.order.update({
@@ -454,21 +497,47 @@ export class ShopPaymentService {
     });
     if (!isNew) return;
 
-    // Release inventory by cancelling the order immediately on payment
-    // failure. Without this, the order stays in awaiting_payment until the
-    // reservation-expiry job fires.
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-    });
-    if (order && (order.status === 'draft' || order.status === 'awaiting_payment')) {
-      try {
-        await this.ordersService.transition(order.id, 'cancelled', 'Payment failed — inventory released');
-      } catch (err) {
-        this.logger.warn(`Could not cancel order ${orderId} on payment failure: ${(err as Error).message}`);
-      }
-    }
+    // A failed attempt is not a failed order. Stripe puts the intent back to
+    // requires_payment_method and the customer can try again on the same
+    // form: a declined card, a 3-D Secure closed by mistake, an iDEAL page
+    // backed out of. Cancelling here used to strand every one of them — the
+    // retry was refused ("does not require payment"), or worse, succeeded
+    // against an order already cancelled.
+    //
+    // So the order stays open and the clock restarts, giving them a full
+    // reservation to retry in. If they never do, the reservation timer
+    // cancels it and only then is the customer emailed (and the desk
+    // alerted) — see CheckoutReservationProcessor. An email saying "payment
+    // failed" seconds before the second card goes through helps nobody.
+    await this.ordersService.extendReservation(orderId).catch((err) =>
+      this.logger.warn(`Could not extend the reservation of ${orderId} after a failed attempt: ${(err as Error).message}`),
+    );
+    this.logger.log(`Payment attempt failed for order ${orderId} (${intent.last_payment_error?.code ?? 'no code'}) — left open for a retry`);
+  }
 
-    this.eventBus.emit(COMMERCE_EVENTS.PAYMENT_FAILED, { orderId, paymentIntentId: intent.id }, { entityId: orderId, source: 'ShopPaymentService.webhook' });
+  /**
+   * Whether this order saw a failed payment attempt — what tells the
+   * reservation timer that a cancellation is "payment failed" (worth an email
+   * with a retry link) rather than a checkout simply left open.
+   */
+  private async hadFailedAttempt(orderId: string): Promise<boolean> {
+    const row = await this.prisma.paymentTransaction.findFirst({ where: { orderId, type: 'charge', status: 'failed' }, select: { id: true } });
+    return !!row;
+  }
+
+  /**
+   * Called by the reservation timer once it has cancelled an order: if the
+   * customer had tried to pay and failed, this is the moment to tell them
+   * (email with a retry link) and the desk (alert). A checkout simply left
+   * open is the abandoned-cart flow's business, not this one's.
+   */
+  async announceFailedPaymentIfAny(orderId: string, paymentIntentId: string | null): Promise<void> {
+    if (!(await this.hadFailedAttempt(orderId))) return;
+    this.eventBus.emit(
+      COMMERCE_EVENTS.PAYMENT_FAILED,
+      { orderId, paymentIntentId: paymentIntentId ?? '' },
+      { entityId: orderId, source: 'CheckoutReservationProcessor' },
+    );
   }
 
   private async handleChargeRefunded(event: Stripe.Event): Promise<void> {

@@ -355,7 +355,10 @@ export class OrdersService {
     // Anything cancelled by a person stays cancelled and is left to them.
     if (order.status === 'cancelled') {
       const last = await this.prisma.orderStatusHistory.findFirst({ where: { orderId }, orderBy: { createdAt: 'desc' } });
-      const byTimeout = !!last && last.toStatus === 'cancelled' && !last.adminId && /Reservation expired/.test(last.note ?? '');
+      // "Payment failed" is the note a failed attempt used to cancel with,
+      // before failures stopped cancelling: those orders are as restorable as
+      // a timeout — nobody chose to cancel them.
+      const byTimeout = !!last && last.toStatus === 'cancelled' && !last.adminId && /Reservation expired|Payment failed/.test(last.note ?? '');
       if (!byTimeout) throw new BadRequestException('Payment received for an order that was cancelled by hand — refund it or restore it manually');
       await this.prisma.$transaction(async (tx) => {
         const items = await tx.orderItem.findMany({ where: { orderId } });

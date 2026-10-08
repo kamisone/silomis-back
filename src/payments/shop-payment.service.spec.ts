@@ -98,7 +98,7 @@ describe('ShopPaymentService.intentState', () => {
  * Checkout takes cards only: no Link, no wallets-by-dashboard, nothing else the
  * account happens to have switched on.
  */
-describe('ShopPaymentService.createPaymentIntent — card only', () => {
+describe('ShopPaymentService.createPaymentIntent — payment methods', () => {
   function makeIntentService(existing: Record<string, unknown> | null) {
     const order = { id: 'o1', orderNumber: 'ORD-1', status: 'awaiting_payment', totalCents: 990, paymentIntentId: existing ? 'pi_1' : null };
     const stripe = {
@@ -106,6 +106,7 @@ describe('ShopPaymentService.createPaymentIntent — card only', () => {
         retrieve: jest.fn(async () => existing),
         create: jest.fn(async () => ({ id: 'pi_new', client_secret: 'cs_new' })),
         update: jest.fn(async () => ({ id: 'pi_1', client_secret: 'cs_1' })),
+        cancel: jest.fn(async () => ({ id: 'pi_1', status: 'canceled' })),
       },
     };
     const prisma = { order: { findUnique: jest.fn(async () => order), update: jest.fn(async () => order) } };
@@ -115,26 +116,84 @@ describe('ShopPaymentService.createPaymentIntent — card only', () => {
     );
     return { s, stripe };
   }
+  const automatic = { automatic_payment_methods: { enabled: true } };
 
-  it('asks Stripe for a card payment and nothing else', async () => {
+  it('lets the dashboard decide the methods, minus the ones that settle days later', async () => {
     const { s, stripe } = makeIntentService(null);
     await s.createPaymentIntent('o1');
-    expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
-      expect.objectContaining({ payment_method_types: ['card'] }),
-      expect.anything(),
-    );
+    const [params, opts] = stripe.paymentIntents.create.mock.calls[0] as unknown as [Record<string, unknown>, Record<string, unknown>];
+    expect(params).not.toHaveProperty('payment_method_types');
+    expect(params).toMatchObject({ ...automatic, excluded_payment_method_types: expect.arrayContaining(['sepa_debit', 'multibanco', 'customer_balance']) });
+    expect(opts).toEqual({ idempotencyKey: 'shop-order-o1' });
   });
 
-  it('narrows an intent created before checkout went card-only', async () => {
-    const { s, stripe } = makeIntentService({ id: 'pi_1', status: 'requires_payment_method', amount: 990, payment_method_types: ['card', 'link'] });
-    await s.createPaymentIntent('o1');
-    expect(stripe.paymentIntents.update).toHaveBeenCalledWith('pi_1', expect.objectContaining({ payment_method_types: ['card'] }));
+  it('replaces a card-only intent nobody is paying on, under a fresh idempotency key', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', status: 'requires_payment_method', amount: 990, payment_method_types: ['card'], automatic_payment_methods: null });
+    const res = await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.cancel).toHaveBeenCalledWith('pi_1');
+    expect(stripe.paymentIntents.create).toHaveBeenCalledWith(expect.objectContaining(automatic), { idempotencyKey: 'shop-order-o1-after-pi_1' });
+    expect(res.clientSecret).toBe('cs_new');
   });
 
-  it('leaves a card-only intent at the right amount untouched', async () => {
-    const { s, stripe } = makeIntentService({ id: 'pi_1', client_secret: 'cs_1', status: 'requires_payment_method', amount: 990, payment_method_types: ['card'] });
+  it('never replaces a card-only intent mid-3-D Secure', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', client_secret: 'cs_1', status: 'requires_action', amount: 990, payment_method_types: ['card'], automatic_payment_methods: null });
+    const res = await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.cancel).not.toHaveBeenCalled();
+    expect(res.clientSecret).toBe('cs_1');
+  });
+
+  it('reuses a current intent at the right amount untouched', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', client_secret: 'cs_1', status: 'requires_payment_method', amount: 990, ...automatic });
     const res = await s.createPaymentIntent('o1');
     expect(stripe.paymentIntents.update).not.toHaveBeenCalled();
+    expect(stripe.paymentIntents.create).not.toHaveBeenCalled();
     expect(res.clientSecret).toBe('cs_1');
+  });
+
+  it('re-syncs the amount on a current intent when the total moved', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', client_secret: 'cs_1', status: 'requires_payment_method', amount: 500, ...automatic });
+    await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.update).toHaveBeenCalledWith('pi_1', { amount: 990 });
+  });
+
+  it('creates a new intent when the old one was cancelled, without reusing its key', async () => {
+    const { s, stripe } = makeIntentService({ id: 'pi_1', status: 'canceled', amount: 990, ...automatic });
+    await s.createPaymentIntent('o1');
+    expect(stripe.paymentIntents.create).toHaveBeenCalledWith(expect.anything(), { idempotencyKey: 'shop-order-o1-after-pi_1' });
+  });
+});
+
+describe('ShopPaymentService — a failed payment attempt', () => {
+  function makeFailService(opts: { failedRows?: number } = {}) {
+    const prisma = {
+      paymentTransaction: {
+        create: jest.fn(async () => ({})),
+        findFirst: jest.fn(async () => (opts.failedRows ? { id: 'tx1' } : null)),
+      },
+      order: { findUnique: jest.fn() },
+    };
+    const ordersService = { transition: jest.fn(), extendReservation: jest.fn(async () => undefined) };
+    const eventBus = { emit: jest.fn() };
+    const s = new ShopPaymentService({} as never, prisma as never, ordersService as never, {} as never, eventBus as never, {} as never, {} as never, {} as never);
+    return { s, ordersService, eventBus };
+  }
+  const failedEvent = { id: 'evt_1', type: 'payment_intent.payment_failed', data: { object: { id: 'pi_1', amount: 990, currency: 'eur', metadata: { orderId: 'o1' }, last_payment_error: { code: 'card_declined' } } } };
+
+  it('keeps the order open for a retry and restarts its reservation — no cancel, no email yet', async () => {
+    const { s, ordersService, eventBus } = makeFailService();
+    await (s as unknown as { handlePaymentFailed(e: unknown): Promise<void> }).handlePaymentFailed(failedEvent);
+    expect(ordersService.transition).not.toHaveBeenCalled();
+    expect(ordersService.extendReservation).toHaveBeenCalledWith('o1');
+    expect(eventBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('announces the failure once the reservation timer gives up, only if an attempt failed', async () => {
+    const failed = makeFailService({ failedRows: 1 });
+    await failed.s.announceFailedPaymentIfAny('o1', 'pi_1');
+    expect(failed.eventBus.emit).toHaveBeenCalledWith('commerce.payment.failed', { orderId: 'o1', paymentIntentId: 'pi_1' }, expect.anything());
+
+    const abandoned = makeFailService();
+    await abandoned.s.announceFailedPaymentIfAny('o1', 'pi_1');
+    expect(abandoned.eventBus.emit).not.toHaveBeenCalled();
   });
 });
