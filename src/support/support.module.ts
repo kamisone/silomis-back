@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
 import { DlqModule } from '../dlq/dlq.module';
 import { GcsModule } from '../gcs/gcs.module';
+import { SmsModule } from '../sms/sms.module';
 import { EmailModule } from '../email/email.module';
 import { OrdersModule } from '../orders/orders.module';
 import { CommerceNotificationsModule } from '../commerce-notifications/commerce-notifications.module';
@@ -34,6 +35,8 @@ import { SUPPORT_QUEUE } from './support.constants';
     GcsModule,
     // For the email telling a customer the shop has replied.
     EmailModule,
+    // ...and the SMS, for an order with a phone.
+    SmsModule,
     // For OrderAccessService: order threads authenticate on an order grant.
     OrdersModule,
   ],

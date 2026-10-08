@@ -50,6 +50,7 @@ export class TikTokEventsOrderListener {
           currency: 'EUR',
         },
         email: order.customerEmail,
+        phone: order.customerPhone,
         clientIpAddress: order.clientIpAddress,
         clientUserAgent: order.clientUserAgent,
         ttclid: order.tiktokClickId,
@@ -69,7 +70,9 @@ export class TikTokEventsOrderListener {
         where: { id: event.orderId },
         include: { items: true },
       });
-      if (!order || !order.customerEmail || !order.items.length) return;
+      // No email is no reason to drop the conversion: a phone-only order still
+      // matches on IP, user agent and click id.
+      if (!order || !order.items.length) return;
 
       await this.tiktokEvents.sendEvent({
         eventName: 'Purchase',
@@ -88,6 +91,7 @@ export class TikTokEventsOrderListener {
           currency: 'EUR',
         },
         email: order.customerEmail,
+        phone: order.customerPhone,
         clientIpAddress: order.clientIpAddress,
         clientUserAgent: order.clientUserAgent,
         ttclid: order.tiktokClickId,

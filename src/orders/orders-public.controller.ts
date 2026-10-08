@@ -85,7 +85,7 @@ export class OrdersPublicController {
     @Param('orderNumber') orderNumber: string,
     @Body(new ZodValidationPipe(OrderSessionSchema)) dto: OrderSessionDto,
   ) {
-    if (!dto.token && !dto.email)
+    if (!dto.token && !dto.email && !dto.phone)
       throw new NotFoundException('Order not found');
     const grant = await this.access.issueGrant(orderNumber, dto);
     if (!grant) throw new NotFoundException('Order not found');
@@ -109,6 +109,7 @@ export class OrdersPublicController {
     const grant = this.access.verifyGrant(rawGrant);
     await this.access.sendAccessLink(orderNumber, {
       email: dto.email,
+      phone: dto.phone,
       verifiedOrderId:
         grant?.orderNumber === orderNumber ? grant.orderId : undefined,
     });

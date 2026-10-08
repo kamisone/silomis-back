@@ -229,6 +229,7 @@ export class DocumentEmailService {
     // as the letter above it.
     const html = baseLayout(subject, body, document.customerLocale);
 
+    if (!document.customerEmail) return;
     await this.transport.send(document.customerEmail, subject, html);
     this.logger.log(
       `Document email sent to ${document.customerEmail} (${num}) [${lang}]`,

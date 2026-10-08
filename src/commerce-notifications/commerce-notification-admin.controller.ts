@@ -11,6 +11,8 @@ const SettingsPatchSchema = z
     emailEnabled: z.boolean(),
     emailAddresses: z.array(z.string().email()).max(20),
     events: z.array(z.enum(ADMIN_NOTIF_EVENTS)),
+    customerSmsEnabled: z.boolean(),
+    checkoutPhoneVerification: z.boolean(),
   })
   .partial();
 

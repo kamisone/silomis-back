@@ -8,6 +8,11 @@ function fmtCents(cents: number): string {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR' }).format(cents / 100);
 }
 
+/** Who to get back to: the email, or the phone for an order that has none. */
+function contactOf(order: { customerEmail: string | null; customerPhone: string | null }): string {
+  return order.customerEmail ?? (order.customerPhone ? `phone ${order.customerPhone}` : 'unknown customer');
+}
+
 @Injectable()
 export class AdminOrderAlertListener {
   private readonly logger = new Logger(AdminOrderAlertListener.name);
@@ -25,6 +30,7 @@ export class AdminOrderAlertListener {
         select: {
           orderNumber: true,
           customerEmail: true,
+          customerPhone: true,
           items: { select: { _count: { select: { personalizations: true } } } },
           sendInJob: { select: { itemType: true } },
         },
@@ -39,7 +45,7 @@ export class AdminOrderAlertListener {
         event: 'payment_succeeded',
         orderId: event.orderId,
         orderNumber: order.orderNumber,
-        summary: `Order ${order.orderNumber} paid by ${order.customerEmail} — ${fmtCents(event.amountCents)}${jobs ? ` — ${jobs} embroidery ${jobs === 1 ? 'job' : 'jobs'} to produce` : ''}${sendIn}`,
+        summary: `Order ${order.orderNumber} paid by ${contactOf(order)} — ${fmtCents(event.amountCents)}${jobs ? ` — ${jobs} embroidery ${jobs === 1 ? 'job' : 'jobs'} to produce` : ''}${sendIn}`,
         detailUrl: this.detailUrl(event.orderId),
       });
     } catch (err) {
@@ -50,13 +56,13 @@ export class AdminOrderAlertListener {
   @OnEvent(COMMERCE_EVENTS.PAYMENT_FAILED)
   async onPaymentFailed(event: PaymentFailedEvent): Promise<void> {
     try {
-      const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true } });
+      const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true, customerPhone: true } });
       if (!order) return;
       await this.notifications.notify({
         event: 'payment_failed',
         orderId: event.orderId,
         orderNumber: order.orderNumber,
-        summary: `Payment failed for order ${order.orderNumber} (${order.customerEmail})`,
+        summary: `Payment failed for order ${order.orderNumber} (${contactOf(order)})`,
         detailUrl: this.detailUrl(event.orderId),
       });
     } catch (err) {
@@ -73,13 +79,13 @@ export class AdminOrderAlertListener {
     if (event.triggeredBy === 'admin') return;
     if (event.silent) return;
     try {
-      const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true } });
+      const order = await this.prisma.order.findUnique({ where: { id: event.orderId }, select: { orderNumber: true, customerEmail: true, customerPhone: true } });
       if (!order) return;
       await this.notifications.notify({
         event: 'order_cancelled',
         orderId: event.orderId,
         orderNumber: order.orderNumber,
-        summary: `Order ${order.orderNumber} (${order.customerEmail}) was cancelled`,
+        summary: `Order ${order.orderNumber} (${contactOf(order)}) was cancelled`,
         detailUrl: this.detailUrl(event.orderId),
       });
     } catch (err) {

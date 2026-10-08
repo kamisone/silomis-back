@@ -13,6 +13,10 @@ export const ADMIN_NOTIF_KEYS = {
   emailEnabled: 'admin_notif_email_enabled',
   emailAddresses: 'admin_notif_email_addresses',
   events: 'admin_notif_events',
+  /** Not an admin alert: the texts customers get about their own order (CustomerSmsService). Same key. */
+  customerSmsEnabled: 'customer_sms_enabled',
+  /** Same key as CHECKOUT_PHONE_VERIFICATION_KEY (PhoneVerificationService). */
+  checkoutPhoneVerification: 'checkout_phone_verification',
 } as const;
 
 /**
@@ -52,6 +56,10 @@ export interface AdminNotifSettings {
   emailEnabled: boolean;
   emailAddresses: string[];
   events: AdminNotifEvent[];
+  /** Texts to customers (order confirmed, shipped, …) for every order with a phone. */
+  customerSmsEnabled: boolean;
+  /** A customer who gives no email confirms their phone with a texted code before ordering. */
+  checkoutPhoneVerification: boolean;
 }
 
 /**
@@ -79,4 +87,10 @@ export const ADMIN_NOTIF_DEFAULTS: AdminNotifSettings = {
     'support_message',
     'order_message',
   ],
+  // On: a customer who checked out with a phone only hears nothing otherwise.
+  customerSmsEnabled: true,
+  // Off: every code waits on the gateway phone polling, which is a delay at
+  // the most fragile moment of the funnel. Worth switching on if wrong
+  // numbers start showing up.
+  checkoutPhoneVerification: false,
 };

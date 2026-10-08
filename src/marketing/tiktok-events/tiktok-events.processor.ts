@@ -49,6 +49,7 @@ export class TikTokEventsProcessor extends DlqAwareWorker {
     // fields like email/phone/external_id get SHA-256'd per TikTok's spec.
     const user: Record<string, unknown> = {};
     if (data.customerEmailHash) user.email = data.customerEmailHash;
+    if (data.customerPhoneHash) user.phone = data.customerPhoneHash;
     if (data.clientIpAddress) user.ip = data.clientIpAddress;
     if (data.clientUserAgent) user.user_agent = data.clientUserAgent;
     if (data.ttclid) user.ttclid = data.ttclid;

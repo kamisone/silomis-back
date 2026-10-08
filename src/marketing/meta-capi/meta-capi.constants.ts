@@ -17,6 +17,8 @@ export interface MetaCapiEventJobData {
   customData: Record<string, unknown>;
   /** SHA-256 hex digest of the lowercased, trimmed customer email — never the raw email. */
   customerEmailHash: string | null;
+  /** SHA-256 hex digest of the phone's digits (country code, no "+") — never the raw number. */
+  customerPhoneHash?: string | null;
   /** Sent as-is, never hashed — Meta's spec requires these unhashed. */
   clientIpAddress: string | null;
   clientUserAgent: string | null;

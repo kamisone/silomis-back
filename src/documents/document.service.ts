@@ -126,10 +126,13 @@ export class DocumentService {
   }
 
   async markPdfGenerated(documentId: string, storagePath: string): Promise<void> {
-    await this.prisma.document.update({
+    const doc = await this.prisma.document.update({
       where: { id: documentId },
       data: { pdfStoragePath: storagePath, pdfGeneratedAt: new Date() },
     });
+    // A phone-only order has nowhere to mail it; the receipt stays available
+    // from the order's tracking page and the admin.
+    if (!doc.customerEmail) return;
     await this.queue.add(
       'send-email',
       { documentId } satisfies DocumentEmailJob,

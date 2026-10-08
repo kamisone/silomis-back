@@ -27,6 +27,8 @@ import {
   PricingResult,
 } from '../promotions/pricing-engine.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
+import { toE164 } from '../common/utils/phone';
+import { PHONE_VERIFICATION_ERRORS, PhoneVerificationService } from './phone-verification.service';
 import {
   CHECKOUT_RESERVATION_QUEUE,
   RESERVATION_TTL_MS,
@@ -96,6 +98,16 @@ export function sameLines(cartItems: LineForComparison[], orderItems: LineForCom
   return a.every((sig, i) => sig === b[i]);
 }
 
+/**
+ * The name typed at checkout: the one `name` field, or — from a form opened
+ * before the checkout asked for a single name — first and last joined.
+ * Inner runs of spaces collapse, so "Jean   Dupont" is stored as typed meant.
+ */
+function personName(dto: Pick<InitiateCheckoutDto, 'name' | 'firstName' | 'lastName'>): string {
+  const raw = dto.name?.trim() || `${dto.firstName ?? ''} ${dto.lastName ?? ''}`;
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
 @Injectable()
 export class CheckoutService {
   private readonly logger = new Logger(CheckoutService.name);
@@ -112,6 +124,7 @@ export class CheckoutService {
     private readonly pricingEngine: PricingEngineService,
     private readonly personalization: PersonalizationService,
     private readonly sendIn: SendInService,
+    private readonly phoneVerification: PhoneVerificationService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
   ) {}
@@ -133,6 +146,10 @@ export class CheckoutService {
     if (!cart.items.length) throw new BadRequestException('Cart is empty');
 
     const items = cart.items;
+    const contact = await this.normalizeContact(dto);
+    const phoneVerifiedAt = await this.checkPhoneVerified(dto.cartToken, contact);
+    // Consent only means something with a number to text.
+    const smsOptIn = !!contact.phone && dto.smsOptIn === true;
 
     // Idempotency: the cart stays "active" (and its items visible) until
     // payment is confirmed, so a page refresh during checkout must resume
@@ -178,13 +195,16 @@ export class CheckoutService {
       const updated = await this.prisma.order.update({
         where: { id: existing.id },
         data: {
-          customerEmail: dto.email,
+          customerEmail: contact.email,
           customerName:
-            `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+            personName(dto) ||
             dto.companyName?.trim() ||
             null,
           customerCompanyName: dto.companyName?.trim() || null,
-          customerPhone: dto.phone ?? null,
+          customerPhone: contact.phone,
+          smsMarketingOptIn: smsOptIn,
+          smsMarketingOptInAt: smsOptIn ? new Date() : null,
+          phoneVerifiedAt,
           customerLocale: dto.locale ?? 'fr',
           clientIpAddress: requestMeta?.ip ?? existing.clientIpAddress,
           clientUserAgent: requestMeta?.userAgent ?? existing.clientUserAgent,
@@ -250,13 +270,16 @@ export class CheckoutService {
           status: 'draft',
           isTestOrder,
           cartToken: dto.cartToken,
-          customerEmail: dto.email,
+          customerEmail: contact.email,
           customerName:
-            `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+            personName(dto) ||
             dto.companyName?.trim() ||
             null,
           customerCompanyName: dto.companyName?.trim() || null,
-          customerPhone: dto.phone ?? null,
+          customerPhone: contact.phone,
+          smsMarketingOptIn: smsOptIn,
+          smsMarketingOptInAt: smsOptIn ? new Date() : null,
+          phoneVerifiedAt,
           customerLocale: dto.locale ?? 'fr',
           clientIpAddress: requestMeta?.ip ?? null,
           clientUserAgent: requestMeta?.userAgent ?? null,
@@ -710,10 +733,52 @@ export class CheckoutService {
     return this.pricingEngine.compute(lines, couponCode ?? null);
   }
 
+  /**
+   * The order's contact details as stored: the email lower-cased (it is
+   * compared on the tracking page), the phone in E.164 using the shipping
+   * country's dialling code so the SMS gateway can reach it and the tracking
+   * page can match it however the customer retypes it. A phone that cannot
+   * be placed (no prefix on file for the country) is kept as typed rather
+   * than dropped — a person can still read it from the admin.
+   */
+  /**
+   * When phone verification is on and the phone is the customer's only
+   * contact, the order is refused until the code texted to that phone has
+   * been typed back (PhoneVerificationService). The storefront reads the code
+   * in the error and opens the code field. Returns when it was confirmed, or
+   * null when no confirmation was needed.
+   */
+  private async checkPhoneVerified(cartToken: string, contact: { email: string | null; phone: string | null }): Promise<Date | null> {
+    if (!contact.phone) return null;
+    if (await this.phoneVerification.isVerified(cartToken, contact.phone)) return new Date();
+    // Confirmed on this cart's draft already, hours ago — the Redis mark has
+    // gone but the proof has not.
+    const confirmed = await this.prisma.order.findFirst({
+      where: { cartToken, customerPhone: contact.phone, phoneVerifiedAt: { not: null }, status: { in: ['draft', 'awaiting_payment'] } },
+      select: { phoneVerifiedAt: true },
+    });
+    if (confirmed) return confirmed.phoneVerifiedAt;
+    if (await this.phoneVerification.isRequired(contact)) {
+      throw new BadRequestException({
+        code: PHONE_VERIFICATION_ERRORS.required,
+        message: 'Confirm your phone number with the code we text you',
+      });
+    }
+    return null;
+  }
+
+  private async normalizeContact(dto: InitiateCheckoutDto): Promise<{ email: string | null; phone: string | null }> {
+    const email = dto.email?.trim().toLowerCase() || null;
+    const raw = dto.phone?.trim() || null;
+    if (!raw) return { email, phone: null };
+    const country = await this.prisma.country.findUnique({ where: { isoCode: dto.country.toUpperCase() }, select: { phonePrefix: true } });
+    return { email, phone: toE164(raw, country?.phonePrefix) ?? raw };
+  }
+
   private buildAddressSnapshot(dto: InitiateCheckoutDto) {
     return {
       name:
-        `${dto.firstName ?? ''} ${dto.lastName ?? ''}`.trim() ||
+        personName(dto) ||
         dto.companyName?.trim() ||
         '',
       line1: dto.line1,

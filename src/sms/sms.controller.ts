@@ -4,6 +4,8 @@ import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { SmsType } from '../../generated/prisma/client';
 import { SmsService } from './sms.service';
+import { CustomerSmsService } from './customer-sms.service';
+import { isStopReply } from './customer-sms-copy';
 
 const SmsMessageSchema = z.object({
   to: z.string().min(1, 'to is required'),
@@ -19,7 +21,10 @@ type SmsMessageDto = z.infer<typeof SmsMessageSchema>;
  */
 @Controller()
 export class SmsController {
-  constructor(private readonly smsService: SmsService) {}
+  constructor(
+    private readonly smsService: SmsService,
+    private readonly customerSms: CustomerSmsService,
+  ) {}
 
   @Public()
   @Get('sms')
@@ -63,11 +68,16 @@ export class SmsController {
    * Vitecamio also hands each reply to its rent-sessions service, which is how
    * a customer texting back drives a rental. Silomis has no such domain, so an
    * inbound message is recorded and nothing acts on it yet; anything that wants
-   * to react to replies hooks in here.
+   * to react to replies hooks in here — which is where STOP is honoured: the
+   * abandoned-cart reminder tells the customer to reply STOP, and this is the
+   * only place that reply arrives. `to` is the customer's number here (the
+   * other end of the conversation, as for outbound rows).
    */
   @Public()
   @Post('receive')
-  receiveFromGateway(@Body(new ZodValidationPipe(SmsMessageSchema)) body: SmsMessageDto) {
-    return this.smsService.addMessage(body.to, body.message, 'inbound');
+  async receiveFromGateway(@Body(new ZodValidationPipe(SmsMessageSchema)) body: SmsMessageDto) {
+    const row = await this.smsService.addMessage(body.to, body.message, 'inbound');
+    if (isStopReply(body.message)) await this.customerSms.recordOptOut(row.to, 'stop_reply');
+    return row;
   }
 }

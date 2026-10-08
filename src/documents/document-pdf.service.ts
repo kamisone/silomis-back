@@ -132,12 +132,14 @@ export class DocumentPdfService {
 
     // Customer / delivery
     const addressBlock = ship ?? null;
-    const displayName = document.customerCompanyName ?? addressBlock?.name ?? document.customerName ?? document.customerEmail;
+    const displayName = document.customerCompanyName ?? addressBlock?.name ?? document.customerName ?? document.customerEmail ?? '';
     doc.font('Helvetica-Bold').fontSize(10).fillColor(DARK).text(displayName, cx, y, { width: colW });
     doc.font('Helvetica').fontSize(9).fillColor(SLATE);
     let cy2 = y + 14;
-    doc.text(document.customerEmail, cx, cy2, { width: colW });
-    cy2 += 12;
+    if (document.customerEmail) {
+      doc.text(document.customerEmail, cx, cy2, { width: colW });
+      cy2 += 12;
+    }
     if (addressBlock?.line1) {
       doc.text(addressBlock.line1, cx, cy2, { width: colW });
       cy2 += 12;

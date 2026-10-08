@@ -28,6 +28,8 @@ export class SendInEmailListener {
         this.prisma.sendInEvent.findUnique({ where: { id: event.eventId } }),
       ]);
       if (!job || !step) return;
+      // Phone-only order: CustomerSmsListener texts the steps that matter.
+      if (!job.order.customerEmail) return;
       // A note or a photo without a status change is a timeline entry, not a
       // reason to write; the customer hears about it on their next visit.
       if (event.fromStatus === event.toStatus) return;

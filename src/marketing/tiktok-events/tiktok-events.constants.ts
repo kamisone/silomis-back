@@ -20,6 +20,8 @@ export interface TikTokEventJobData {
   properties: Record<string, unknown>;
   /** SHA-256 hex digest of the lowercased, trimmed customer email — never the raw email. */
   customerEmailHash: string | null;
+  /** SHA-256 hex digest of the E.164 phone — never the raw number. */
+  customerPhoneHash?: string | null;
   /** Sent as-is, never hashed — TikTok's spec requires these unhashed. */
   clientIpAddress: string | null;
   clientUserAgent: string | null;

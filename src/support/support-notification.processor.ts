@@ -10,6 +10,7 @@ import { AdminNotifEvent } from '../commerce-notifications/commerce-notification
 import { SupportNotificationService } from './support-notification.service';
 import { ShopEmailService } from '../email/shop-email.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
+import { CustomerSmsService } from '../sms/customer-sms.service';
 import { GUEST_NOTIFY_COOLDOWN_MS, SUPPORT_QUEUE } from './support.constants';
 
 @Processor(SUPPORT_QUEUE)
@@ -24,6 +25,7 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
     private readonly notifications: CommerceNotificationService,
     private readonly email: ShopEmailService,
     private readonly assetUrls: AssetUrlService,
+    private readonly customerSms: CustomerSmsService,
   ) {
     super(dlqService);
   }
@@ -103,21 +105,27 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
       ? (message.attachments as unknown[])
       : [];
 
-    await this.email.sendOrderMessage(order.customerEmail, {
-      orderNumber: order.orderNumber,
-      customerName: order.customerName ?? order.customerEmail,
-      excerpt: message.content,
-      imageCount: attachments.length,
-      conversationUrl,
-      // The customer's own language, not the shop's.
-      locale: order.customerLocale,
-    });
+    if (order.customerEmail) {
+      await this.email.sendOrderMessage(order.customerEmail, {
+        orderNumber: order.orderNumber,
+        customerName: order.customerName ?? order.customerEmail,
+        excerpt: message.content,
+        imageCount: attachments.length,
+        conversationUrl,
+        // The customer's own language, not the shop's.
+        locale: order.customerLocale,
+      });
+    }
+    // Same cooldown as the email: one text per conversation per window. A
+    // reply is often a question about the design, and for a phone-only order
+    // this is the only way the customer learns it is waiting.
+    await this.customerSms.send('order_message', order, order.trackingToken ? conversationUrl : null);
 
     await this.prisma.supportConversation.update({
       where: { id: conversationId },
       data: { lastGuestNotifiedAt: new Date() },
     });
-    this.logger.log(`Guest reply email sent conv=${conversationId}`);
+    this.logger.log(`Guest reply notification sent conv=${conversationId}`);
   }
 
   private async notifyAdmin(conversationId: string): Promise<void> {

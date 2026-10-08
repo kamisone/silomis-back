@@ -8,6 +8,8 @@ import { z } from 'zod';
 export const OrderSessionSchema = z.object({
   token: z.string().trim().min(1).max(200).optional(),
   email: z.string().trim().toLowerCase().email().max(300).optional(),
+  /** The phone on the order — the credential of a customer who checked out without an email. */
+  phone: z.string().trim().min(1).max(50).optional(),
 });
 export type OrderSessionDto = z.infer<typeof OrderSessionSchema>;
 
@@ -21,5 +23,7 @@ export type OrderSessionDto = z.infer<typeof OrderSessionSchema>;
  */
 export const OrderAccessLinkSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(300).optional(),
+  /** Proving the phone instead sends the link by SMS to the phone on the order. */
+  phone: z.string().trim().min(1).max(50).optional(),
 });
 export type OrderAccessLinkDto = z.infer<typeof OrderAccessLinkSchema>;

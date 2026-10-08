@@ -79,7 +79,14 @@ export class EmailTransportService implements OnModuleInit {
     return this.transport;
   }
 
-  async send(to: string, subject: string, html: string): Promise<void> {
+  async send(to: string | null | undefined, subject: string, html: string): Promise<void> {
+    // A phone-only order has no address. Callers return early for it; this is
+    // the net under the ones that do not, so nodemailer is never handed an
+    // empty recipient.
+    if (!to) {
+      this.logger.log(`[EMAIL SKIPPED — no address] ${subject}`);
+      return;
+    }
     if (!this.isConfigured()) {
       this.logger.warn(`[EMAIL DEV] ${subject} → ${to}`);
       return;

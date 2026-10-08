@@ -22,6 +22,13 @@ import { CartItem, Order, OrderItemPersonalization, OrderStatus, Prisma } from '
 import { ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR as ET_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION as ET_VARIATION_OPTION } from '../translations/translation-entities';
 
 /** How a public caller proves an order is theirs — see OrderAccessService. */
+/** The digits of a search that looks like (part of) a phone number, minus any trunk 0 — null otherwise. */
+function phoneSearchDigits(search: string): string | null {
+  if (!/^[\d\s.+\-()]+$/.test(search)) return null;
+  const digits = search.replace(/\D/g, '').replace(/^0+/, '');
+  return digits.length >= 4 ? digits : null;
+}
+
 export interface OrderTrackAuth {
   token?: string;
   email?: string;
@@ -112,7 +119,7 @@ export class OrdersService {
           status: 'awaiting_payment',
           isTestOrder,
           userId: dto.userId ?? null,
-          customerEmail: dto.customerEmail,
+          customerEmail: dto.customerEmail?.trim().toLowerCase() || null,
           customerName: dto.customerName ?? null,
           customerPhone: dto.customerPhone ?? null,
           shippingAddressSnapshot: dto.shippingAddress as Prisma.InputJsonValue,
@@ -209,7 +216,7 @@ export class OrdersService {
         where: { id: cart.id },
         data: { status: 'completed' },
       });
-      await this.customerService.upsertFromOrder(dto.customerEmail, dto.customerName ?? null, dto.customerPhone ?? null, dto.userId ?? null, tx);
+      await this.customerService.upsertFromOrder(dto.customerEmail?.trim().toLowerCase() || null, dto.customerName ?? null, dto.customerPhone ?? null, dto.userId ?? null, tx);
 
       return created;
     });
@@ -270,7 +277,7 @@ export class OrdersService {
       if (toStatus === 'paid') {
         for (const item of items) if (item.variantId) await this.inventory.commitForOrder(item.variantId, item.quantity, orderId, tx);
         // Revenue is realized once payment is confirmed — update customer lifetime stats.
-        await this.customerService.recordOrderCompletion(order.customerEmail, order.totalCents, tx);
+        await this.customerService.recordOrderCompletion({ email: order.customerEmail, phone: order.customerPhone }, order.totalCents, tx);
         // Coupon usage is only counted once payment is confirmed — matches
         // confirmPayment()'s "if already paid, return" guard, which is the
         // only path into this branch, so a webhook replay can't double-count.
@@ -408,7 +415,14 @@ export class OrdersService {
       ...(status ? { status: status as OrderStatus } : {}),
       ...(search
         ? {
-            OR: [{ orderNumber: { contains: search, mode: 'insensitive' } }, { customerEmail: { contains: search, mode: 'insensitive' } }, { customerName: { contains: search, mode: 'insensitive' } }],
+            OR: [
+              { orderNumber: { contains: search, mode: 'insensitive' } },
+              { customerEmail: { contains: search, mode: 'insensitive' } },
+              { customerName: { contains: search, mode: 'insensitive' } },
+              // Phones are stored as +33612345678; an admin types 06 12 34 56 78.
+              // Matching on the digits after the trunk 0 finds it either way.
+              ...(phoneSearchDigits(search) ? [{ customerPhone: { contains: phoneSearchDigits(search)! } }] : []),
+            ],
           }
         : {}),
     };
@@ -462,7 +476,7 @@ export class OrdersService {
     if (auth.grantedOrderId && auth.grantedOrderId === order.id) return true;
     return !!(
       (auth.token && order.trackingToken && secretsMatch(auth.token, order.trackingToken)) ||
-      (auth.email && order.customerEmail.toLowerCase() === auth.email.toLowerCase())
+      (auth.email && order.customerEmail && order.customerEmail.toLowerCase() === auth.email.toLowerCase())
     );
   }
 
@@ -589,6 +603,10 @@ export class OrdersService {
           placementLabel: labelMap.get(`${i.productId}:${d.placementKey}`) ?? d.placementLabel,
         })),
       })),
+      // Whether order mail can reach the customer at all — never the address
+      // itself. A phone-only order is told on the success page that updates
+      // come by SMS, and to keep its tracking link.
+      hasEmail: !!order.customerEmail,
       // Shipment tracking is populated once the Shipping domain exists.
       shipping: null,
       timeline,

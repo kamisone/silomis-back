@@ -75,6 +75,8 @@ describe('CommerceNotificationService', () => {
           'support_message',
           'order_message',
         ],
+        customerSmsEnabled: true,
+        checkoutPhoneVerification: false,
       });
     });
 

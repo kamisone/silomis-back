@@ -205,7 +205,8 @@ model Document {
   status          DocumentStatus @default(issued)
 
   // ── Customer snapshot ──────────────────────────────────────────────────
-  customerEmail       String
+  /// Null for a phone-only order; such a document is never emailed.
+  customerEmail       String?
   customerName        String?
   customerCompanyName String?
   customerLocale      String  @default("fr")
@@ -875,6 +876,19 @@ model CommerceEventLog {
 /// written when gated out by settings; 'skipped' is reserved for a
 /// configured-but-unavailable channel (e.g. SMTP unset), 'sent'/'failed' come
 /// from the actual send attempt's outcome.
+/// A number that replied STOP (or was opted out by an admin). Marketing texts
+/// — the abandoned-cart reminder — are never sent to it; order updates still
+/// are, since the customer needs them to receive what they paid for.
+model SmsOptOut {
+  /// E.164, as the gateway reports the sender.
+  phone     String   @id @db.VarChar(50)
+  /// "stop_reply" | "admin"
+  source    String   @db.VarChar(20)
+  createdAt DateTime @default(now())
+
+  @@map("sms_opt_outs")
+}
+
 model CommerceNotificationLog {
   id String @id @default(uuid())
 
@@ -994,10 +1008,22 @@ model Order {
   userId     String?
   customerId String?
 
-  customerEmail       String  @db.VarChar(300)
+  /// Null when the customer left a phone number only — checkout asks for an
+  /// email OR a phone. Every email sender skips such an order; the phone gets
+  /// the important messages by SMS instead (CustomerSmsListener).
+  customerEmail       String? @db.VarChar(300)
   customerName        String? @db.VarChar(300)
   customerCompanyName String? @db.VarChar(300)
+  /// E.164 (+33612345678) when the shipping country made it derivable, else as typed.
   customerPhone       String? @db.VarChar(50)
+  /// The customer ticked "text me if I leave my order unfinished" — the
+  /// consent an abandoned-cart SMS needs. Unticked by default; the timestamp is
+  /// the proof of when it was given.
+  smsMarketingOptIn   Boolean   @default(false)
+  smsMarketingOptInAt DateTime?
+  /// Set when the customer typed back the code texted to `customerPhone`
+  /// (only asked when checkout phone verification is on).
+  phoneVerifiedAt     DateTime?
 
   shippingAddressSnapshot Json
   billingAddressSnapshot  Json?
@@ -1212,7 +1238,8 @@ model ReturnRequest {
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   /// Denormalized so the admin list can filter/display without a join.
-  customerEmail String @db.VarChar(300)
+  /// Null for a phone-only order.
+  customerEmail String? @db.VarChar(300)
 
   status    ReturnStatus @default(requested)
   reason    String?
@@ -1893,7 +1920,10 @@ model Address {
 model ShopCustomer {
   id String @id @default(uuid())
 
-  email     String  @unique @db.VarChar(300)
+  /// Null for a customer who checked out with a phone only; such a customer
+  /// is found by `phone` instead (CustomerService.upsertFromOrder). Postgres
+  /// lets any number of NULLs share a unique column.
+  email     String? @unique @db.VarChar(300)
   firstName String? @db.VarChar(300)
   lastName  String? @db.VarChar(300)
   phone     String? @db.VarChar(50)
@@ -1912,6 +1942,7 @@ model ShopCustomer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([phone])
   @@map("shop_customers")
 }
 

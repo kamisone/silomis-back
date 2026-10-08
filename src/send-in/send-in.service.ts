@@ -61,7 +61,7 @@ export interface SendInUpdate {
 
 const JOB_INCLUDE = {
   events: { orderBy: { createdAt: 'asc' as const } },
-  order: { select: { id: true, orderNumber: true, status: true, customerName: true, customerEmail: true, createdAt: true } },
+  order: { select: { id: true, orderNumber: true, status: true, customerName: true, customerEmail: true, customerPhone: true, createdAt: true } },
   orderItem: {
     select: { id: true, titleSnapshot: true, personalizations: { select: { id: true, placementKey: true, text: true, productionStatus: true, priceCents: true, designJson: true, contentType: true, lineCount: true, fontName: true, fontWeight: true, heightMm: true, curveDeg: true, isPuff: true, motifName: true, motifSizeMm: true, threadColors: true, rotationDeg: true } } },
   },
@@ -562,6 +562,7 @@ export class SendInService {
       orderedAt: r.order.createdAt,
       customerName: r.order.customerName,
       customerEmail: r.order.customerEmail,
+      customerPhone: r.order.customerPhone,
       itemType: r.itemType,
       itemLabel: type ? pickLocalized(type.label, 'en') : r.itemType,
       note: r.note,

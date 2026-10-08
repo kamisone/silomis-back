@@ -47,6 +47,7 @@ export class MetaCapiProcessor extends DlqAwareWorker {
     // hashed — only fields like email/phone/name get SHA-256'd per Meta's spec.
     const userData: Record<string, unknown> = {};
     if (data.customerEmailHash) userData.em = [data.customerEmailHash];
+    if (data.customerPhoneHash) userData.ph = [data.customerPhoneHash];
     if (data.clientIpAddress) userData.client_ip_address = data.clientIpAddress;
     if (data.clientUserAgent) userData.client_user_agent = data.clientUserAgent;
     if (data.fbc) userData.fbc = data.fbc;

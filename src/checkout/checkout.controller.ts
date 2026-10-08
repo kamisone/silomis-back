@@ -18,11 +18,17 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { extractIp } from '../common/utils/client-ip.util';
 import { CheckoutService } from './checkout.service';
 import { CheckoutSessionService } from './checkout-session.service';
+import { PhoneVerificationService } from './phone-verification.service';
+import { RateLimit } from '../common/throttling/rate-limit.decorator';
 import {
   InitiateCheckoutDto,
   InitiateCheckoutSchema,
+  SendPhoneCodeDto,
+  SendPhoneCodeSchema,
   UpsertCheckoutSessionDto,
   UpsertCheckoutSessionSchema,
+  VerifyPhoneCodeDto,
+  VerifyPhoneCodeSchema,
 } from './dto/checkout.dto';
 import {
   UpdateShippingDto,
@@ -39,6 +45,7 @@ export class CheckoutController {
   constructor(
     private readonly checkoutService: CheckoutService,
     private readonly sessionService: CheckoutSessionService,
+    private readonly phoneVerification: PhoneVerificationService,
   ) {}
 
   // ── Checkout session (persistent form state + resume support) ─────────
@@ -67,6 +74,25 @@ export class CheckoutController {
   }
 
   // ── Core checkout flow ──────────────────────────────────────────────────
+
+  // ── Phone verification (phone-only checkouts, when switched on) ─────────
+  // Static paths, declared before the `:orderId` routes for the same reason
+  // as validate-coupon below.
+
+  /** Texts a 6-digit code to the phone on the address form. */
+  @Post('phone-code')
+  @HttpCode(200)
+  @RateLimit(10, 15)
+  sendPhoneCode(@Body(new ZodValidationPipe(SendPhoneCodeSchema)) dto: SendPhoneCodeDto) {
+    return this.phoneVerification.sendCode(dto.cartToken, dto.phone, dto.country, dto.locale);
+  }
+
+  @Post('phone-code/verify')
+  @HttpCode(200)
+  @RateLimit(30, 15)
+  verifyPhoneCode(@Body(new ZodValidationPipe(VerifyPhoneCodeSchema)) dto: VerifyPhoneCodeDto) {
+    return this.phoneVerification.verify(dto.cartToken, dto.phone, dto.country, dto.code);
+  }
 
   /** Validates the cart, computes server-side totals, creates a draft order, reserves inventory. */
   @Post()

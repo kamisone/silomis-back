@@ -9,6 +9,7 @@ import { AnalyticsTrackingModule } from '../analytics-tracking/analytics-trackin
 import { PersonalizationModule } from '../personalization/personalization.module';
 import { SendInModule } from '../send-in/send-in.module';
 import { CHECKOUT_RESERVATION_QUEUE } from '../checkout/checkout-reservation.constants';
+import { SmsModule } from '../sms/sms.module';
 import { EmailModule } from '../email/email.module';
 import { OrdersService } from './orders.service';
 import { OrderAccessService } from './order-access.service';
@@ -29,6 +30,8 @@ import { TestCheckoutGuard } from './test-checkout-guard.service';
     PersonalizationModule,
     SendInModule,
     EmailModule,
+    // For the tracking link texted to a phone-only customer.
+    SmsModule,
     BullModule.registerQueue({ name: CHECKOUT_RESERVATION_QUEUE }),
     // Module-scoped on purpose: this registration signs with a key derived
     // from JWT_SECRET rather than JWT_SECRET itself, so an order grant can

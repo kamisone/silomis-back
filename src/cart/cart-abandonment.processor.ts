@@ -7,6 +7,8 @@ import { DlqService } from '../dlq/dlq.service';
 import { ShopEmailService } from '../email/shop-email.service';
 import { CheckoutSessionService } from '../checkout/checkout-session.service';
 import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service';
+import { CustomerSmsService } from '../sms/customer-sms.service';
+import { toE164 } from '../common/utils/phone';
 import {
   COMMERCE_EVENTS,
   CartAbandonedEvent,
@@ -27,6 +29,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     private readonly emailService: ShopEmailService,
     private readonly sessionService: CheckoutSessionService,
     private readonly eventBus: CommerceEventBus,
+    private readonly customerSms: CustomerSmsService,
   ) {
     super(dlqService);
   }
@@ -71,30 +74,51 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     let name: string | null = null;
     let destinationUrl: string | null = null;
     let locale: string | null = null;
+    // The SMS reminder: a number we can dial, and the customer's tick for it.
+    // Without the tick there is no text, whatever else is known.
+    let phone: string | null = null;
+    let smsUrl: string | null = null;
 
     try {
       const session = await this.sessionService.findByCartToken(cartToken);
-      const formSnapshot = session?.formSnapshot as { email?: string } | null;
-      if (session && !session.completedAt && formSnapshot?.email) {
-        email = formSnapshot.email;
-        destinationUrl = `${appUrl}/shop/checkout/resume/${session.resumeToken}`;
-        locale = session.locale;
+      const formSnapshot = session?.formSnapshot as { email?: string; phone?: string; country?: string; smsOptIn?: boolean } | null;
+      if (session && !session.completedAt && formSnapshot) {
+        const resumeUrl = `${appUrl}/shop/checkout/resume/${session.resumeToken}`;
+        if (formSnapshot.email?.trim()) {
+          email = formSnapshot.email.trim();
+          destinationUrl = resumeUrl;
+          locale = session.locale;
+        }
+        if (formSnapshot.smsOptIn === true && formSnapshot.phone?.trim()) {
+          phone = await this.dialable(formSnapshot.phone, formSnapshot.country);
+          smsUrl = resumeUrl;
+          locale = locale ?? session.locale;
+        }
       }
     } catch {
       // Never block the email on session lookup failure — fall through to the order lookup.
     }
 
-    if (!email) {
+    if (!email || !phone) {
       const order = await this.prisma.order.findFirst({
         where: { cartToken },
         orderBy: { createdAt: 'desc' },
       });
-      if (order?.customerEmail) {
+      if (!email && order?.customerEmail) {
         email = order.customerEmail;
         name = order.customerName;
         destinationUrl = `${appUrl}/shop/cart/resume/${cartToken}`;
         locale = order.customerLocale;
       }
+      if (!phone && order?.smsMarketingOptIn && order.customerPhone?.startsWith('+')) {
+        phone = order.customerPhone;
+        smsUrl = `${appUrl}/shop/cart/resume/${cartToken}`;
+        locale = locale ?? order.customerLocale;
+      }
+    }
+
+    if (phone && smsUrl) {
+      await this.customerSms.sendAbandonedCart(phone, smsUrl, locale, cartToken);
     }
 
     this.eventBus.emit(
@@ -109,7 +133,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
 
     if (!email) {
       this.logger.log(
-        `Cart ${cartToken} has no resolvable customer email — skipping`,
+        `Cart ${cartToken} has no resolvable customer email — skipping the email`,
       );
       return;
     }
@@ -126,5 +150,11 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     });
 
     this.logger.log(`Abandoned cart email sent for cart ${cartToken}`);
+  }
+
+  /** The phone as typed on the form, placed with the form's country. Null when it cannot be dialled. */
+  private async dialable(raw: string, country?: string): Promise<string | null> {
+    const row = country ? await this.prisma.country.findUnique({ where: { isoCode: country.toUpperCase() }, select: { phonePrefix: true } }) : null;
+    return toE164(raw, row?.phonePrefix);
   }
 }

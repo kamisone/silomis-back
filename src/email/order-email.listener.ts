@@ -57,7 +57,8 @@ export class OrderEmailListener {
         where: { id: event.orderId },
         include: { items: { include: { personalizations: true } } },
       });
-      if (!order) return;
+      // Phone-only order: CustomerSmsListener carries the news instead.
+      if (!order?.customerEmail) return;
 
       const trackingUrl = order.trackingToken
         ? `${process.env.APP_URL ?? ''}/shop/orders/track/${order.orderNumber}?token=${order.trackingToken}`
@@ -110,7 +111,7 @@ export class OrderEmailListener {
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
       });
-      if (!order) return;
+      if (!order?.customerEmail) return;
 
       // Prefer sending the customer straight back into their in-progress
       // checkout (cart + address still intact) over a bare shop link — the
@@ -148,7 +149,7 @@ export class OrderEmailListener {
         const order = await this.prisma.order.findUnique({
           where: { id: event.orderId },
         });
-        if (order) {
+        if (order?.customerEmail) {
           const trackingUrl = order.trackingToken
             ? `${process.env.APP_URL ?? ''}/shop/orders/track/${order.orderNumber}?token=${order.trackingToken}`
             : null;
@@ -179,7 +180,7 @@ export class OrderEmailListener {
         where: { id: orderId },
         include: { items: true },
       });
-      if (!order) return;
+      if (!order?.customerEmail) return;
 
       // Send one review request for the first item still tied to a live product
       // (avoids email flooding on multi-item orders, mirrors vitecamio behaviour).

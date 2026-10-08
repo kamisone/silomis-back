@@ -116,6 +116,8 @@ export class CommerceNotificationService implements OnModuleInit {
       emailEnabled: bool(ADMIN_NOTIF_KEYS.emailEnabled, ADMIN_NOTIF_DEFAULTS.emailEnabled),
       emailAddresses: list(ADMIN_NOTIF_KEYS.emailAddresses, ADMIN_NOTIF_DEFAULTS.emailAddresses),
       events: list(ADMIN_NOTIF_KEYS.events, ADMIN_NOTIF_DEFAULTS.events).filter(this.isKnownEvent),
+      customerSmsEnabled: bool(ADMIN_NOTIF_KEYS.customerSmsEnabled, ADMIN_NOTIF_DEFAULTS.customerSmsEnabled),
+      checkoutPhoneVerification: bool(ADMIN_NOTIF_KEYS.checkoutPhoneVerification, ADMIN_NOTIF_DEFAULTS.checkoutPhoneVerification),
     };
   }
 
@@ -126,6 +128,8 @@ export class CommerceNotificationService implements OnModuleInit {
     if (patch.emailEnabled !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.emailEnabled, value: String(patch.emailEnabled) });
     if (patch.smsPhones !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.smsPhones, value: this.normalizePhones(patch.smsPhones).join(',') });
     if (patch.emailAddresses !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.emailAddresses, value: this.normalizeEmails(patch.emailAddresses).join(',') });
+    if (patch.checkoutPhoneVerification !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.checkoutPhoneVerification, value: String(patch.checkoutPhoneVerification) });
+    if (patch.customerSmsEnabled !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.customerSmsEnabled, value: String(patch.customerSmsEnabled) });
     if (patch.events !== undefined) writes.push({ key: ADMIN_NOTIF_KEYS.events, value: patch.events.filter(this.isKnownEvent).join(',') });
 
     for (const { key, value } of writes) {

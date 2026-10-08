@@ -17,6 +17,8 @@ export interface SendMetaCapiEventInput {
   /** value/currency/content identifiers only — never customer PII. */
   customData: Record<string, unknown>;
   email?: string | null;
+  /** E.164 (+33612345678); anything else is not sent — a national number would hash to nobody. */
+  phone?: string | null;
   clientIpAddress?: string | null;
   clientUserAgent?: string | null;
   fbc?: string | null;
@@ -30,8 +32,10 @@ export interface SendMetaCapiEventInput {
  * MetaCapiTrackController (ViewContent/Search, client-driven page/query
  * events with no backend mutation to hook into).
  *
- * Only ever forwards value/currency/content identifiers + a hashed
- * email/IP/UA/fbc/fbp — never name, phone, address, or other customer data.
+ * Only ever forwards value/currency/content identifiers + a hashed email and
+ * phone, plus IP/UA/fbc/fbp — never name, address, or other customer data.
+ * The phone matters for a customer who checked out without an email: it is
+ * then the only identifier Meta can match the purchase on.
  * See meta-capi.processor.ts for the actual HTTP call.
  */
 @Injectable()
@@ -58,6 +62,10 @@ export class MetaCapiService {
           ? createHash('sha256')
               .update(input.email.trim().toLowerCase())
               .digest('hex')
+          : null,
+        // Meta: digits only, country code included, no "+".
+        customerPhoneHash: input.phone?.startsWith('+')
+          ? createHash('sha256').update(input.phone.replace(/\D/g, '')).digest('hex')
           : null,
         clientIpAddress: input.clientIpAddress ?? null,
         clientUserAgent: input.clientUserAgent ?? null,

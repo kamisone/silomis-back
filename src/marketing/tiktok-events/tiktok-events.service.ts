@@ -17,6 +17,8 @@ export interface SendTikTokEventInput {
   /** value/currency/content identifiers only — never customer PII. */
   properties: Record<string, unknown>;
   email?: string | null;
+  /** E.164 (+33612345678); anything else is not sent. */
+  phone?: string | null;
   clientIpAddress?: string | null;
   clientUserAgent?: string | null;
   ttclid?: string | null;
@@ -32,7 +34,8 @@ export interface SendTikTokEventInput {
  * into).
  *
  * Only ever forwards value/currency/content identifiers + a hashed
- * email/IP/UA/ttclid/ttp — never name, phone, address, or other customer data.
+ * email and phone, plus IP/UA/ttclid/ttp — never name, address, or other
+ * customer data.
  * See tiktok-events.processor.ts for the actual HTTP call.
  */
 @Injectable()
@@ -60,6 +63,10 @@ export class TikTokEventsService {
           ? createHash('sha256')
               .update(input.email.trim().toLowerCase())
               .digest('hex')
+          : null,
+        // TikTok: the E.164 string itself, "+" included.
+        customerPhoneHash: input.phone?.startsWith('+')
+          ? createHash('sha256').update(input.phone.trim()).digest('hex')
           : null,
         clientIpAddress: input.clientIpAddress ?? null,
         clientUserAgent: input.clientUserAgent ?? null,

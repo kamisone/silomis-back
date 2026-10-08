@@ -9,6 +9,7 @@ import { AnalyticsTrackingModule } from '../analytics-tracking/analytics-trackin
 import { MetaCapiModule } from '../marketing/meta-capi/meta-capi.module';
 import { TikTokEventsModule } from '../marketing/tiktok-events/tiktok-events.module';
 import { PersonalizationModule } from '../personalization/personalization.module';
+import { SmsModule } from '../sms/sms.module';
 import { CART_ABANDONMENT_QUEUE } from './cart-abandonment.constants';
 import { CartService } from './cart.service';
 import { CartController } from './cart.controller';
@@ -21,6 +22,8 @@ import { CartCheckoutCompletionListener } from './cart-checkout-completion.liste
     AssetUrlModule,
     TranslationsModule,
     EmailModule,
+    // The abandoned-cart SMS, for a customer who ticked the box.
+    SmsModule,
     CheckoutModule,
     DlqModule,
     AnalyticsTrackingModule,

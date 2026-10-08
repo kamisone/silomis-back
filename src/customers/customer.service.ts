@@ -18,15 +18,25 @@ export class CustomerService {
   // (checkout/order creation, payment confirmation) can fold this write into
   // the same atomic unit — same pattern as InventoryService.
 
+  /**
+   * A customer is keyed on their email; one who checked out with a phone only
+   * is keyed on that phone instead, among the customers who have no email —
+   * so the same person ordering twice by phone is one customer, and a phone
+   * never latches onto somebody else's email account. Null when there is
+   * neither, which the checkout DTO does not allow.
+   */
   async upsertFromOrder(
-    email: string,
+    email: string | null,
     name: string | null,
     phone: string | null,
     userId: string | null,
     tx?: Prisma.TransactionClient,
-  ): Promise<ShopCustomer> {
+  ): Promise<ShopCustomer | null> {
     const db: Db = tx ?? this.prisma;
-    const existing = await db.shopCustomer.findUnique({ where: { email } });
+    if (!email && !phone) return null;
+    const existing = email
+      ? await db.shopCustomer.findUnique({ where: { email } })
+      : await db.shopCustomer.findFirst({ where: { email: null, phone } });
     if (!existing) {
       const [firstName, ...rest] = (name ?? '').split(' ');
       return db.shopCustomer.create({
@@ -52,13 +62,21 @@ export class CustomerService {
   // ── Called when order ships (update stats) ──────────────────────────────
 
   async recordOrderCompletion(
-    email: string,
+    contact: { email: string | null; phone: string | null },
     totalCents: number,
     tx?: Prisma.TransactionClient,
   ): Promise<void> {
     const db: Db = tx ?? this.prisma;
+    // Same key as upsertFromOrder. Without either there is no customer row to
+    // credit — and an `updateMany` with an empty filter would credit them all.
+    const where: Prisma.ShopCustomerWhereInput | null = contact.email
+      ? { email: contact.email }
+      : contact.phone
+        ? { email: null, phone: contact.phone }
+        : null;
+    if (!where) return;
     await db.shopCustomer.updateMany({
-      where: { email },
+      where,
       data: {
         totalOrders: { increment: 1 },
         totalSpentCents: { increment: totalCents },

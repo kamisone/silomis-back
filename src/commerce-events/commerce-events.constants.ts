@@ -43,7 +43,7 @@ export type CommerceEventName = (typeof COMMERCE_EVENTS)[keyof typeof COMMERCE_E
 export interface OrderCreatedEvent {
   orderId: string;
   orderNumber: string;
-  customerEmail: string;
+  customerEmail: string | null;
   totalCents: number;
   vendorIds: string[];
 }

@@ -49,6 +49,7 @@ export class MetaCapiOrderListener {
           num_items: order.items.reduce((n, i) => n + i.quantity, 0),
         },
         email: order.customerEmail,
+        phone: order.customerPhone,
         clientIpAddress: order.clientIpAddress,
         clientUserAgent: order.clientUserAgent,
         fbc: order.metaClickId,
@@ -68,7 +69,9 @@ export class MetaCapiOrderListener {
         where: { id: event.orderId },
         include: { items: true },
       });
-      if (!order || !order.customerEmail || !order.items.length) return;
+      // No email is no reason to drop the conversion: a phone-only order still
+      // matches on IP, user agent and click id.
+      if (!order || !order.items.length) return;
 
       await this.metaCapi.sendEvent({
         eventName: 'Purchase',
@@ -89,6 +92,7 @@ export class MetaCapiOrderListener {
           })),
         },
         email: order.customerEmail,
+        phone: order.customerPhone,
         clientIpAddress: order.clientIpAddress,
         clientUserAgent: order.clientUserAgent,
         fbc: order.metaClickId,

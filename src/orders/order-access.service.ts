@@ -3,6 +3,8 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { ShopEmailService } from '../email/shop-email.service';
+import { CustomerSmsService } from '../sms/customer-sms.service';
+import { samePhone } from '../common/utils/phone';
 import { Order } from '../../generated/prisma/client';
 import {
   ACCESS_LINK_MAX_PER_HOUR,
@@ -18,6 +20,8 @@ export interface OrderCredentials {
   token?: string;
   /** The address on the order. Proves only that they know it. */
   email?: string;
+  /** The phone on the order, typed any way. Worth the same as the email. */
+  phone?: string;
   /** A previously issued grant, replayed from the visitor's cookie. */
   grant?: string;
 }
@@ -40,6 +44,7 @@ export class OrderAccessService {
     private readonly jwt: JwtService,
     private readonly redis: RedisService,
     private readonly email: ShopEmailService,
+    private readonly sms: CustomerSmsService,
   ) {}
 
   // ── Credentials → level ────────────────────────────────────────────────
@@ -51,7 +56,7 @@ export class OrderAccessService {
    * this service's own signature, and re-deriving the level would mean
    * re-reading a credential the visitor no longer has to send.
    */
-  levelFor(order: Order, creds: OrderCredentials): OrderAccessLevel | null {
+  async levelFor(order: Order, creds: OrderCredentials): Promise<OrderAccessLevel | null> {
     const grant = this.verifyGrant(creds.grant);
     if (grant?.orderId === order.id) return grant.level;
 
@@ -62,13 +67,27 @@ export class OrderAccessService {
     ) {
       return 'full';
     }
-    if (
-      creds.email &&
-      order.customerEmail.toLowerCase() === creds.email.trim().toLowerCase()
-    ) {
-      return 'status';
-    }
+    if (this.emailMatches(order, creds.email)) return 'status';
+    if (await this.phoneMatches(order, creds.phone)) return 'status';
     return null;
+  }
+
+  private emailMatches(order: Order, email?: string): boolean {
+    return !!email && !!order.customerEmail && order.customerEmail.toLowerCase() === email.trim().toLowerCase();
+  }
+
+  /**
+   * The phone is stored in E.164; the visitor types it however they like —
+   * "06 12 34 56 78" is read with the shipping country's dialling code, the
+   * same way checkout read it.
+   */
+  private async phoneMatches(order: Order, phone?: string): Promise<boolean> {
+    if (!phone || !order.customerPhone) return false;
+    const iso = (order.shippingAddressSnapshot as { country?: string } | null)?.country;
+    const country = iso
+      ? await this.prisma.country.findUnique({ where: { isoCode: iso.toUpperCase() }, select: { phonePrefix: true } })
+      : null;
+    return samePhone(phone, order.customerPhone, country?.phonePrefix);
   }
 
   // ── Grants ─────────────────────────────────────────────────────────────
@@ -95,7 +114,7 @@ export class OrderAccessService {
     });
     if (!order) return null;
 
-    const level = this.levelFor(order, creds);
+    const level = await this.levelFor(order, creds);
     if (!level) return null;
 
     const payload: OrderAccessGrant = {
@@ -153,7 +172,7 @@ export class OrderAccessService {
    */
   async sendAccessLink(
     orderNumber: string,
-    proof: { email?: string; verifiedOrderId?: string },
+    proof: { email?: string; phone?: string; verifiedOrderId?: string },
   ): Promise<void> {
     try {
       const order = await this.prisma.order.findUnique({
@@ -164,20 +183,28 @@ export class OrderAccessService {
       // Either proof will do, and neither changes where the mail goes: the
       // destination is always the address stored on the order, never one the
       // caller supplied.
+      const byPhone = await this.phoneMatches(order, proof.phone);
       const proven =
         order.id === proof.verifiedOrderId ||
-        (!!proof.email &&
-          order.customerEmail.toLowerCase() ===
-            proof.email.trim().toLowerCase());
+        this.emailMatches(order, proof.email) ||
+        byPhone;
       if (!proven) return;
 
       if (!(await this.withinLinkQuota(order.id))) return;
 
       const base = process.env.APP_URL ?? '';
+      const trackingUrl = `${base}/shop/orders/track/${order.orderNumber}?token=${order.trackingToken}`;
+
+      // The link goes where the visitor showed they can read: a text when
+      // they proved the phone, or when the order has no email to send it to.
+      if (byPhone || !order.customerEmail) {
+        await this.sms.send('access_link', order, trackingUrl);
+        return;
+      }
       await this.email.sendOrderAccessLink(order.customerEmail, {
         orderNumber: order.orderNumber,
         customerName: order.customerName ?? order.customerEmail,
-        trackingUrl: `${base}/shop/orders/track/${order.orderNumber}?token=${order.trackingToken}`,
+        trackingUrl,
         locale: order.customerLocale,
       });
     } catch (err) {
