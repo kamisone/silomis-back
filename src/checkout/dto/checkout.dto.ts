@@ -46,7 +46,7 @@ export const InitiateCheckoutSchema = z
     /** Accepts whatever locale the storefront sends — falls back to 'fr' rather than rejecting an unrecognized one. */
     locale: z.string().max(10).optional().default('fr'),
     couponCode: z.string().max(100).nullish(),
-    /** "Text me if I leave my order unfinished" — only meaningful with a phone. */
+    /** "Send me reminders by SMS" — consent to reminder texts (abandoned cart); only meaningful with a phone. */
     smsOptIn: z.boolean().optional().default(false),
     /** Meta Click ID / Browser ID cookies (_fbc / _fbp), read client-side — for Conversions API match quality only. */
     fbc: z.string().max(500).nullish(),

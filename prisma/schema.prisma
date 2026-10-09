@@ -1016,9 +1016,10 @@ model Order {
   customerCompanyName String? @db.VarChar(300)
   /// E.164 (+33612345678) when the shipping country made it derivable, else as typed.
   customerPhone       String? @db.VarChar(50)
-  /// The customer ticked "text me if I leave my order unfinished" — the
-  /// consent an abandoned-cart SMS needs. Unticked by default; the timestamp is
-  /// the proof of when it was given.
+  /// The customer ticked "Send me reminders by SMS" — consent to reminder
+  /// texts, which the abandoned-cart reminder needs. Covers reminders only, not
+  /// offers or news. Unticked by default; the timestamp is the proof of when it
+  /// was given.
   smsMarketingOptIn   Boolean   @default(false)
   smsMarketingOptInAt DateTime?
   /// Set when the customer typed back the code texted to `customerPhone`
