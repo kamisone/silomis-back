@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { BadRequestException } from '@nestjs/common';
 import {
   ProductDocument,
   ProductFaq,
@@ -11,6 +12,9 @@ import {
   ProductTrustBadge,
   ProductUpsellTier,
   ProductZoomedImage,
+  STOREFRONT_DEFAULT_LOCALE,
+  STOREFRONT_LOCALES,
+  StorefrontLocale,
 } from '../types/product-content.types';
 import {
   ProductDocumentSchema,
@@ -27,15 +31,50 @@ import {
 } from './dto/product.dto';
 import { z } from 'zod';
 
-/** At most one media item may be featured — clears any extras past the first. */
+/**
+ * Cleans a gallery before it is stored:
+ *  - at most one item is featured (extras past the first are cleared);
+ *  - `locales` is de-duplicated and put in STOREFRONT_LOCALES order, and
+ *    dropped when it is empty or names every language — both mean "shared";
+ *  - a featured item must be shared. It is the product's face on cards, in
+ *    the cart and in link previews, none of which pick a photo by language.
+ */
 export function normalizeMedia(media: z.infer<typeof ProductMediaItemSchema>[]): ProductMediaItem[] {
   let featuredSeen = false;
-  return media.map((m) => {
+  return media.map((raw) => {
+    const { locales: rawLocales, ...rest } = raw;
+    const picked = new Set(rawLocales ?? []);
+    const locales = STOREFRONT_LOCALES.filter((l) => picked.has(l));
+    const m: ProductMediaItem = locales.length > 0 && locales.length < STOREFRONT_LOCALES.length ? { ...rest, locales } : rest;
     if (!m.isFeatured) return m;
     if (featuredSeen) return { ...m, isFeatured: false };
+    if (m.locales) throw new BadRequestException('The featured photo must be shown in all languages — set it to "All languages" or feature another photo.');
     featuredSeen = true;
     return m;
   });
+}
+
+/** Whether a gallery item is shown in every language. */
+export function isSharedMedia(m: ProductMediaItem): boolean {
+  return !m.locales?.length;
+}
+
+/** Keys of the gallery items limited to some languages. */
+export function languageSpecificMediaKeys(media: ProductMediaItem[]): Set<string> {
+  return new Set(media.filter((m) => !isSharedMedia(m)).map((m) => m.key));
+}
+
+/**
+ * The gallery as a storefront page in `lang` shows it: the shared items plus
+ * those limited to `lang`, in the admin's order. No `lang` is the
+ * storefront's default language. A language left with nothing — every photo
+ * limited to other languages — gets the whole gallery rather than an empty
+ * one: a product page without photos is worse than one in the wrong language.
+ */
+export function mediaForLocale(media: ProductMediaItem[], lang?: string | null): ProductMediaItem[] {
+  const locale = ((lang ?? '').toLowerCase().split('-')[0] || STOREFRONT_DEFAULT_LOCALE) as StorefrontLocale;
+  const visible = media.filter((m) => isSharedMedia(m) || m.locales!.includes(locale));
+  return visible.length ? visible : media;
 }
 
 /** Assigns stable ids to new sections and re-derives sortOrder from array position. */
@@ -111,8 +150,15 @@ export function normalizeLinks(links: z.infer<typeof ProductPrivateLinkSchema>[]
 }
 
 /** Derives the legacy featuredImageKey/galleryImageKeys columns from the image-type subset of `media`. */
+/**
+ * The legacy featured/gallery columns, which feed product cards, their hover
+ * switchers, the cart, search and feeds — none of them language-aware. So
+ * they are built from shared images only: a one-language photo never becomes
+ * the product's face, and the hover strip never shows a photo in the wrong
+ * language.
+ */
 export function deriveLegacyImageFields(media: ProductMediaItem[]): { featuredImageKey: string | null; galleryImageKeys: string[] } {
-  const images = media.filter((m) => m.type === 'image');
+  const images = media.filter((m) => m.type === 'image' && isSharedMedia(m));
   const featured = images.find((m) => m.isFeatured) ?? images[0];
   return {
     featuredImageKey: featured?.key ?? null,

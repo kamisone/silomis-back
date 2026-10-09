@@ -10,7 +10,7 @@ import { slugify } from '../../common/utils/slug.util';
 import { Prisma, Product, ProductVariant } from '../../../generated/prisma/client';
 import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
 import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
-import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
+import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
@@ -207,7 +207,9 @@ export class ProductsService {
       if (p.featuredImageKey) keys.push(p.featuredImageKey as string);
       for (const m of (p.media as ProductMediaItem[]) ?? []) {
         if (keys.length >= MAX_CARD_IMAGES) break;
-        if (m.type !== 'image' || keys.includes(m.key)) continue;
+        // Shared photos only: a listing card does not know which language
+        // each photo belongs to, so a one-language photo stays off it.
+        if (m.type !== 'image' || m.locales?.length || keys.includes(m.key)) continue;
         keys.push(m.key);
       }
       return keys;
@@ -735,7 +737,11 @@ export class ProductsService {
       },
     });
     if (!product) throw new NotFoundException('Product not found');
-    const resolved = await this.resolveProductUrls(product);
+    // The gallery as this language sees it: shared photos plus its own
+    // (ProductMediaItem.locales). Filtered before URLs are resolved, so a
+    // photo another language uses is neither signed nor sent.
+    const localized = { ...product, media: mediaForLocale(product.media as unknown as ProductMediaItem[], lang) as unknown as Prisma.JsonValue };
+    const resolved = await this.resolveProductUrls(localized);
     this.resolveVariantPricesInPlace(resolved as never);
     await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
@@ -1119,6 +1125,7 @@ export class ProductsService {
 
     const media = dto.media !== undefined ? normalizeMedia(dto.media) : (existing.media as unknown as ProductMediaItem[]);
     const legacy = dto.media !== undefined ? deriveLegacyImageFields(media) : null;
+    if (dto.media !== undefined) await this.assertVariantPhotosShared(id, media);
 
     // The category membership this save actually results in, whether or not
     // this particular request touched `categoryIds` — a `primaryCategoryId`
@@ -1379,6 +1386,7 @@ export class ProductsService {
       where: { id: productId },
     });
     if (!product) throw new NotFoundException('Product not found');
+    await this.assertMediaKeysShared(productId, [...(dto.mediaKeys ?? []), dto.featuredMediaKey]);
 
     if (dto.sku) {
       const conflict = await this.prisma.productVariant.findUnique({
@@ -1451,6 +1459,7 @@ export class ProductsService {
       where: { id: variantId },
     });
     if (!variant) throw new NotFoundException('Variant not found');
+    await this.assertMediaKeysShared(variant.productId, [...(dto.mediaKeys ?? []), dto.featuredMediaKey]);
 
     if (dto.sku && dto.sku !== variant.sku) {
       const conflict = await this.prisma.productVariant.findUnique({
@@ -1770,6 +1779,48 @@ export class ProductsService {
     }));
   }
 
+  /**
+   * Refuses a variant or swatch photo that is limited to some languages.
+   * Picking "Black" switches the photo in every language, so the photo it
+   * switches to has to exist in every language's gallery.
+   */
+  private async assertMediaKeysShared(productId: string, keys: Array<string | null | undefined>): Promise<void> {
+    const wanted = keys.filter((k): k is string => !!k);
+    if (!wanted.length) return;
+    const product = await this.prisma.product.findUnique({ where: { id: productId }, select: { media: true } });
+    const limited = languageSpecificMediaKeys((product?.media as unknown as ProductMediaItem[]) ?? []);
+    if (wanted.some((k) => limited.has(k))) {
+      throw new BadRequestException('Variant and swatch photos must be shown in all languages — this photo is limited to some languages.');
+    }
+  }
+
+  /**
+   * The same rule from the other side: a gallery save that would limit a photo
+   * some variant or swatch already uses is refused, naming who uses it, rather
+   * than leaving that variant pointing at a photo other languages cannot see.
+   */
+  private async assertVariantPhotosShared(productId: string, media: ProductMediaItem[]): Promise<void> {
+    const limited = [...languageSpecificMediaKeys(media)];
+    if (!limited.length) return;
+    const [variants, swatches] = await Promise.all([
+      this.prisma.productVariant.findMany({
+        where: { productId, OR: [{ featuredMediaKey: { in: limited } }, { mediaKeys: { hasSome: limited } }] },
+        select: { title: true, sku: true },
+      }),
+      this.prisma.productOptionValueImage.findMany({
+        where: { productId, mediaKey: { in: limited } },
+        select: { optionValue: { select: { value: true, displayValue: true } } },
+      }),
+    ]);
+    const users = [
+      ...variants.map((v) => `variant "${v.title ?? v.sku}"`),
+      ...swatches.map((s) => `swatch "${s.optionValue.displayValue ?? s.optionValue.value}"`),
+    ];
+    if (users.length) {
+      throw new BadRequestException(`A photo limited to some languages is used by ${users.join(', ')}. Variant and swatch photos must be shown in all languages.`);
+    }
+  }
+
   async setProductOptionImage(productId: string, optionValueId: string, mediaKey: string) {
     await this.assertExists(productId);
     const optionValue = await this.prisma.variationOptionValue.findUnique({
@@ -1786,6 +1837,7 @@ export class ProductsService {
       },
     });
     if (!linked) throw new BadRequestException("This option value's attribute is not linked to this product");
+    await this.assertMediaKeysShared(productId, [mediaKey]);
 
     await this.prisma.productOptionValueImage.upsert({
       where: { productId_optionValueId: { productId, optionValueId } },

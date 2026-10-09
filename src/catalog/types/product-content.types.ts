@@ -4,6 +4,16 @@
 // contract every reader/writer in the app agrees on).
 
 /** A single media asset attached to a product (image or video). Order = gallery order. */
+/**
+ * The storefront's languages, in the order the admin lists them. Mirrors
+ * LOCALES in the storefront's lib/i18n. A gallery photo can be limited to
+ * some of these (ProductMediaItem.locales).
+ */
+export const STOREFRONT_LOCALES = ['en', 'fr', 'es', 'it', 'de', 'nl', 'pl', 'pt'] as const;
+export type StorefrontLocale = (typeof STOREFRONT_LOCALES)[number];
+/** The language a storefront request means when it sends no `lang` — the storefront omits it for its default. */
+export const STOREFRONT_DEFAULT_LOCALE: StorefrontLocale = 'en';
+
 export interface ProductMediaItem {
   /** GCS storage key (image or video) */
   key: string;
@@ -13,6 +23,14 @@ export interface ProductMediaItem {
   altText?: string | null;
   /** At most one item across the array should be true */
   isFeatured?: boolean;
+  /**
+   * The storefront languages this item is shown in. Absent (or empty) means
+   * every language — the default, and what every item saved before this
+   * existed has. A featured item and any item a variant or swatch points at
+   * must stay shared: those surface outside the gallery (cards, cart, share
+   * previews, variant switching), where a one-language photo would be wrong.
+   */
+  locales?: StorefrontLocale[];
 }
 
 /** ProductMediaItem with resolved URLs, returned by the API. */

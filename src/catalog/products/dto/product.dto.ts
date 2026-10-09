@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TRUST_BADGE_ICON_NAMES } from '../../types/product-content.types';
+import { STOREFRONT_LOCALES, TRUST_BADGE_ICON_NAMES } from '../../types/product-content.types';
 
 // ── Content-block schemas (mirror the ProductXxx interfaces in catalog/types) ──
 
@@ -9,6 +9,8 @@ export const ProductMediaItemSchema = z.object({
   posterKey: z.string().max(1000).nullish(),
   altText: z.string().max(500).nullish(),
   isFeatured: z.boolean().optional(),
+  /** Languages this photo is limited to; omitted or empty = all languages. */
+  locales: z.array(z.enum(STOREFRONT_LOCALES)).max(STOREFRONT_LOCALES.length).nullish(),
 });
 
 export const ProductInfoSectionSchema = z.object({
