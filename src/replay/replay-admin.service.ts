@@ -205,6 +205,11 @@ export class ReplayAdminService {
         // A missing/corrupt chunk shouldn't fail the whole playback — skip it.
       }
     }
-    return events;
+    // In time order, whatever order the batches were stored in: two batches
+    // in flight together can reach the server the wrong way round.
+    return events
+      .map((e, i) => ({ e, i, t: Number((e as { timestamp?: number })?.timestamp) || 0 }))
+      .sort((a, b) => a.t - b.t || a.i - b.i)
+      .map((x) => x.e);
   }
 }

@@ -4,7 +4,7 @@ import { GcsService } from '../gcs/gcs.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { GeoIpService } from '../analytics-tracking/geo-ip.service';
 import { StartReplaySessionDto, IngestReplayBatchDto, ReplayMarkerDto } from './dto/replay.dto';
-import { containsLikelySensitiveData, batchByteSize } from './replay.util';
+import { redactSensitiveData, batchByteSize } from './replay.util';
 import { MAX_BATCH_BYTES, MAX_BATCH_EVENTS, MAX_SESSION_EVENTS, REPLAY_LIVE_SAMPLE_RATE, chunkObjectKey } from './replay.constants';
 
 @Injectable()
@@ -66,7 +66,11 @@ export class ReplayTrackingService {
     return { sessionId: session.id };
   }
 
-  /** Every failure mode is a silent no-op — an unknown/foreign/inactive session, an oversized batch, or a payload that trips the PII backstop. */
+  /**
+   * Every failure mode is a silent no-op — an unknown/foreign/inactive
+   * session or an oversized batch. Email- and card-shaped text in DOM
+   * mutations is blanked, not refused (see redactSensitiveData).
+   */
   async ingestBatch(sessionId: string, dto: IngestReplayBatchDto): Promise<void> {
     const session = await this.prisma.replaySession.findUnique({ where: { id: sessionId } });
     if (!session || session.status !== 'active') return;
@@ -74,14 +78,23 @@ export class ReplayTrackingService {
     if (dto.events.length > MAX_BATCH_EVENTS) return;
     if (batchByteSize(dto.events) > MAX_BATCH_BYTES) return;
     if (session.eventCount + dto.events.length > MAX_SESSION_EVENTS) return;
-    if (containsLikelySensitiveData(dto.events)) return;
+    const events = redactSensitiveData(dto.events);
 
     try {
-      if (dto.events.length > 0) {
-        const key = chunkObjectKey(sessionId, session.chunkCount);
-        const buffer = Buffer.from(JSON.stringify(dto.events));
+      if (events.length > 0) {
+        // The chunk's number is claimed atomically, never read off the row
+        // fetched above: the recorder can have two batches in flight (a timed
+        // flush and a full buffer, typically right after a page change), and
+        // both read the same chunkCount. They then wrote the same object key —
+        // the second overwrote the first's events in storage — and the
+        // second's row failed the unique index. The lost batch was usually
+        // the new page's DOM, so the replay stayed on the old one.
+        const { chunkCount } = await this.prisma.replaySession.update({ where: { id: sessionId }, data: { chunkCount: { increment: 1 } }, select: { chunkCount: true } });
+        const sequence = chunkCount - 1;
+        const key = chunkObjectKey(sessionId, sequence);
+        const buffer = Buffer.from(JSON.stringify(events));
         await this.gcs.upload(buffer, key, 'application/json', 'private');
-        await this.prisma.replaySessionChunk.create({ data: { sessionId, sequence: session.chunkCount, gcsObjectKey: key, sizeBytes: buffer.byteLength, eventCount: dto.events.length } });
+        await this.prisma.replaySessionChunk.create({ data: { sessionId, sequence, gcsObjectKey: key, sizeBytes: buffer.byteLength, eventCount: events.length } });
       }
 
       await this.saveMarkers(sessionId, dto.markers);
@@ -93,8 +106,7 @@ export class ReplayTrackingService {
       await this.prisma.replaySession.update({
         where: { id: sessionId },
         data: {
-          eventCount: { increment: dto.events.length },
-          chunkCount: dto.events.length > 0 ? { increment: 1 } : undefined,
+          eventCount: { increment: events.length },
           clickCount: { increment: clickDelta },
           maxScrollPct,
           lastEventAt: new Date(),

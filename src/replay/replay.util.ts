@@ -28,6 +28,40 @@ export function containsLikelySensitiveData(events: RawRrwebEvent[]): boolean {
   return false;
 }
 
+const EMAIL_PATTERN_ALL = new RegExp(EMAIL_PATTERN.source, 'gi');
+const CARD_NUMBER_PATTERN_ALL = new RegExp(CARD_NUMBER_PATTERN.source, 'g');
+
+function redactString(value: string): string {
+  return value.replace(EMAIL_PATTERN_ALL, (m) => '*'.repeat(m.length)).replace(CARD_NUMBER_PATTERN_ALL, (m) => '*'.repeat(m.length));
+}
+
+function redactDeep(value: unknown): unknown {
+  if (typeof value === 'string') return redactString(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactDeep(v);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * The same backstop as containsLikelySensitiveData, applied by blanking the
+ * match rather than refusing the batch.
+ *
+ * Refusing it threw away every DOM change in it — and a replay is a chain:
+ * once one batch of mutations is missing, every later one refers to nodes
+ * the player never built, so the replay froze on the previous page for the
+ * rest of the session while scrolls and clicks carried on. A shop email in a
+ * page's footer copy was enough. Redacting keeps the chain whole and still
+ * keeps the address or card number out of storage. Same length, so text
+ * layout in the replay is unchanged.
+ */
+export function redactSensitiveData<T extends RawRrwebEvent>(events: T[]): T[] {
+  return events.map((event) => (event?.type === MUTATION_EVENT_TYPE && event.data ? ({ ...event, data: redactDeep(event.data) } as T) : event));
+}
+
 export function batchByteSize(events: unknown[]): number {
   return Buffer.byteLength(JSON.stringify(events));
 }
