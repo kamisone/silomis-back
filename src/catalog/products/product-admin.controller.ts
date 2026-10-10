@@ -232,15 +232,22 @@ export class ProductAdminController {
     return this.products.getProductOptionImages(id);
   }
 
+  /** `?locale=fr` sets France's photo; without it, the default shown in every other language. */
   @Put(':id/option-images/:optionValueId')
-  setOptionImage(@Param('id') productId: string, @Param('optionValueId') optionValueId: string, @Body() dto: { mediaKey: string }) {
-    return this.products.setProductOptionImage(productId, optionValueId, dto.mediaKey);
+  setOptionImage(
+    @Param('id') productId: string,
+    @Param('optionValueId') optionValueId: string,
+    @Body() dto: { mediaKey: string },
+    @Query('locale') locale?: string,
+  ) {
+    return this.products.setProductOptionImage(productId, optionValueId, dto.mediaKey, locale);
   }
 
+  /** `?locale=fr` removes France's photo; without it, the default — and every language photo with it. */
   @Delete(':id/option-images/:optionValueId')
   @HttpCode(204)
-  removeOptionImage(@Param('id') productId: string, @Param('optionValueId') optionValueId: string) {
-    return this.products.removeProductOptionImage(productId, optionValueId);
+  removeOptionImage(@Param('id') productId: string, @Param('optionValueId') optionValueId: string, @Query('locale') locale?: string) {
+    return this.products.removeProductOptionImage(productId, optionValueId, locale);
   }
 
   // ── Document upload ──────────────────────────────────────────────────────

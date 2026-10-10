@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { swatchPhotosForLocale } from '../catalog/products/product-content.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { TranslationsService } from '../translations/translations.service';
@@ -278,14 +279,16 @@ export class CartService {
           .map((o) => o.optionValueId)
           .filter(Boolean) as string[];
         if (optionValueIds.length) {
-          const optionImage =
-            await this.prisma.productOptionValueImage.findFirst({
-              where: {
-                productId: product.id,
-                optionValueId: { in: optionValueIds },
-              },
-            });
-          imageKeySnapshot = optionImage?.mediaKey ?? null;
+          const optionImages = await this.prisma.productOptionValueImage.findMany({
+            where: { productId: product.id, optionValueId: { in: optionValueIds } },
+          });
+          // The photo of the language the customer is shopping in (else the
+          // default), so the drawer, checkout and emails show the cap they
+          // picked as they saw it. The line's own option order decides which
+          // option's photo wins, so the choice is the same on every add.
+          const picked = swatchPhotosForLocale(optionImages, (oi) => oi.optionValueId, lang);
+          const firstWithPhoto = optionValueIds.find((id) => picked.has(id));
+          imageKeySnapshot = firstWithPhoto ? picked.get(firstWithPhoto)!.mediaKey : null;
         }
       }
       imageKeySnapshot = imageKeySnapshot ?? product.featuredImageKey ?? null;

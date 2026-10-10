@@ -54,6 +54,65 @@ export function normalizeMedia(media: z.infer<typeof ProductMediaItemSchema>[]):
   });
 }
 
+/**
+ * The storefront language a request is for. No `lang` — or one the storefront
+ * does not have — is the storefront default, which is how the storefront
+ * itself reads it (it omits `?lang=` for its default).
+ */
+export function storefrontLocale(lang?: string | null): StorefrontLocale {
+  const base = (lang ?? '').toLowerCase().split('-')[0];
+  return (STOREFRONT_LOCALES as readonly string[]).includes(base) ? (base as StorefrontLocale) : STOREFRONT_DEFAULT_LOCALE;
+}
+
+// ── Swatch photos per language ──────────────────────────────────────────
+// ProductOptionValueImage.locale: "" is the default shown in every language;
+// a storefront locale replaces it on that language's pages.
+
+/** "" for the default, a storefront locale, or null for anything else. */
+export function parseSwatchLocale(raw?: string | null): '' | StorefrontLocale | null {
+  const value = (raw ?? '').trim().toLowerCase();
+  if (!value) return '';
+  return (STOREFRONT_LOCALES as readonly string[]).includes(value) ? (value as StorefrontLocale) : null;
+}
+
+/** One option's swatch photo for a language: its own if it has one, else the default. */
+export function pickSwatchPhoto<T extends { locale?: string | null }>(rows: T[], lang?: string | null): T | undefined {
+  const locale = storefrontLocale(lang);
+  return rows.find((r) => r.locale === locale) ?? rows.find((r) => !r.locale);
+}
+
+/**
+ * Groups swatch photo rows by option and picks each option's photo for a
+ * language — the shape every storefront reader needs. Keyed by `keyOf(row)`
+ * (the option id, or product + option for a page of cards).
+ */
+export function swatchPhotosForLocale<T extends { locale?: string | null }>(rows: T[], keyOf: (row: T) => string, lang?: string | null): Map<string, T> {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const out = new Map<string, T>();
+  for (const [key, group] of groups) {
+    const picked = pickSwatchPhoto(group, lang);
+    if (picked) out.set(key, picked);
+  }
+  return out;
+}
+
+/**
+ * Whether a swatch photo can serve `locale`: the default ("") must be a photo
+ * every language's gallery shows — it is everyone's fallback, and the cart
+ * line and share preview of any language — and a language's own photo must
+ * be one that language's gallery shows. A key that is not a gallery photo at
+ * all has nothing to check against and is allowed (older swatches).
+ */
+export function swatchPhotoFitsLocale(media: ProductMediaItem[], mediaKey: string, locale: '' | StorefrontLocale): boolean {
+  const item = media.find((m) => m.key === mediaKey);
+  if (!item || isSharedMedia(item)) return true;
+  return locale !== '' && item.locales!.includes(locale);
+}
+
 /** Whether a gallery item is shown in every language. */
 export function isSharedMedia(m: ProductMediaItem): boolean {
   return !m.locales?.length;
@@ -72,7 +131,7 @@ export function languageSpecificMediaKeys(media: ProductMediaItem[]): Set<string
  * one: a product page without photos is worse than one in the wrong language.
  */
 export function mediaForLocale(media: ProductMediaItem[], lang?: string | null): ProductMediaItem[] {
-  const locale = ((lang ?? '').toLowerCase().split('-')[0] || STOREFRONT_DEFAULT_LOCALE) as StorefrontLocale;
+  const locale = storefrontLocale(lang);
   const visible = media.filter((m) => isSharedMedia(m) || m.locales!.includes(locale));
   return visible.length ? visible : media;
 }

@@ -693,6 +693,16 @@ model ProductVariantAttribute {
 
 /// Per-product image for a global "image" swatch option value (e.g. this product's
 /// photo for the shared "Red" color value — the photo itself is product-specific).
+///
+/// One row per language at most: `locale` "" is the default, shown in every
+/// language that has no photo of its own, and a row with a storefront locale
+/// ("fr") replaces it on that language's pages — a black cap shot with French
+/// copy on it for France. A language row needs a default to fall back from,
+/// and the default must be a photo every language's gallery shows; a language
+/// row's photo must be one that language's gallery shows.
+///
+/// "" rather than NULL for the default: Postgres never treats two NULLs as
+/// equal, so a nullable column would let a product carry two defaults.
 model ProductOptionValueImage {
   id String @id @default(uuid())
 
@@ -702,12 +712,15 @@ model ProductOptionValueImage {
   optionValueId String
   optionValue   VariationOptionValue @relation(fields: [optionValueId], references: [id], onDelete: Cascade)
 
+  /// "" = the default for every language; otherwise a storefront locale ("fr").
+  locale String @default("") @db.VarChar(10)
+
   mediaKey String @db.VarChar(1000)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([productId, optionValueId])
+  @@unique([productId, optionValueId, locale])
   @@map("shop_product_option_value_images")
 }
 

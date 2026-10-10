@@ -10,7 +10,7 @@ import { slugify } from '../../common/utils/slug.util';
 import { Prisma, Product, ProductVariant } from '../../../generated/prisma/client';
 import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
 import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
-import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
+import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, parseSwatchLocale, swatchPhotoFitsLocale, swatchPhotosForLocale, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
@@ -743,7 +743,7 @@ export class ProductsService {
     const localized = { ...product, media: mediaForLocale(product.media as unknown as ProductMediaItem[], lang) as unknown as Prisma.JsonValue };
     const resolved = await this.resolveProductUrls(localized);
     this.resolveVariantPricesInPlace(resolved as never);
-    await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never);
+    await this.resolveOptionSwatchUrlsInPlace(product.id, resolved as never, lang);
     const [translated] = await this.translations.maybeApply([resolved], ET_SHOP_PRODUCT, lang);
     this.translations.applyNestedInPlace(translated as Record<string, unknown>, PRODUCT_TRANSLATION_COLLECTIONS);
     await this.translateVariantOptionsInPlace(translated as never, lang);
@@ -901,7 +901,9 @@ export class ProductsService {
     const optionImages = await this.prisma.productOptionValueImage.findMany({
       where: { productId: { in: products.map((p) => p.id) } },
     });
-    const imageKeyFor = new Map(optionImages.map((oi) => [`${oi.productId}:${oi.optionValueId}`, oi.mediaKey]));
+    const imageKeyFor = new Map(
+      [...swatchPhotosForLocale(optionImages, (oi) => `${oi.productId}:${oi.optionValueId}`, lang)].map(([key, oi]) => [key, oi.mediaKey]),
+    );
 
     const variantMediaKeys = allVariants.map((v) => v.featuredMediaKey).filter((k): k is string => !!k);
     const urlMap = await this.assetUrls.resolveBatch([...new Set([...imageKeyFor.values(), ...variantMediaKeys])]);
@@ -944,6 +946,7 @@ export class ProductsService {
   private async resolveOptionSwatchUrlsInPlace(
     productId: string,
     product: { variants?: Array<{ options?: Array<{ optionValue?: OptionValueSwatch | null }> }> },
+    lang?: string,
   ): Promise<void> {
     const optionValues = (product.variants ?? [])
       .flatMap((v) => v.options ?? [])
@@ -952,7 +955,9 @@ export class ProductsService {
     if (!optionValues.length) return;
 
     const optionImages = await this.prisma.productOptionValueImage.findMany({ where: { productId } });
-    const optionImageMap = new Map(optionImages.map((oi) => [oi.optionValueId, oi.mediaKey]));
+    // This language's photo per option, else the default.
+    const picked = swatchPhotosForLocale(optionImages, (oi) => oi.optionValueId, lang);
+    const optionImageMap = new Map([...picked].map(([id, oi]) => [id, oi.mediaKey]));
     const urlMap = await this.assetUrls.resolveBatch([...optionImageMap.values()]);
 
     for (const ov of optionValues) {
@@ -1766,23 +1771,26 @@ export class ProductsService {
 
   // ── Per-product images for "image" swatch option values ─────────────────
 
+  /** Every swatch photo of the product: one default per option, plus any per-language ones (`locale` null = default). */
   async getProductOptionImages(productId: string) {
     const rows = await this.prisma.productOptionValueImage.findMany({
       where: { productId },
+      orderBy: [{ optionValueId: 'asc' }, { locale: 'asc' }],
     });
     if (!rows.length) return [];
     const urlMap = await this.assetUrls.resolveBatch(rows.map((r) => r.mediaKey));
     return rows.map((r) => ({
       optionValueId: r.optionValueId,
+      locale: r.locale || null,
       mediaKey: r.mediaKey,
       url: urlMap.get(r.mediaKey) ?? null,
     }));
   }
 
   /**
-   * Refuses a variant or swatch photo that is limited to some languages.
-   * Picking "Black" switches the photo in every language, so the photo it
-   * switches to has to exist in every language's gallery.
+   * Refuses a variant photo that is limited to some languages. A variant's
+   * photo has no per-language alternative (unlike a swatch photo), so it is
+   * what every language switches to and must be in every language's gallery.
    */
   private async assertMediaKeysShared(productId: string, keys: Array<string | null | undefined>): Promise<void> {
     const wanted = keys.filter((k): k is string => !!k);
@@ -1790,7 +1798,7 @@ export class ProductsService {
     const product = await this.prisma.product.findUnique({ where: { id: productId }, select: { media: true } });
     const limited = languageSpecificMediaKeys((product?.media as unknown as ProductMediaItem[]) ?? []);
     if (wanted.some((k) => limited.has(k))) {
-      throw new BadRequestException('Variant and swatch photos must be shown in all languages — this photo is limited to some languages.');
+      throw new BadRequestException('Variant photos must be shown in all languages — this photo is limited to some languages.');
     }
   }
 
@@ -1809,19 +1817,35 @@ export class ProductsService {
       }),
       this.prisma.productOptionValueImage.findMany({
         where: { productId, mediaKey: { in: limited } },
-        select: { optionValue: { select: { value: true, displayValue: true } } },
+        select: { mediaKey: true, locale: true, optionValue: { select: { value: true, displayValue: true } } },
       }),
     ]);
+    // A swatch photo may be limited — to the language it is that language's
+    // photo for. Only the ones the new gallery would hide from their own
+    // language are a problem.
+    const misfits = swatches.filter((sw) => !swatchPhotoFitsLocale(media, sw.mediaKey, parseSwatchLocale(sw.locale) ?? ''));
     const users = [
       ...variants.map((v) => `variant "${v.title ?? v.sku}"`),
-      ...swatches.map((s) => `swatch "${s.optionValue.displayValue ?? s.optionValue.value}"`),
+      ...misfits.map((sw) => `${sw.locale ? `${sw.locale.toUpperCase()} ` : ''}swatch photo for "${sw.optionValue.displayValue ?? sw.optionValue.value}"`),
     ];
     if (users.length) {
-      throw new BadRequestException(`A photo limited to some languages is used by ${users.join(', ')}. Variant and swatch photos must be shown in all languages.`);
+      throw new BadRequestException(
+        `This gallery change would hide a photo that is still in use: ${users.join(', ')}. ` +
+          'Variant photos and default swatch photos must be shown in all languages, and a language’s swatch photo in that language.',
+      );
     }
   }
 
-  async setProductOptionImage(productId: string, optionValueId: string, mediaKey: string) {
+  /**
+   * Sets an option's swatch photo — the default (`locale` empty) or one
+   * language's. A language photo needs a default to fall back from, and each
+   * photo must be one its language's gallery shows (the default: every
+   * language's), checked against the saved gallery.
+   */
+  async setProductOptionImage(productId: string, optionValueId: string, mediaKey: string, rawLocale?: string | null) {
+    const locale = parseSwatchLocale(rawLocale);
+    if (locale === null) throw new BadRequestException('Unknown language for a swatch photo.');
+    if (!mediaKey?.trim()) throw new BadRequestException('Choose a photo.');
     await this.assertExists(productId);
     const optionValue = await this.prisma.variationOptionValue.findUnique({
       where: { id: optionValueId },
@@ -1837,21 +1861,41 @@ export class ProductsService {
       },
     });
     if (!linked) throw new BadRequestException("This option value's attribute is not linked to this product");
-    await this.assertMediaKeysShared(productId, [mediaKey]);
+
+    const product = await this.prisma.product.findUnique({ where: { id: productId }, select: { media: true } });
+    const media = (product?.media as unknown as ProductMediaItem[]) ?? [];
+    if (!swatchPhotoFitsLocale(media, mediaKey, locale)) {
+      throw new BadRequestException(
+        locale
+          ? `This photo is not shown in ${locale.toUpperCase()} — pick one the ${locale.toUpperCase()} gallery shows, or set the photo to that language in Product media.`
+          : 'The default swatch photo must be shown in all languages — this photo is limited to some languages.',
+      );
+    }
+    if (locale) {
+      const hasDefault = await this.prisma.productOptionValueImage.count({ where: { productId, optionValueId, locale: '' } });
+      if (!hasDefault) throw new BadRequestException('Set the default swatch photo first — a language photo replaces it, and the other languages need it.');
+    }
 
     await this.prisma.productOptionValueImage.upsert({
-      where: { productId_optionValueId: { productId, optionValueId } },
-      create: { productId, optionValueId, mediaKey },
+      where: { productId_optionValueId_locale: { productId, optionValueId, locale } },
+      create: { productId, optionValueId, locale, mediaKey },
       update: { mediaKey },
     });
 
     const url = await this.assetUrls.resolve(mediaKey);
-    return { optionValueId, mediaKey, url };
+    return { optionValueId, locale: locale || null, mediaKey, url };
   }
 
-  async removeProductOptionImage(productId: string, optionValueId: string): Promise<void> {
+  /**
+   * Removes a language's swatch photo, which puts that language back on the
+   * default. Removing the default removes the option's language photos with
+   * it: without a default they would have nothing to fall back from.
+   */
+  async removeProductOptionImage(productId: string, optionValueId: string, rawLocale?: string | null): Promise<void> {
+    const locale = parseSwatchLocale(rawLocale);
+    if (locale === null) throw new BadRequestException('Unknown language for a swatch photo.');
     await this.prisma.productOptionValueImage.deleteMany({
-      where: { productId, optionValueId },
+      where: { productId, optionValueId, ...(locale ? { locale } : {}) },
     });
   }
 
@@ -1989,7 +2033,9 @@ export class ProductsService {
     // Image swatches are per-product (Product A's "Red" photo isn't Product B's),
     // so resolve them from this product's option-value image overrides.
     const optionImages = await this.prisma.productOptionValueImage.findMany({ where: { productId } });
-    const optionImageMap = new Map(optionImages.map((oi) => [oi.optionValueId, oi.mediaKey]));
+    // This language's photo per option, else the default — the PDP's option
+    // picker reads its swatches from here.
+    const optionImageMap = new Map([...swatchPhotosForLocale(optionImages, (oi) => oi.optionValueId, lang)].map(([id, oi]) => [id, oi.mediaKey]));
     const swatchKeys = [...optionImageMap.values()];
     const urlMap = await this.assetUrls.resolveBatch([...mediaKeys, ...swatchKeys]);
 
