@@ -21,6 +21,8 @@ const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
 const MAX_MEDIA_FILES = 5;
+/** A basket is never this long; the cap only bounds the query a public URL can ask for. */
+const MAX_SUMMARY_PRODUCTS = 50;
 
 const EMPTY_DISTRIBUTION = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
 
@@ -236,6 +238,22 @@ export class ReviewsService {
     const product = await this.prisma.product.findUnique({ where: { id: productId }, select: { ratingAverage: true, reviewCount: true, ratingDistribution: true } });
     if (!product) return { average: 0, count: 0, distribution: EMPTY_DISTRIBUTION };
     return { average: Number(product.ratingAverage), count: product.reviewCount, distribution: product.ratingDistribution };
+  }
+
+  /**
+   * One rating for a set of products — the basket's, at checkout: the same
+   * per-product figures the product pages show, weighted by review count so a
+   * product with one review cannot outweigh one with a hundred. Products with
+   * no reviews simply add nothing; unknown ids are ignored.
+   */
+  async getSummary(productIds: string[]): Promise<{ average: number; count: number }> {
+    const ids = [...new Set(productIds.map((id) => id.trim()).filter(Boolean))].slice(0, MAX_SUMMARY_PRODUCTS);
+    if (!ids.length) return { average: 0, count: 0 };
+    const products = await this.prisma.product.findMany({ where: { id: { in: ids }, reviewCount: { gt: 0 } }, select: { ratingAverage: true, reviewCount: true } });
+    const count = products.reduce((n, p) => n + p.reviewCount, 0);
+    if (!count) return { average: 0, count: 0 };
+    const weighted = products.reduce((sum, p) => sum + Number(p.ratingAverage) * p.reviewCount, 0);
+    return { average: Math.round((weighted / count) * 10) / 10, count };
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ const DISPLAY_CURRENCY_DECIMAL_PLACES_KEY = 'display_currency_decimal_places';
 const MAP_TILES_URL_KEY = 'map_tiles_url';
 const MAP_TILES_ATTRIBUTION_KEY = 'map_tiles_attribution';
 const MAP_TILES_ENABLED_KEY = 'map_tiles_enabled';
+const EMBROIDERY_PRODUCTION_DAYS_KEY = 'embroidery_production_days';
 
 /**
  * OpenStreetMap's own tiles, so the pickup-point map works with no signup.
@@ -31,6 +32,13 @@ const DEFAULT_MAP_TILES: MapTilesConfig = {
   attribution: '© OpenStreetMap contributors',
   enabled: true,
 };
+/**
+ * Business days between an embroidered order and its dispatch. The checkout
+ * adds it to the carrier's delivery estimate for a basket with embroidery in
+ * it, so the date the customer is promised includes the stitching.
+ */
+const DEFAULT_EMBROIDERY_PRODUCTION_DAYS = 2;
+export const MAX_EMBROIDERY_PRODUCTION_DAYS = 30;
 const DEFAULT_CURRENCY: CurrencyConfig = { code: 'EUR', symbolPosition: 'after', decimalPlaces: 2 };
 const CACHE_TTL_MS = 60_000; // refresh ceiling: 60 s
 
@@ -60,6 +68,11 @@ export interface CurrencyConfig {
   decimalPlaces: number;
 }
 
+export interface EmbroideryConfig {
+  /** Business days to stitch a personalised order before it ships. 0 = ships like any other order. */
+  productionDays: number;
+}
+
 export interface MapTilesConfig {
   /** XYZ tile template — must contain {z}, {x} and {y}. */
   tileUrl: string;
@@ -82,6 +95,7 @@ export class PlatformSettingsService implements OnModuleInit {
   private cachedLowStockAlertsEnabled = false;
   private cachedCurrency: CurrencyConfig = DEFAULT_CURRENCY;
   private cachedMapTiles: MapTilesConfig = DEFAULT_MAP_TILES;
+  private cachedEmbroidery: EmbroideryConfig = { productionDays: DEFAULT_EMBROIDERY_PRODUCTION_DAYS };
   private cacheExpiresAt = 0;
 
   constructor(private readonly prisma: PrismaService) {}
@@ -161,13 +175,20 @@ export class PlatformSettingsService implements OnModuleInit {
     return this.cachedMapTiles;
   }
 
-  getPlatformConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig; mapTiles: MapTilesConfig } {
+  /** Public: the checkout turns it into the dispatch and delivery dates it shows. */
+  getEmbroideryConfig(): EmbroideryConfig {
+    this.refreshIfStale();
+    return this.cachedEmbroidery;
+  }
+
+  getPlatformConfig(): { timezone: string; metaPixel: MetaPixelConfig; tiktokPixel: TikTokPixelConfig; currency: CurrencyConfig; mapTiles: MapTilesConfig; embroidery: EmbroideryConfig } {
     return {
       timezone: this.getTimezone(),
       metaPixel: this.getMetaPixelConfig(),
       tiktokPixel: this.getTikTokPixelConfig(),
       currency: this.getCurrencyConfig(),
       mapTiles: this.getMapTilesConfig(),
+      embroidery: this.getEmbroideryConfig(),
     };
   }
 
@@ -207,6 +228,17 @@ export class PlatformSettingsService implements OnModuleInit {
     this.cachedMapTiles = { tileUrl: tileUrl || DEFAULT_MAP_TILES.tileUrl, attribution, enabled: input.enabled };
     this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
     this.logger.log(`Map tiles config updated (enabled=${input.enabled})`);
+  }
+
+  async setEmbroideryConfig(input: EmbroideryConfig): Promise<void> {
+    const days = Number(input?.productionDays);
+    if (!Number.isInteger(days) || days < 0 || days > MAX_EMBROIDERY_PRODUCTION_DAYS) {
+      throw new BadRequestException(`Production time must be a whole number of days between 0 and ${MAX_EMBROIDERY_PRODUCTION_DAYS}`);
+    }
+    await this.upsert(EMBROIDERY_PRODUCTION_DAYS_KEY, String(days));
+    this.cachedEmbroidery = { productionDays: days };
+    this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
+    this.logger.log(`Embroidery production time updated to ${days} business day(s)`);
   }
 
   async setMetaPixelConfig(input: { pixelId: string | null; enabled: boolean }): Promise<void> {
@@ -318,7 +350,7 @@ export class PlatformSettingsService implements OnModuleInit {
       const rows = await this.prisma.platformSettings.findMany({
         where: {
           key: {
-            in: [TIMEZONE_KEY, META_PIXEL_ID_KEY, META_PIXEL_ENABLED_KEY, TIKTOK_PIXEL_ID_KEY, TIKTOK_PIXEL_ENABLED_KEY, ANALYTICS_EXCLUDED_IPS_KEY, ANALYTICS_BOT_USER_AGENTS_KEY, LOW_STOCK_ALERTS_ENABLED_KEY, DISPLAY_CURRENCY_CODE_KEY, DISPLAY_CURRENCY_SYMBOL_POSITION_KEY, DISPLAY_CURRENCY_DECIMAL_PLACES_KEY, MAP_TILES_URL_KEY, MAP_TILES_ATTRIBUTION_KEY, MAP_TILES_ENABLED_KEY],
+            in: [TIMEZONE_KEY, META_PIXEL_ID_KEY, META_PIXEL_ENABLED_KEY, TIKTOK_PIXEL_ID_KEY, TIKTOK_PIXEL_ENABLED_KEY, ANALYTICS_EXCLUDED_IPS_KEY, ANALYTICS_BOT_USER_AGENTS_KEY, LOW_STOCK_ALERTS_ENABLED_KEY, DISPLAY_CURRENCY_CODE_KEY, DISPLAY_CURRENCY_SYMBOL_POSITION_KEY, DISPLAY_CURRENCY_DECIMAL_PLACES_KEY, MAP_TILES_URL_KEY, MAP_TILES_ATTRIBUTION_KEY, MAP_TILES_ENABLED_KEY, EMBROIDERY_PRODUCTION_DAYS_KEY],
           },
         },
       });
@@ -359,6 +391,10 @@ export class PlatformSettingsService implements OnModuleInit {
         // Never configured -> on, so the map works out of the box. Explicitly
         // saved as "false" -> off.
         enabled: byKey.has(MAP_TILES_ENABLED_KEY) ? byKey.get(MAP_TILES_ENABLED_KEY) === 'true' : DEFAULT_MAP_TILES.enabled,
+      };
+      const productionDays = parseInt(byKey.get(EMBROIDERY_PRODUCTION_DAYS_KEY) ?? '', 10);
+      this.cachedEmbroidery = {
+        productionDays: Number.isInteger(productionDays) && productionDays >= 0 ? Math.min(productionDays, MAX_EMBROIDERY_PRODUCTION_DAYS) : DEFAULT_EMBROIDERY_PRODUCTION_DAYS,
       };
       this.cacheExpiresAt = Date.now() + CACHE_TTL_MS;
     } catch (err) {

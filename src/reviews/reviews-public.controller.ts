@@ -37,6 +37,12 @@ export class ReviewsPublicController {
     return this.reviews.listForProduct(productId, limit ? parseInt(limit, 10) : undefined, offset ? parseInt(offset, 10) : undefined, lang);
   }
 
+  /** ?products=id1,id2 — the combined rating of those products (the checkout's basket). */
+  @Get('summary')
+  getSummary(@Query('products') products?: string) {
+    return this.reviews.getSummary((products ?? '').split(','));
+  }
+
   @Get('product/:productId/stats')
   getStats(@Param('productId') productId: string) {
     return this.reviews.getStats(productId);
