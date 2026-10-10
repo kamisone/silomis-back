@@ -16,8 +16,10 @@ export class PersonalizationController {
    * looking for a routing bug.
    */
   @Get('config/:productId')
-  async config(@Param('productId') productId: string, @Query('lang') lang?: string) {
-    return (await this.personalization.getConfigForProduct(productId, lang)) ?? { available: false };
+  async config(@Param('productId') productId: string, @Query('lang') lang?: string, @Query('variant') variant?: string) {
+    // `variant`: the one being personalised — it picks each position's photo
+    // for that variant's colour (or any option the shop photographed).
+    return (await this.personalization.getConfigForProduct(productId, lang, variant || null)) ?? { available: false };
   }
 
   /**

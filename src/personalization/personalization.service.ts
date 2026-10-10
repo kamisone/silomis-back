@@ -250,7 +250,52 @@ export class PersonalizationService {
    * Returns null — not an error — when the product cannot be personalised, so
    * the caller can simply not render the entry point.
    */
-  async getConfigForProduct(productId: string, lang?: string) {
+  /**
+   * Which photograph each position shows for one variant.
+   *
+   * A position can carry a photo per variation option (the black cap's front
+   * panel beside the red one's). The variant's own options pick it; when its
+   * options match photos from two attributes — a colour and a size — the
+   * attribute listed first on the product wins. Anything unmatched, or no
+   * variant at all, keeps the position's own photo.
+   */
+  async placementPhotoKeys(
+    productId: string,
+    placements: { id: string; mediaKey: string | null }[],
+    variantId?: string | null,
+  ): Promise<Map<string, string | null>> {
+    const out = new Map(placements.map((p) => [p.id, p.mediaKey]));
+    if (!variantId || !placements.length) return out;
+
+    const [options, attributeOrder, images] = await Promise.all([
+      this.prisma.variantOption.findMany({
+        where: { variantId, variant: { productId }, optionValueId: { not: null } },
+        select: { optionValueId: true, attributeId: true },
+      }),
+      this.prisma.productVariantAttribute.findMany({ where: { productId }, select: { attributeId: true, sortOrder: true } }),
+      this.prisma.personalizationPlacementOptionImage.findMany({
+        where: { placementId: { in: placements.map((p) => p.id) } },
+        select: { placementId: true, optionValueId: true, mediaKey: true },
+      }),
+    ]);
+    if (!options.length || !images.length) return out;
+
+    const rank = new Map(attributeOrder.map((a) => [a.attributeId, a.sortOrder]));
+    // The variant's options, the product's first-listed attribute first.
+    const ordered = [...options].sort((a, b) => (rank.get(a.attributeId) ?? 0) - (rank.get(b.attributeId) ?? 0));
+    for (const p of placements) {
+      for (const o of ordered) {
+        const hit = images.find((img) => img.placementId === p.id && img.optionValueId === o.optionValueId);
+        if (hit) {
+          out.set(p.id, hit.mediaKey);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  async getConfigForProduct(productId: string, lang?: string, variantId?: string | null) {
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
       select: {
@@ -283,7 +328,12 @@ export class PersonalizationService {
     ]);
     if (!fonts.length || !threads.length) return null;
 
-    const imageUrls = await this.assetUrls.resolveBatch(placements.map((p) => p.mediaKey).filter(Boolean) as string[]);
+    // The photo for the customer's variant where the position has one, so a
+    // black cap stays black in the editor; the position's own photo otherwise.
+    const photoKeys = await this.placementPhotoKeys(product.id, placements, variantId);
+    const imageUrls = await this.assetUrls.resolveBatch(
+      [...placements.map((p) => p.mediaKey), ...photoKeys.values()].filter(Boolean) as string[],
+    );
 
     // A position with no photograph has nothing for a customer to place artwork
     // on, so it is not offered at all — and a product whose every position is
@@ -335,7 +385,11 @@ export class PersonalizationService {
         fieldHeightMm: p.fieldHeightMm,
         priceCents: p.priceCents,
         allowPuff: p.allowPuff,
-        imageUrl: p.mediaKey ? (imageUrls.get(p.mediaKey) ?? null) : null,
+        imageUrl: (() => {
+          const key = photoKeys.get(p.id) ?? p.mediaKey;
+          // An option photo that will not resolve falls back to the position's own.
+          return (key && imageUrls.get(key)) ?? (p.mediaKey ? (imageUrls.get(p.mediaKey) ?? null) : null);
+        })(),
         /**
          * Where the embroidery area sits on this photograph, as a share of it.
          *

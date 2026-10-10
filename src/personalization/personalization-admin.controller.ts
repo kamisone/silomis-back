@@ -369,9 +369,12 @@ export class PersonalizationAdminController {
     const placements = await this.prisma.personalizationPlacement.findMany({
       where: { productId },
       orderBy: { sortOrder: 'asc' },
+      include: { optionImages: { select: { optionValueId: true, mediaKey: true } } },
     });
 
-    const urls = await this.assetUrls.resolveBatch(placements.map((p) => p.mediaKey).filter(Boolean) as string[]);
+    const urls = await this.assetUrls.resolveBatch(
+      placements.flatMap((p) => [p.mediaKey, ...p.optionImages.map((i) => i.mediaKey)]).filter(Boolean) as string[],
+    );
 
     return placements.map((p) => ({
       id: p.id,
@@ -385,7 +388,75 @@ export class PersonalizationAdminController {
       sortOrder: p.sortOrder,
       mediaKey: p.mediaKey,
       imageUrl: p.mediaKey ? (urls.get(p.mediaKey) ?? null) : null,
+      /** This position photographed per variation option — see PersonalizationPlacementOptionImage. */
+      optionImages: p.optionImages.map((i) => ({ optionValueId: i.optionValueId, mediaKey: i.mediaKey, imageUrl: urls.get(i.mediaKey) ?? null })),
     }));
+  }
+
+  /**
+   * The product's variation options a position photo can be tied to: each
+   * attribute linked to the product, in the product's order, with only the
+   * values at least one of its variants uses — a colour the product is not
+   * sold in has no photo to take.
+   */
+  @Get('products/:productId/placement-options')
+  async placementOptions(@Param('productId') productId: string) {
+    const [links, used] = await Promise.all([
+      this.prisma.productVariantAttribute.findMany({
+        where: { productId },
+        orderBy: { sortOrder: 'asc' },
+        include: { attribute: { include: { optionValues: { where: { isActive: true }, orderBy: { sortOrder: 'asc' } } } } },
+      }),
+      this.prisma.variantOption.findMany({
+        where: { variant: { productId }, optionValueId: { not: null } },
+        select: { optionValueId: true },
+        distinct: ['optionValueId'],
+      }),
+    ]);
+    const inUse = new Set(used.map((u) => u.optionValueId));
+    return links
+      .map((l) => ({
+        attributeId: l.attributeId,
+        name: l.attribute.name,
+        adminLabel: l.attribute.adminLabel ?? null,
+        values: l.attribute.optionValues
+          .filter((v) => inUse.has(v.id))
+          .map((v) => ({ id: v.id, value: v.value, displayValue: v.displayValue, swatchType: v.swatchType, swatchValue: v.swatchValue })),
+      }))
+      .filter((a) => a.values.length > 0);
+  }
+
+  /** Sets this position's photo for one variation option (replacing any earlier one). */
+  @Put('placements/:id/option-images/:optionValueId')
+  async setPlacementOptionImage(
+    @Param('id') id: string,
+    @Param('optionValueId') optionValueId: string,
+    @Body() body: { mediaKey?: string | null },
+  ) {
+    const mediaKey = body.mediaKey?.trim();
+    if (!mediaKey) throw new BadRequestException('Choose a photo.');
+    const placement = await this.prisma.personalizationPlacement.findUnique({ where: { id }, select: { productId: true } });
+    if (!placement) throw new NotFoundException('Position not found');
+    // Only an option of this product: a photo tied to an option no variant of
+    // it has would never be shown.
+    const option = await this.prisma.variationOptionValue.findUnique({ where: { id: optionValueId }, select: { attributeId: true } });
+    const linked = option
+      ? await this.prisma.productVariantAttribute.findUnique({ where: { productId_attributeId: { productId: placement.productId, attributeId: option.attributeId } } })
+      : null;
+    if (!linked) throw new BadRequestException("That option is not one of this product's variation options.");
+
+    await this.prisma.personalizationPlacementOptionImage.upsert({
+      where: { placementId_optionValueId: { placementId: id, optionValueId } },
+      create: { placementId: id, optionValueId, mediaKey },
+      update: { mediaKey },
+    });
+    return { ok: true };
+  }
+
+  @Delete('placements/:id/option-images/:optionValueId')
+  async removePlacementOptionImage(@Param('id') id: string, @Param('optionValueId') optionValueId: string) {
+    await this.prisma.personalizationPlacementOptionImage.deleteMany({ where: { placementId: id, optionValueId } });
+    return { ok: true };
   }
 
   @Post('products/:productId/placements')

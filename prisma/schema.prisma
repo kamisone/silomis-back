@@ -469,6 +469,9 @@ model VariationOptionValue {
 
   @@unique([attributeId, value])
   @@map("shop_variation_option_values")
+
+  /// Position photos for this option (PersonalizationPlacementOptionImage).
+  placementOptionImages PersonalizationPlacementOptionImage[]
 }
 
 model Product {
@@ -2973,12 +2976,50 @@ model PersonalizationPlacement {
   isActive  Boolean @default(true)
   sortOrder Int     @default(0)
 
+  /// The same view of the product in another colour (or size, or any option):
+  /// shown instead of `mediaKey` when the customer's variant has that option.
+  optionImages PersonalizationPlacementOptionImage[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([productId, key])
   @@index([productId, isActive, sortOrder])
   @@map("shop_personalization_placements")
+}
+
+/// A position's photograph for one variation option — the front panel of the
+/// black cap, shot like the default one.
+///
+/// Customers left the editor when a black cap showed up red there: they took
+/// it for the colour they had picked being changed. So the editor (and the
+/// basket picture) shows the photo of the option the customer's variant has,
+/// and the position's own `mediaKey` stays the fallback for every option
+/// without one.
+///
+/// Keyed on an option value, not on an attribute name, so it works the same for
+/// colour, size or anything else. When a variant matches photos from two
+/// attributes, the attribute listed first on the product wins.
+///
+/// The embroidery area is the position's own box: the option photos are the
+/// same view, framed the same way.
+model PersonalizationPlacementOptionImage {
+  id String @id @default(uuid())
+
+  placementId String
+  placement   PersonalizationPlacement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+
+  optionValueId String
+  optionValue   VariationOptionValue @relation(fields: [optionValueId], references: [id], onDelete: Cascade)
+
+  mediaKey String @db.VarChar(1000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([placementId, optionValueId])
+  @@index([optionValueId])
+  @@map("shop_personalization_placement_option_images")
 }
 
 /// The design attached to one cart line.

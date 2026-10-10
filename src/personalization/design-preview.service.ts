@@ -46,6 +46,9 @@ export class DesignPreviewService {
     const placements = await this.prisma.personalizationPlacement.findMany({
       where: { productId: item.productId, key: { in: item.personalizations.map((d) => d.placementKey) } },
     });
+    // The basket picture shows the cap the customer is buying: the position's
+    // photo for this line's variant where the shop has one.
+    const photoKeys = await this.personalization.placementPhotoKeys(item.productId, placements, item.variantId);
 
     for (const row of item.personalizations) {
       if (row.previewKey) continue;
@@ -64,7 +67,7 @@ export class DesignPreviewService {
           corners = doc.customerItem.corners;
           panelWidthMm = doc.customerItem.panelWidthMm ?? row.fieldWidthMm;
         } else if (placement?.mediaKey) {
-          photoKey = placement.mediaKey;
+          photoKey = photoKeys.get(placement.id) ?? placement.mediaKey;
           // The position's embroidery area, as a share of its photo — the same
           // box the editor draws in. There is no tracing on a position any
           // more; only a customer's own item still arrives as four corners,
