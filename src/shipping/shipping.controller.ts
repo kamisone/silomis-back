@@ -1,7 +1,10 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpCode, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Request } from 'express';
 import { Public } from '../auth/public.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
+import { extractIp } from '../common/utils/client-ip.util';
 import { ShippingService } from './shipping.service';
+import { ShippingDestinationService } from './shipping-destination.service';
 import {
   UpdateMethodDto,
   UpdateMethodSchema,
@@ -16,7 +19,22 @@ import {
 @Public()
 @Controller('public/shop/shipping')
 export class ShippingPublicController {
-  constructor(private readonly shipping: ShippingService) {}
+  constructor(
+    private readonly shipping: ShippingService,
+    private readonly destination: ShippingDestinationService,
+  ) {}
+
+  /**
+   * Where this visitor's order would ship, for the header strip. Answered per
+   * visitor from their IP, so the page itself stays cacheable and the browser
+   * asks once. `country` is the destination the visitor already picked at
+   * checkout, preferred over the IP when the shop serves it.
+   */
+  @Get('destination')
+  @Header('Cache-Control', 'private, no-store')
+  getDestination(@Req() req: Request, @Query('country') country?: string) {
+    return this.destination.resolve(extractIp(req), country);
+  }
 
   @Get('methods')
   getMethods(@Query('country') country: string, @Query('subtotal') subtotal: string, @Query('lang') lang?: string) {

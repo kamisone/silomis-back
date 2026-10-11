@@ -1,14 +1,17 @@
 import { Module } from '@nestjs/common';
 import { TranslationsModule } from '../translations/translations.module';
+import { AnalyticsTrackingModule } from '../analytics-tracking/analytics-tracking.module';
+import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 import { PickupPointsModule } from './pickup-points/pickup-points.module';
 import { ShippingService } from './shipping.service';
+import { ShippingDestinationService } from './shipping-destination.service';
 import { ShippingAdminController, ShippingPublicController } from './shipping.controller';
 import { ShipmentAdminController } from './shipment-admin.controller';
 
 @Module({
-  imports: [TranslationsModule, PickupPointsModule],
+  imports: [TranslationsModule, PickupPointsModule, AnalyticsTrackingModule, PlatformSettingsModule],
   controllers: [ShippingPublicController, ShippingAdminController, ShipmentAdminController],
-  providers: [ShippingService],
+  providers: [ShippingService, ShippingDestinationService],
   exports: [ShippingService, PickupPointsModule],
 })
 export class ShippingModule {}
