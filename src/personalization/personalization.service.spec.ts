@@ -197,7 +197,6 @@ describe('PersonalizationService.resolve — normalisation', () => {
 describe('PersonalizationService.resolve — what will not be stitched', () => {
   const cases: [string, Record<string, unknown>, string][] = [
     ['empty after trimming', { text: '   ' }, E.TEXT_EMPTY],
-    ['emoji', { text: 'Maria 🎀' }, E.TEXT_UNSTITCHABLE],
     ['profanity', { text: 'fuck off' }, E.TEXT_BLOCKED],
     ['wider than the machine can hoop', { text: 'Alexandra Rose', heightMm: 40 }, E.TOO_WIDE],
     ['a monogram of four letters', { contentType: 'monogram', text: 'ABCD' }, E.MONOGRAM_LENGTH],
@@ -233,10 +232,21 @@ describe('PersonalizationService.resolve — what will not be stitched', () => {
     expect(r.text).toBe(text);
   });
 
-  it('still refuses what has no thread — a picture is not a letter', async () => {
-    const s = makeService();
-    expect(await codeOf(s.resolve('p1', design({ text: 'Maria 🎀' })))).toBe(E.TEXT_UNSTITCHABLE);
-    expect(await codeOf(s.resolve('p1', design({ text: '→ Maria' })))).toBe(E.TEXT_UNSTITCHABLE);
+  /**
+   * No character allow-list: the customer writes what they want, and the
+   * workshop contacts them if something cannot be sewn as typed.
+   */
+  it.each(['Oma’s', '« l’amour »', 'Max, 2024 — Bonjour !', 'Lea & Tom: 06/2024', 'Maria 🎀', 'Oma ♥', 'Mia <3', '→ Maria'])(
+    'takes the text exactly as typed: %s',
+    async (text) => {
+      const r = await makeService().resolve('p1', design({ text, heightMm: 8 }));
+      expect(r.text).toBe(text);
+    },
+  );
+
+  it('drops invisible control characters', async () => {
+    const r = await makeService().resolve('p1', design({ text: 'Ma\u0000ria\u0007', heightMm: 8 }));
+    expect(r.text).toBe('Maria');
   });
 
   /**

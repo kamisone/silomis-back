@@ -20,8 +20,6 @@ import {
   MONOGRAM_MIN_CHARS,
   PERSONALIZATION_ERRORS as E,
   ROTATION_LIMIT_DEG,
-  STITCHABLE_MONOGRAM,
-  STITCHABLE_TEXT,
   COMBINING_MARK,
   TRACKING_MAX,
   TRACKING_MIN,
@@ -1117,7 +1115,8 @@ export class PersonalizationService {
     // NFC first — "é" typed as e + combining accent is two code points, which
     // would both overrun the character limit and reach the face as a glyph it
     // does not have.
-    let text = raw.normalize('NFC').replace(/\s+/g, ' ').trim();
+    // Control characters are dropped: they are invisible, and no face draws them.
+    let text = raw.normalize('NFC').replace(/\p{Cc}/gu, '').replace(/\s+/g, ' ').trim();
     if (contentType === 'monogram') text = text.replace(/\s/g, '').toUpperCase();
     else if (uppercaseOnly) text = text.toUpperCase();
     return text;
@@ -1138,13 +1137,6 @@ export class PersonalizationService {
     if (contentType === 'monogram') {
       if (text.length < MONOGRAM_MIN_CHARS || text.length > MONOGRAM_MAX_CHARS) {
         fail(E.MONOGRAM_LENGTH, `A monogram is ${MONOGRAM_MIN_CHARS} or ${MONOGRAM_MAX_CHARS} letters.`);
-      }
-      if (!STITCHABLE_MONOGRAM.test(text)) {
-        fail(E.TEXT_UNSTITCHABLE, 'A monogram can only use letters.');
-      }
-    } else {
-      if (!STITCHABLE_TEXT.test(text)) {
-        fail(E.TEXT_UNSTITCHABLE, 'Some of those characters cannot be embroidered.');
       }
     }
 
