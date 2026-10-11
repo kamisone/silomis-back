@@ -17,6 +17,7 @@ export class ProductSearchPublicController {
     @Query('maxPrice') maxPrice: string = '',
     @Query('page') page: string = '1',
     @Query('limit') limit: string = '24',
+    @Query('lang') lang?: string,
   ) {
     return this.searchService.search(
       q,
@@ -29,12 +30,13 @@ export class ProductSearchPublicController {
       },
       parseInt(page, 10),
       parseInt(limit, 10),
+      lang,
     );
   }
 
   @Get('autocomplete')
-  autocomplete(@Query('q') q: string = '', @Query('limit') limit: string = '12') {
-    return this.searchService.autocomplete(q, parseInt(limit, 10));
+  autocomplete(@Query('q') q: string = '', @Query('limit') limit: string = '12', @Query('lang') lang?: string) {
+    return this.searchService.autocomplete(q, parseInt(limit, 10), lang);
   }
 }
 
