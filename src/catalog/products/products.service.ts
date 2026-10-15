@@ -715,7 +715,24 @@ export class ProductsService {
     if (!product) throw new NotFoundException('Product not found');
     const resolved = await this.resolveProductUrls(product);
     this.resolveVariantPricesInPlace(resolved as never);
+    await this.attachMediaFilenamesInPlace(resolved);
     return resolved;
+  }
+
+  /**
+   * Admin only: the uploaded file's name for each gallery item, so the editor
+   * can tell near-identical photos apart. Storage keys are random, and upload
+   * names stay off the storefront, so this is not part of resolveProductUrls.
+   */
+  private async attachMediaFilenamesInPlace(product: Record<string, unknown>): Promise<void> {
+    const media = (product.media as Array<{ key: string; originalFilename?: string | null }>) ?? [];
+    if (!media.length) return;
+    const assets = await this.prisma.mediaAsset.findMany({
+      where: { storageKey: { in: media.map((m) => m.key) } },
+      select: { storageKey: true, originalFilename: true },
+    });
+    const names = new Map(assets.map((a) => [a.storageKey, a.originalFilename]));
+    for (const m of media) m.originalFilename = names.get(m.key) ?? null;
   }
 
   async findBySlug(slug: string, lang?: string) {
