@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoIpService } from '../analytics-tracking/geo-ip.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
-import { ShippingService } from './shipping.service';
+import { FreeShippingOptions, QuotedMethod, ShippingService } from './shipping.service';
 
 /**
  * What the header's shipping strip may say to this visitor.
@@ -15,6 +15,19 @@ export interface ShippingDestination {
   country: string | null;
   deliveryDaysMin: number | null;
   deliveryDaysMax: number | null;
+}
+
+/**
+ * The product page's "Delivery details": what the checkout's delivery step
+ * would offer for this product alone — options only, never zones or settings.
+ * `country` set means `methods` holds that country's options; null means the
+ * shop does not (knowingly) ship there, and `methods` holds every option any
+ * shipping country is offered, each once.
+ */
+export interface ProductDeliveryOptions {
+  country: string | null;
+  freeShipping: boolean;
+  methods: QuotedMethod[];
 }
 
 const NONE: ShippingDestination = { country: null, deliveryDaysMin: null, deliveryDaysMax: null };
@@ -57,6 +70,77 @@ export class ShippingDestinationService {
     const fromIp = normaliseCode(this.geo.countryFromIp(ip));
     if (!fromIp || fromIp === hinted) return NONE;
     return this.forCountry(fromIp);
+  }
+
+  /**
+   * Delivery options for one product, quoted exactly as checkout quotes them
+   * (same zones, opt-in methods, free shipping with its paid upgrades, zone
+   * surcharges and free-above thresholds) for a basket of just this product
+   * at `subtotalCents`. Basket-wide promotions are not known here.
+   *
+   * The country is the visitor's checkout choice, else their IP's — and only
+   * when it is active, shipping-enabled and quoted at least one method, the
+   * same rule as the header strip. Otherwise every zone is listed.
+   */
+  async productOptions(productId: string, ip: string | null, hint: string | null | undefined, subtotalCents: number, lang?: string): Promise<ProductDeliveryOptions> {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, deletedAt: null },
+      select: {
+        freeShipping: true,
+        freeShippingDaysMin: true,
+        freeShippingDaysMax: true,
+        freeShippingUpgradeMethods: { select: { id: true } },
+      },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+
+    // CheckoutService.resolveShippingContext for a one-product basket.
+    const opts: FreeShippingOptions = product.freeShipping
+      ? {
+          forceFree: true,
+          upgradeMethodIds: product.freeShippingUpgradeMethods.map((m) => m.id),
+          freeDaysMin: product.freeShippingDaysMin,
+          freeDaysMax: product.freeShippingDaysMax,
+          productIds: [productId],
+        }
+      : { productIds: [productId] };
+
+    const candidates = [normaliseCode(hint), normaliseCode(this.geo.countryFromIp(ip))].filter((c): c is string => !!c);
+    for (const code of new Set(candidates)) {
+      const country = await this.prisma.country.findUnique({ where: { isoCode: code }, select: { isActive: true, isShippingEnabled: true } });
+      if (!country?.isActive || !country.isShippingEnabled) continue;
+      const quote = await this.shipping.getMethodsForCountry(code, subtotalCents, lang, opts);
+      if (quote.methods.length) return { country: code, freeShipping: product.freeShipping, methods: quote.methods };
+    }
+
+    return { country: null, freeShipping: product.freeShipping, methods: await this.allMethods(subtotalCents, lang, opts) };
+  }
+
+  /**
+   * Every option checkout would offer in at least one shipping country, each
+   * once, cheapest first. A method belongs to one zone, so it has one price
+   * wherever it is offered. Countries served by the same zones get the same
+   * quote, so it is computed once per zone set rather than once per country.
+   */
+  private async allMethods(subtotalCents: number, lang: string | undefined, opts: FreeShippingOptions): Promise<QuotedMethod[]> {
+    const [countries, zones] = await Promise.all([
+      this.prisma.country.findMany({ where: { isActive: true, isShippingEnabled: true }, select: { isoCode: true } }),
+      this.shipping.listActiveZones(),
+    ]);
+    // resolveZonesForCountry's order: zones naming the country (oldest first), then catch-alls.
+    const catchAll = zones.filter((z) => !z.countryCodes.length);
+    const zoneSets = new Map<string, typeof zones>();
+    for (const { isoCode } of countries) {
+      const serving = [...zones.filter((z) => z.countryCodes.includes(isoCode)), ...catchAll];
+      if (serving.length) zoneSets.set(serving.map((z) => z.id).join(','), serving);
+    }
+
+    const byId = new Map<string, QuotedMethod>();
+    for (const serving of zoneSets.values()) {
+      const quote = await this.shipping.quoteZones(serving, subtotalCents, lang, opts);
+      for (const m of quote.methods) if (!byId.has(m.id)) byId.set(m.id, m);
+    }
+    return [...byId.values()].sort((a, b) => a.priceCents - b.priceCents);
   }
 
   private async forCountry(code: string): Promise<ShippingDestination> {

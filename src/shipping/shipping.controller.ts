@@ -36,6 +36,25 @@ export class ShippingPublicController {
     return this.destination.resolve(extractIp(req), country);
   }
 
+  /**
+   * The product page's delivery options: the checkout's quote for this
+   * product, for the visitor's country (checkout choice, else IP), or for
+   * every zone when that country is not served. Per visitor, so not cached.
+   */
+  @Get('product/:productId')
+  @Header('Cache-Control', 'private, no-store')
+  getProductOptions(
+    @Req() req: Request,
+    @Param('productId') productId: string,
+    @Query('country') country?: string,
+    @Query('subtotal') subtotal?: string,
+    @Query('lang') lang?: string,
+  ) {
+    const cents = Number.parseInt(subtotal ?? '', 10);
+    const subtotalCents = Number.isFinite(cents) && cents > 0 ? Math.min(cents, 100_000_000) : 0;
+    return this.destination.productOptions(productId, extractIp(req), country, subtotalCents, lang);
+  }
+
   @Get('methods')
   getMethods(@Query('country') country: string, @Query('subtotal') subtotal: string, @Query('lang') lang?: string) {
     return this.shipping.getMethodsForCountry(country, subtotal ? parseInt(subtotal, 10) : 0, lang);

@@ -183,7 +183,20 @@ export class ShippingService implements OnModuleInit {
   }
 
   async getMethodsForCountry(countryCode: string, cartTotalCents: number, lang?: string, opts: FreeShippingOptions = {}): Promise<ShippingQuote> {
-    const zones = await this.resolveZonesForCountry(countryCode);
+    return this.quoteZones(await this.resolveZonesForCountry(countryCode), cartTotalCents, lang, opts);
+  }
+
+  /** Active zones, oldest first — the order resolveZonesForCountry ranks them in. */
+  listActiveZones(): Promise<ShippingZone[]> {
+    return this.prisma.shippingZone.findMany({ where: { isActive: true }, orderBy: { createdAt: 'asc' } });
+  }
+
+  /**
+   * The checkout's quote over a given set of zones. getMethodsForCountry is
+   * this over the zones serving one country; the product page uses it for
+   * every shipping country at once, one quote per distinct zone set.
+   */
+  async quoteZones(zones: ShippingZone[], cartTotalCents: number, lang?: string, opts: FreeShippingOptions = {}): Promise<ShippingQuote> {
     if (!zones.length) return { zone: null, methods: [] };
 
     // Zone order first (listed zones before the catch-all), then each zone's
