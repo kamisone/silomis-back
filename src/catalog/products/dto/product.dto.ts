@@ -123,6 +123,9 @@ export const CreateProductSchema = z.object({
   isNew: z.boolean().optional(),
   /** Shows the "Wrong size? No problem" returns block on the product page. */
   showReturnsGuarantee: z.boolean().optional(),
+  /** Delivery highlights on the product page: "Fast delivery", "Order tracking included". */
+  fastDelivery: z.boolean().optional(),
+  trackedDelivery: z.boolean().optional(),
   /** Checkout asks for these only when a product in the basket switches them on. */
   askCompanyName: z.boolean().optional(),
   askPhone: z.boolean().optional(),

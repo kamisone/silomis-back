@@ -524,6 +524,12 @@ model Product {
   /// exchanged — a personalised piece cannot.
   showReturnsGuarantee Boolean @default(false)
 
+  /// Delivery highlights on the product page, each its own switch: "Fast
+  /// delivery" and "Order tracking included". Off by default — each is a
+  /// promise, made only where the admin can keep it.
+  fastDelivery    Boolean @default(false)
+  trackedDelivery Boolean @default(false)
+
   /// Optional address-step fields at checkout, asked only when a product in
   /// the basket switches them on. Off by default: most orders need none of
   /// them, and every extra box on that step costs completed checkouts.
