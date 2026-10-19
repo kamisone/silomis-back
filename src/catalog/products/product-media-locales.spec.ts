@@ -1,4 +1,3 @@
-import { BadRequestException } from '@nestjs/common';
 import { deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, normalizeMedia } from './product-content.util';
 import { ProductMediaItem } from '../types/product-content.types';
 
@@ -20,8 +19,15 @@ describe('gallery photos limited to languages', () => {
       expect(all.locales).toBeUndefined();
     });
 
-    it('refuses a featured photo limited to some languages', () => {
-      expect(() => normalizeMedia([{ key: 'a', type: 'image', isFeatured: true, locales: ['fr'] }])).toThrow(BadRequestException);
+    it('keeps one shared star and one star per language', () => {
+      const out = normalizeMedia([
+        { key: 'shared', type: 'image', isFeatured: true },
+        { key: 'shared-2', type: 'image', isFeatured: true },
+        { key: 'fr', type: 'image', isFeatured: true, locales: ['fr'] },
+        { key: 'fr-it', type: 'image', isFeatured: true, locales: ['fr', 'it'] },
+        { key: 'it', type: 'image', isFeatured: true, locales: ['it'] },
+      ]);
+      expect(out.map((m) => !!m.isFeatured)).toEqual([true, false, true, false, true]);
     });
   });
 
@@ -35,6 +41,14 @@ describe('gallery photos limited to languages', () => {
 
     it('reads no language as the storefront default (English)', () => {
       expect(mediaForLocale(gallery, undefined).map((m) => m.key)).toEqual(['shared-1', 'en-pt', 'shared-2']);
+    });
+
+    it('stars the language’s own featured photo, else the shared one', () => {
+      const starred = [img('shared', { isFeatured: true }), img('fr', { locales: ['fr'], isFeatured: true }), img('it', { locales: ['it'], isFeatured: true })];
+      const featuredIn = (lang: string) => mediaForLocale(starred, lang).filter((m) => m.isFeatured).map((m) => m.key);
+      expect(featuredIn('fr')).toEqual(['fr']);
+      expect(featuredIn('it')).toEqual(['it']);
+      expect(featuredIn('de')).toEqual(['shared']);
     });
 
     it('gives a language with nothing to see the whole gallery instead of none', () => {

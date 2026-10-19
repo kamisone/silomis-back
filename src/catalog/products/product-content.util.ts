@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { BadRequestException } from '@nestjs/common';
 import {
   ProductDocument,
   ProductFaq,
@@ -33,23 +32,30 @@ import { z } from 'zod';
 
 /**
  * Cleans a gallery before it is stored:
- *  - at most one item is featured (extras past the first are cleared);
  *  - `locales` is de-duplicated and put in STOREFRONT_LOCALES order, and
  *    dropped when it is empty or names every language — both mean "shared";
- *  - a featured item must be shared. It is the product's face on cards, in
- *    the cart and in link previews, none of which pick a photo by language.
+ *  - at most one shared item is featured: the product's face on cards, in
+ *    the cart and in link previews, none of which pick a photo by language;
+ *  - each language may also have one featured item of its own, which its
+ *    product page shows first instead (see mediaForLocale). A language item
+ *    starred for a language already claimed earlier in the list loses its star.
  */
 export function normalizeMedia(media: z.infer<typeof ProductMediaItemSchema>[]): ProductMediaItem[] {
-  let featuredSeen = false;
+  let sharedFeaturedSeen = false;
+  const claimed = new Set<StorefrontLocale>();
   return media.map((raw) => {
     const { locales: rawLocales, ...rest } = raw;
     const picked = new Set(rawLocales ?? []);
     const locales = STOREFRONT_LOCALES.filter((l) => picked.has(l));
     const m: ProductMediaItem = locales.length > 0 && locales.length < STOREFRONT_LOCALES.length ? { ...rest, locales } : rest;
     if (!m.isFeatured) return m;
-    if (featuredSeen) return { ...m, isFeatured: false };
-    if (m.locales) throw new BadRequestException('The featured photo must be shown in all languages — set it to "All languages" or feature another photo.');
-    featuredSeen = true;
+    if (!m.locales) {
+      if (sharedFeaturedSeen) return { ...m, isFeatured: false };
+      sharedFeaturedSeen = true;
+      return m;
+    }
+    if (m.locales.some((l) => claimed.has(l))) return { ...m, isFeatured: false };
+    for (const l of m.locales) claimed.add(l);
     return m;
   });
 }
@@ -133,7 +139,10 @@ export function languageSpecificMediaKeys(media: ProductMediaItem[]): Set<string
 export function mediaForLocale(media: ProductMediaItem[], lang?: string | null): ProductMediaItem[] {
   const locale = storefrontLocale(lang);
   const visible = media.filter((m) => isSharedMedia(m) || m.locales!.includes(locale));
-  return visible.length ? visible : media;
+  const out = visible.length ? visible : media;
+  // The page's one star: the language's own featured item, else the shared one.
+  const featured = out.find((m) => m.isFeatured && !isSharedMedia(m) && m.locales!.includes(locale)) ?? out.find((m) => m.isFeatured && isSharedMedia(m)) ?? null;
+  return out.map((m) => (m.isFeatured && m !== featured ? { ...m, isFeatured: false } : m));
 }
 
 /** Assigns stable ids to new sections and re-derives sortOrder from array position. */
