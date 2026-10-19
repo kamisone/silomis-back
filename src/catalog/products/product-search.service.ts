@@ -11,6 +11,24 @@ const INDEX = 'shop_products';
 /** A storefront language code — anything else is ignored rather than queried. */
 const LANG = /^[a-z]{2}$/;
 
+/**
+ * Visible text of the short description, which the admin writes in a
+ * WYSIWYG: search results and the index want words, not `<p><strong>`.
+ */
+function plainText(html: string | null | undefined): string {
+  if (!html) return '';
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normaliseLang(lang?: string): string | null {
   const l = lang?.trim().toLowerCase();
   return l && LANG.test(l) ? l : null;
@@ -166,7 +184,7 @@ export class ProductSearchService implements OnModuleInit {
       id: product.id,
       slug: product.slug,
       title: product.title,
-      shortDescription: product.shortDescription ?? '',
+      shortDescription: plainText(product.shortDescription),
       brand: product.brand ?? '',
       sku: product.sku ?? '',
       status: product.status,
@@ -229,7 +247,7 @@ export class ProductSearchService implements OnModuleInit {
         id: p.id,
         slug: p.slug,
         title: p.title,
-        shortDescription: p.shortDescription ?? '',
+        shortDescription: plainText(p.shortDescription),
         brand: p.brand ?? '',
         sku: p.sku ?? '',
         status: p.status,
@@ -272,7 +290,7 @@ export class ProductSearchService implements OnModuleInit {
     for (const r of categoryRows) categoryText.set(r.entityId, [...(categoryText.get(r.entityId) ?? []), r.value]);
 
     const out = new Map<string, string[]>();
-    for (const r of productRows) out.set(r.entityId, [...(out.get(r.entityId) ?? []), r.value]);
+    for (const r of productRows) out.set(r.entityId, [...(out.get(r.entityId) ?? []), plainText(r.value)]);
     for (const id of productIds) {
       const cats = categoriesByProduct?.get(id) ?? categoryIds;
       out.set(id, [...(out.get(id) ?? []), ...cats.flatMap((c) => categoryText.get(c) ?? [])]);
@@ -436,7 +454,7 @@ export class ProductSearchService implements OnModuleInit {
       id: r.id,
       slug: r.slug,
       title: r.title,
-      shortDescription: r.shortDescription ?? '',
+      shortDescription: plainText(r.shortDescription),
       brand: r.brand ?? '',
       sku: r.sku ?? '',
       featuredImageKey: r.featuredImageKey ?? null,

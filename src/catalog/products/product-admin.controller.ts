@@ -21,7 +21,6 @@ const MAX_DOC_BYTES = 20 * 1024 * 1024;
 const ALLOWED_DOC_MIMES = ['application/pdf'];
 
 const TranslateTextSchema = z.object({ text: z.string().min(1).max(500) });
-const TranslateShortTextSchema = z.object({ text: z.string().min(1).max(2000) });
 const TranslateHtmlSchema = z.object({ html: z.string().min(1) });
 const TranslateInfoSectionSchema = z.object({ label: z.string().min(1).max(200), value: z.string().min(1).max(5000) });
 const TranslateFaqSchema = z.object({ question: z.string().min(1).max(300), answer: z.string().min(1).max(5000) });
@@ -125,8 +124,8 @@ export class ProductAdminController {
 
   @Post('sections/short-description/translate')
   @HttpCode(200)
-  translateShortDescriptionSection(@Body(new ZodValidationPipe(TranslateShortTextSchema)) dto: z.infer<typeof TranslateShortTextSchema>) {
-    return this.translation.translateShortDescription(dto.text);
+  translateShortDescriptionSection(@Body(new ZodValidationPipe(TranslateHtmlSchema)) dto: z.infer<typeof TranslateHtmlSchema>) {
+    return this.translation.translateShortDescription(dto.html);
   }
 
   @Post('sections/description/translate')

@@ -65,12 +65,13 @@ export class TranslationService {
     );
   }
 
+  /** Rich text since the admin writes it in the WYSIWYG, like the description. */
   async translateShortDescription(
-    text: string,
+    html: string,
   ): Promise<SectionTranslationOutcome<string>> {
     return this.translateSection(
       'short_description',
-      (lang) => this.freeTranslate.translateText(text, lang),
+      (lang) => this.freeTranslate.translateHtml(html, lang),
       '',
     );
   }
