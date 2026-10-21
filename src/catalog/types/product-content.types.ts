@@ -107,6 +107,16 @@ export interface ProductPackageContentItem {
   isActive: boolean;
 }
 
+/** A free gift that comes with the product — a photo, its name and (optionally) what it is worth. */
+export interface ProductFreeGift {
+  id: string;
+  key: string;
+  label?: string | null;
+  valueCents?: number | null;
+  sortOrder: number;
+  isActive: boolean;
+}
+
 export type StoryGalleryLocation = 'side' | 'narrative';
 export type StoryImageAspectRatio = '1:1' | '16:9' | '9:16';
 

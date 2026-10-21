@@ -498,6 +498,7 @@ model Product {
   faqs            Json @default("[]") // ProductFaq[]
   zoomedImages    Json @default("[]") // ProductZoomedImage[]
   packageContents Json @default("[]") // ProductPackageContentItem[]
+  freeGifts       Json @default("[]") // ProductFreeGift[] — "Free gifts included" on the product page, shown under the Klarna line
   storyGallery    Json @default("[]") // ProductStoryItem[]
   socialVideos    Json @default("[]") // ProductSocialVideo[]
 

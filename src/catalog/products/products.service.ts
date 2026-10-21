@@ -9,8 +9,8 @@ import { ProductSearchService } from './product-search.service';
 import { slugify } from '../../common/utils/slug.util';
 import { Prisma, Product, ProductVariant } from '../../../generated/prisma/client';
 import { CreateProductDto, CreateVariantDto, ProductListFilter, UpdateProductDto, UpdateVariantDto } from './dto/product.dto';
-import { ProductDocument, ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
-import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, parseSwatchLocale, swatchPhotoFitsLocale, swatchPhotosForLocale, normalizeDocuments, normalizeFaqs, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
+import { ProductDocument, ProductFreeGift, ProductMediaItem, ProductPackageContentItem, ProductSocialVideo, ProductStoryItem, ProductZoomedImage } from '../types/product-content.types';
+import { buildCombinationHash, buildVariantSkuBase, buildVariantSlug, buildVariantTitle, deriveLegacyImageFields, languageSpecificMediaKeys, mediaForLocale, parseSwatchLocale, swatchPhotoFitsLocale, swatchPhotosForLocale, normalizeDocuments, normalizeFaqs, normalizeFreeGifts, normalizeInfoSections, normalizeLinks, normalizeMedia, normalizePackageContents, normalizeSocialVideos, normalizeStoryGallery, normalizeTrustBadges, normalizeUpsellTiers, normalizeZoomedImages } from './product-content.util';
 import { resolveVariantPrice, sumOptionAdjustments } from '../../pricing/variant-price.util';
 
 import { ET_SHOP_CATEGORY, ET_SHOP_PRODUCT, ET_SHOP_VARIANT_ATTR, ET_SHOP_VARIATION_OPTION } from '../../translations/translation-entities';
@@ -30,6 +30,7 @@ const PRODUCT_TRANSLATION_COLLECTIONS: Record<string, string> = {
   storyItem: 'storyGallery',
   document: 'documents',
   socialVideo: 'socialVideos',
+  freeGift: 'freeGifts',
 };
 
 /** Ceiling on rows pulled for a sort that has to run in memory (curated
@@ -72,6 +73,7 @@ export class ProductsService {
     for (const s of (product.storyGallery as unknown as ProductStoryItem[]) ?? []) keys.push({ key: s.key, field: 'storyGallery' });
     for (const z of (product.zoomedImages as unknown as ProductZoomedImage[]) ?? []) keys.push({ key: z.key, field: 'zoomedImages' });
     for (const p of (product.packageContents as unknown as ProductPackageContentItem[]) ?? []) keys.push({ key: p.key, field: 'packageContents' });
+    for (const g of (product.freeGifts as unknown as ProductFreeGift[]) ?? []) keys.push({ key: g.key, field: 'freeGifts' });
     for (const v of (product.socialVideos as unknown as ProductSocialVideo[]) ?? []) keys.push({ key: v.key, field: 'socialVideos' });
 
     this.media.syncEntityUsages('product', product.id, keys).catch((err) => this.logger.warn(`Media usage sync failed for product ${product.id}: ${(err as Error).message}`));
@@ -86,6 +88,7 @@ export class ProductsService {
     const social = ((product.socialVideos as ProductSocialVideo[]) ?? []).filter((v) => v.isActive !== false);
     const zoomed = (product.zoomedImages as ProductZoomedImage[]) ?? [];
     const packageContents = (product.packageContents as ProductPackageContentItem[]) ?? [];
+    const freeGifts = (product.freeGifts as ProductFreeGift[]) ?? [];
     const documents = (product.documents as ProductDocument[]) ?? [];
     const variants = product.variants as Array<{ mediaKeys?: string[]; mediaUrls?: string[] }> | undefined;
 
@@ -132,6 +135,7 @@ export class ProductsService {
     for (const s of story) allKeys.add(s.key);
     for (const z of zoomed) allKeys.add(z.key);
     for (const p of packageContents) allKeys.add(p.key);
+    for (const g of freeGifts) allKeys.add(g.key);
     for (const v of social) {
       allKeys.add(v.key);
       addTranscodeKeys(allKeys, v.key);
@@ -188,6 +192,7 @@ export class ProductsService {
         ...p,
         url: urlMap.get(p.key) ?? '',
       })),
+      freeGifts: freeGifts.map((g) => ({ ...g, url: urlMap.get(g.key) ?? '' })),
       documents: documents.map((d) => ({ ...d, url: urlMap.get(d.storageKey) ?? '' })),
       // Public consumers only ever need active tiers in purchase order — mirrors
       // the socialVideos isActive filter above.
@@ -1050,6 +1055,7 @@ export class ProductsService {
           faqs: dto.faqs ? (normalizeFaqs(dto.faqs) as unknown as Prisma.InputJsonValue) : [],
           zoomedImages: dto.zoomedImages ? (normalizeZoomedImages(dto.zoomedImages) as unknown as Prisma.InputJsonValue) : [],
           packageContents: dto.packageContents ? (normalizePackageContents(dto.packageContents) as unknown as Prisma.InputJsonValue) : [],
+          freeGifts: dto.freeGifts ? (normalizeFreeGifts(dto.freeGifts) as unknown as Prisma.InputJsonValue) : [],
           storyGallery: dto.storyGallery ? (normalizeStoryGallery(dto.storyGallery) as unknown as Prisma.InputJsonValue) : [],
           socialVideos: dto.socialVideos ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : [],
           socialVideosTitle: dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null,
@@ -1179,6 +1185,7 @@ export class ProductsService {
         faqs: dto.faqs !== undefined ? (normalizeFaqs(dto.faqs) as unknown as Prisma.InputJsonValue) : undefined,
         zoomedImages: dto.zoomedImages !== undefined ? (normalizeZoomedImages(dto.zoomedImages) as unknown as Prisma.InputJsonValue) : undefined,
         packageContents: dto.packageContents !== undefined ? (normalizePackageContents(dto.packageContents) as unknown as Prisma.InputJsonValue) : undefined,
+        freeGifts: dto.freeGifts !== undefined ? (normalizeFreeGifts(dto.freeGifts) as unknown as Prisma.InputJsonValue) : undefined,
         storyGallery: dto.storyGallery !== undefined ? (normalizeStoryGallery(dto.storyGallery) as unknown as Prisma.InputJsonValue) : undefined,
         socialVideos: dto.socialVideos !== undefined ? (normalizeSocialVideos(dto.socialVideos) as unknown as Prisma.InputJsonValue) : undefined,
         socialVideosTitle: dto.socialVideosTitle !== undefined ? (dto.socialVideosTitle?.trim() ? dto.socialVideosTitle : null) : undefined,

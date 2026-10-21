@@ -55,6 +55,16 @@ export const ProductPackageContentItemSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+export const ProductFreeGiftSchema = z.object({
+  id: z.string().min(1).max(100).optional(),
+  key: z.string().min(1).max(1000),
+  label: z.string().max(200).nullish(),
+  /** What the gift would cost on its own, shown struck through next to "Free". */
+  valueCents: z.number().int().min(0).max(10_000_000).nullish(),
+  sortOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
+});
+
 export const ProductStoryItemSchema = z.object({
   id: z.string().min(1).max(100).optional(),
   key: z.string().min(1).max(1000),
@@ -115,6 +125,7 @@ export const CreateProductSchema = z.object({
   faqs: z.array(ProductFaqSchema).optional(),
   zoomedImages: z.array(ProductZoomedImageSchema).optional(),
   packageContents: z.array(ProductPackageContentItemSchema).optional(),
+  freeGifts: z.array(ProductFreeGiftSchema).max(12).optional(),
   storyGallery: z.array(ProductStoryItemSchema).optional(),
   socialVideos: z.array(ProductSocialVideoSchema).optional(),
   socialVideosTitle: z.string().max(300).nullish(),

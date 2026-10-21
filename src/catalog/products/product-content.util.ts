@@ -4,6 +4,7 @@ import {
   ProductFaq,
   ProductInfoSection,
   ProductMediaItem,
+  ProductFreeGift,
   ProductPackageContentItem,
   ProductPrivateLink,
   ProductSocialVideo,
@@ -20,6 +21,7 @@ import {
   ProductFaqSchema,
   ProductInfoSectionSchema,
   ProductMediaItemSchema,
+  ProductFreeGiftSchema,
   ProductPackageContentItemSchema,
   ProductPrivateLinkSchema,
   ProductSocialVideoSchema,
@@ -182,6 +184,17 @@ export function normalizePackageContents(items: z.infer<typeof ProductPackageCon
     label: img.label?.trim() ? img.label : null,
     sortOrder: i,
     isActive: img.isActive ?? true,
+  }));
+}
+
+export function normalizeFreeGifts(items: z.infer<typeof ProductFreeGiftSchema>[]): ProductFreeGift[] {
+  return items.map((g, i) => ({
+    id: g.id ?? randomUUID(),
+    key: g.key,
+    label: g.label?.trim() ? g.label.trim() : null,
+    valueCents: g.valueCents ? g.valueCents : null,
+    sortOrder: i,
+    isActive: g.isActive ?? true,
   }));
 }
 
