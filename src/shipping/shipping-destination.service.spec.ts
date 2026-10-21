@@ -39,17 +39,17 @@ const ON: CountryRow = { isActive: true, isShippingEnabled: true };
 describe('ShippingDestinationService', () => {
   it('names the IP country with the default method window', async () => {
     const { service } = build({ countries: { ES: ON }, quotes: { ES: [[3, 5], [1, 2]] }, ipCountry: { '1.1.1.1': 'ES' } });
-    await expect(service.resolve('1.1.1.1')).resolves.toEqual({ country: 'ES', deliveryDaysMin: 3, deliveryDaysMax: 5 });
+    await expect(service.resolve('1.1.1.1')).resolves.toEqual({ country: 'ES', deliveryDaysMin: 3, deliveryDaysMax: 5, productionDays: 0 });
   });
 
   it('adds embroidery production to the upper bound only', async () => {
     const { service } = build({ countries: { FR: ON }, quotes: { FR: [[3, 7]] }, ipCountry: { ip: 'FR' }, productionDays: 2 });
-    await expect(service.resolve('ip')).resolves.toEqual({ country: 'FR', deliveryDaysMin: 3, deliveryDaysMax: 9 });
+    await expect(service.resolve('ip')).resolves.toEqual({ country: 'FR', deliveryDaysMin: 3, deliveryDaysMax: 9, productionDays: 2 });
   });
 
   it('stays generic for a country with shipping switched off, even when a catch-all zone would quote it', async () => {
     const { service } = build({ countries: { US: { isActive: true, isShippingEnabled: false } }, quotes: { US: [[1, 3]] }, ipCountry: { ip: 'US' } });
-    await expect(service.resolve('ip')).resolves.toEqual({ country: null, deliveryDaysMin: null, deliveryDaysMax: null });
+    await expect(service.resolve('ip')).resolves.toEqual({ country: null, deliveryDaysMin: null, deliveryDaysMax: null, productionDays: null });
   });
 
   it('stays generic for an inactive or unknown country', async () => {
@@ -70,7 +70,7 @@ describe('ShippingDestinationService', () => {
 
   it('prefers the country chosen at checkout over the IP', async () => {
     const { service } = build({ countries: { FR: ON, BE: ON }, quotes: { FR: [[3, 5]], BE: [[4, 6]] }, ipCountry: { ip: 'FR' } });
-    await expect(service.resolve('ip', 'be')).resolves.toEqual({ country: 'BE', deliveryDaysMin: 4, deliveryDaysMax: 6 });
+    await expect(service.resolve('ip', 'be')).resolves.toEqual({ country: 'BE', deliveryDaysMin: 4, deliveryDaysMax: 6, productionDays: 0 });
   });
 
   it('falls back to the IP when the hint is not served or not a country code', async () => {

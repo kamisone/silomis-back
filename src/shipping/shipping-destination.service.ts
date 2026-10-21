@@ -15,6 +15,12 @@ export interface ShippingDestination {
   country: string | null;
   deliveryDaysMin: number | null;
   deliveryDaysMax: number | null;
+  /**
+   * The embroidery production days already in `deliveryDaysMax` — so a page
+   * selling something that is not embroidered (the neutral header) can take
+   * them back out.
+   */
+  productionDays: number | null;
 }
 
 /**
@@ -30,7 +36,7 @@ export interface ProductDeliveryOptions {
   methods: QuotedMethod[];
 }
 
-const NONE: ShippingDestination = { country: null, deliveryDaysMin: null, deliveryDaysMax: null };
+const NONE: ShippingDestination = { country: null, deliveryDaysMin: null, deliveryDaysMax: null, productionDays: null };
 
 const ISO_ALPHA2 = /^[A-Z]{2}$/;
 
@@ -40,7 +46,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 interface CachedWindow {
   at: number;
   /** null = the shop does not deliver to this country. */
-  window: { min: number; max: number } | null;
+  window: { min: number; max: number; production: number } | null;
 }
 
 @Injectable()
@@ -146,7 +152,7 @@ export class ShippingDestinationService {
   private async forCountry(code: string): Promise<ShippingDestination> {
     const window = await this.deliveryWindow(code);
     if (!window) return NONE;
-    return { country: code, deliveryDaysMin: window.min, deliveryDaysMax: window.max };
+    return { country: code, deliveryDaysMin: window.min, deliveryDaysMax: window.max, productionDays: window.production };
   }
 
   /**
@@ -163,7 +169,7 @@ export class ShippingDestinationService {
    * ships straight away, an embroidered one waits for production, and the
    * strip cannot know which the visitor will buy. The range stays true for both.
    */
-  private async deliveryWindow(code: string): Promise<{ min: number; max: number } | null> {
+  private async deliveryWindow(code: string): Promise<{ min: number; max: number; production: number } | null> {
     const hit = this.cache.get(code);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.window;
 
@@ -172,7 +178,7 @@ export class ShippingDestinationService {
     return window;
   }
 
-  private async computeWindow(code: string): Promise<{ min: number; max: number } | null> {
+  private async computeWindow(code: string): Promise<{ min: number; max: number; production: number } | null> {
     const country = await this.prisma.country.findUnique({
       where: { isoCode: code },
       select: { isActive: true, isShippingEnabled: true },
@@ -186,11 +192,11 @@ export class ShippingDestinationService {
     if (!first) return null;
 
     const min = Math.max(0, first.estimatedDaysMin);
-    const production = this.settings.getEmbroideryConfig().productionDays;
-    const max = Math.max(min, first.estimatedDaysMax) + Math.max(0, production);
+    const production = Math.max(0, this.settings.getEmbroideryConfig().productionDays);
+    const max = Math.max(min, first.estimatedDaysMax) + production;
     // A zero-day window is a misconfigured method, not a promise to repeat.
     if (max < 1) return null;
-    return { min: Math.max(1, min), max };
+    return { min: Math.max(1, min), max, production };
   }
 }
 

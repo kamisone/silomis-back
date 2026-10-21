@@ -529,6 +529,8 @@ model Product {
   /// promise, made only where the admin can keep it.
   fastDelivery    Boolean @default(false)
   trackedDelivery Boolean @default(false)
+  /// Shown with the neutral header/footer (no embroidery branding), for products outside the shop's range.
+  neutralLayout   Boolean @default(false)
 
   /// Optional address-step fields at checkout, asked only when a product in
   /// the basket switches them on. Off by default: most orders need none of
