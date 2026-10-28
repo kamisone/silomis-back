@@ -6,6 +6,7 @@ function makeService(setting?: string, optedOut = false) {
     platformSettings: { findUnique: jest.fn().mockResolvedValue(setting === undefined ? null : { value: setting }) },
     commerceNotificationLog: { create: jest.fn().mockResolvedValue({}) },
     smsOptOut: { findUnique: jest.fn().mockResolvedValue(optedOut ? { phone: '+33612345678' } : null), upsert: jest.fn().mockResolvedValue({}) },
+    cart: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const sms = { addMessage: jest.fn().mockResolvedValue({}) };
   const service = new CustomerSmsService(prisma as never, sms as never);
@@ -94,4 +95,13 @@ describe('abandoned-cart SMS', () => {
 describe('isStopReply', () => {
   it.each(['STOP', ' stop ', 'Stop.', 'ARRET', 'arrêt', 'Stopp'])('treats %p as an opt-out', (t) => expect(isStopReply(t)).toBe(true));
   it.each(['please do not stop', 'stop sending me the reminder please', 'merci', ''])('does not treat %p as one', (t) => expect(isStopReply(t)).toBe(false));
+});
+
+describe('store brand', () => {
+  it('signs an order text with the brand it was sold under', async () => {
+    const { service, sms, prisma } = makeService();
+    (prisma as Record<string, unknown>).storeBrand = { findUnique: jest.fn().mockResolvedValue({ name: 'BrewMini', isActive: true }) };
+    await service.send('order_shipped', { id: 'o1', orderNumber: 'ORD-1', customerPhone: '+33612345678', customerLocale: 'en', storeBrandId: 'b1' }, 'https://x.test/t');
+    expect(sms.addMessage).toHaveBeenCalledWith('+33612345678', expect.stringMatching(/^BrewMini: /));
+  });
 });

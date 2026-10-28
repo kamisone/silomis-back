@@ -531,7 +531,13 @@ model Product {
   fastDelivery    Boolean @default(false)
   trackedDelivery Boolean @default(false)
   /// Shown with the neutral header/footer (no embroidery branding), for products outside the shop's range.
+  /// Implied by storeBrandId: a branded product is always neutral.
   neutralLayout   Boolean @default(false)
+
+  /// The brand this product is sold under instead of Silomis — its own logo,
+  /// footer, about/contact/FAQ pages and email identity. Null = Silomis.
+  storeBrandId String?
+  storeBrand   StoreBrand? @relation(fields: [storeBrandId], references: [id], onDelete: SetNull)
 
   /// Optional address-step fields at checkout, asked only when a product in
   /// the basket switches them on. Off by default: most orders need none of
@@ -611,6 +617,7 @@ model Product {
   @@index([primaryCategoryId])
   @@index([vendorId])
   @@index([personalizationTemplateId])
+  @@index([storeBrandId])
   @@map("shop_products")
 }
 
@@ -1082,6 +1089,12 @@ model Order {
   /// ISO 639-1 locale captured at checkout — drives email/receipt language
   customerLocale String @default("fr") @db.VarChar(10)
 
+  /// The brand the order was sold under, set from its products when it is
+  /// created — emails, SMS, the tracking page and the bank statement use it,
+  /// so the customer never meets "Silomis" after buying from a brand page.
+  storeBrandId String?
+  storeBrand   StoreBrand? @relation(fields: [storeBrandId], references: [id], onDelete: SetNull)
+
   trackingToken        String?   @unique
   cartToken            String?   @db.VarChar(100)
   paymentIntentId      String?   @db.VarChar(500)
@@ -1114,6 +1127,7 @@ model Order {
   @@index([status])
   @@index([customerEmail])
   @@index([isTestOrder])
+  @@index([storeBrandId])
   @@index([paymentIntentId])
   @@map("shop_orders")
 }
@@ -1510,6 +1524,55 @@ model Collection {
 
   @@index([isActive, isFeatured])
   @@map("shop_collections")
+}
+
+/// A brand a product can be sold under instead of Silomis (Product.storeBrandId):
+/// a mini coffee maker sold as if the shop sold nothing else. Same company,
+/// same checkout — only the identity changes: logo, footer, about/contact/FAQ
+/// pages, email sender. The legal pages are the shop's own, with the brand's
+/// name and "operated by <company>", never written per brand.
+///
+/// Translatable fields go through the translations table (entityType
+/// shop_store_brand); FAQ items as "faq:<id>:question|answer".
+model StoreBrand {
+  id   String @id @default(uuid())
+  slug String @unique @db.VarChar(200)
+  name String @db.VarChar(200)
+
+  /// Short line under the name in emails, e.g. "Coffee, anywhere".
+  tagline String? @db.VarChar(200)
+
+  /// Header/footer logo — any shape. Null shows the name as text.
+  logoKey String? @db.VarChar(1000)
+  /// Square icon: browser tab and email header. PNG for email clients.
+  iconKey String? @db.VarChar(1000)
+
+  /// A sentence or two under the logo in the footer.
+  footerText   String?
+  supportEmail String? @db.VarChar(300)
+  supportPhone String? @db.VarChar(50)
+
+  aboutTitle   String? @db.VarChar(300)
+  /// About page body (HTML from the rich-text editor). Empty = no About link.
+  aboutHtml    String?
+  contactIntro String?
+  /// Product-specific return conditions, shown on top of the shop's returns policy.
+  returnsNote  String?
+  faqs         Json    @default("[]") // { id, question, answer }[]
+
+  seoTitle       String? @db.VarChar(300)
+  seoDescription String?
+  shareImageKey  String? @db.VarChar(1000)
+
+  isActive Boolean @default(true)
+
+  products Product[]
+  orders   Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_store_brands")
 }
 
 /// Storefront home page layout. One row per *section instance* — not a key/value

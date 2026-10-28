@@ -9,6 +9,8 @@ import { ShippingService } from '../shipping/shipping.service';
 import { CommerceEventBus } from '../commerce-events/commerce-event-bus.service';
 import { COMMERCE_EVENTS, OrderStatusChangedEvent } from '../commerce-events/commerce-events.constants';
 import { TranslationsService } from '../translations/translations.service';
+import { storeBrandIdForProducts } from '../store-brands/store-brand-of.util';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 import { containsTestProduct } from '../common/utils/test-product.util';
 import { resolveUnitPriceForQuantity, sumOptionAdjustments, tierQuantityByProduct } from '../pricing/variant-price.util';
 import { CHECKOUT_RESERVATION_QUEUE, RESERVATION_TTL_MS } from '../checkout/checkout-reservation.constants';
@@ -68,6 +70,7 @@ export class OrdersService {
     private readonly sendIn: SendInService,
     @InjectQueue(CHECKOUT_RESERVATION_QUEUE)
     private readonly reservationQueue: Queue,
+    private readonly storeBrands: StoreBrandsService,
   ) {}
 
   // ── Create from cart ──────────────────────────────────────────────────
@@ -88,6 +91,7 @@ export class OrdersService {
 
     const orderProductIds = [...new Set(items.map((i) => i.productId))];
     const isTestOrder = await containsTestProduct(this.prisma, orderProductIds);
+    const storeBrandId = await storeBrandIdForProducts(this.prisma, orderProductIds);
 
     // All-or-nothing free shipping: free only when every distinct product in
     // the order carries the flag — mirrors the pricing engine's rule so this
@@ -118,6 +122,7 @@ export class OrdersService {
           orderNumber,
           status: 'awaiting_payment',
           isTestOrder,
+          storeBrandId,
           userId: dto.userId ?? null,
           customerEmail: dto.customerEmail?.trim().toLowerCase() || null,
           customerName: dto.customerName ?? null,
@@ -613,6 +618,9 @@ export class OrdersService {
       // The item's own round trip, when this order is embroidery on the
       // customer's own item — the parcel's status, and the shop's photographs.
       sendIn: await this.sendIn.forCustomer(order.id, lang),
+      // The brand it was sold under, so the tracking page — usually opened
+      // from an email, with nothing remembered — wears that brand's header.
+      storeBrand: await this.storeBrands.chromeFor(order.storeBrandId, lang),
     };
   }
 

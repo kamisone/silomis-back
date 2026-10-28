@@ -12,6 +12,7 @@ import { ShopEmailService } from '../email/shop-email.service';
 import { AssetUrlService } from '../asset-url/asset-url.service';
 import { CustomerSmsService } from '../sms/customer-sms.service';
 import { GUEST_NOTIFY_COOLDOWN_MS, SUPPORT_QUEUE } from './support.constants';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 
 @Processor(SUPPORT_QUEUE)
 export class SupportNotificationProcessor extends DlqAwareWorker {
@@ -26,6 +27,7 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
     private readonly email: ShopEmailService,
     private readonly assetUrls: AssetUrlService,
     private readonly customerSms: CustomerSmsService,
+    private readonly storeBrands: StoreBrandsService,
   ) {
     super(dlqService);
   }
@@ -114,6 +116,7 @@ export class SupportNotificationProcessor extends DlqAwareWorker {
         conversationUrl,
         // The customer's own language, not the shop's.
         locale: order.customerLocale,
+        brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
       });
     }
     // Same cooldown as the email: one text per conversation per window. A

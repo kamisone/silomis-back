@@ -26,7 +26,7 @@ function makeService(subtree: string[]) {
     null as never,
     translations as never,
     null as never,
-    null as never,
+    null as never, null as never,
   );
   return { service, findMany, queryRaw };
 }

@@ -182,6 +182,7 @@ export class CartService {
     const personalizationCents = designSet?.totalCents ?? 0;
 
     const cart = await this.getOrCreatePersistedCart(token);
+    await this.assertSameStoreBrand(cart.items, product.storeBrandId);
 
     // Shared with the matching browser-side pixel calls (fbq/ttq) for Meta
     // and TikTok's own dedup between their client and server events.
@@ -450,6 +451,22 @@ export class CartService {
    * design snapshot and the preview, but untracked: nothing new was added to
    * the basket, so no add_to_cart event and no AddToCart for the ad platforms.
    */
+  /**
+   * A basket holds one brand's products: a Silomis cap and a coffee maker
+   * sold under its own brand would make an order whose emails, tracking page
+   * and bank statement cannot be both. The storefront explains it.
+   */
+  private async assertSameStoreBrand(items: Array<{ productId: string }>, storeBrandId: string | null): Promise<void> {
+    if (!items.length) return;
+    const inBasket = await this.prisma.product.findMany({
+      where: { id: { in: [...new Set(items.map((i) => i.productId))] } },
+      select: { storeBrandId: true },
+    });
+    if (inBasket.some((p) => p.storeBrandId !== storeBrandId)) {
+      throw new BadRequestException({ code: 'OTHER_STORE_IN_CART', message: 'This basket holds products from another store' });
+    }
+  }
+
   async personaliseItem(
     token: string,
     itemId: string,

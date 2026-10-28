@@ -17,9 +17,10 @@ import { SupportOrderController } from './support-order.controller';
 import { SupportAdminController } from './support-admin.controller';
 import { SupportNotificationProcessor } from './support-notification.processor';
 import { SUPPORT_QUEUE } from './support.constants';
+import { StoreBrandsModule } from '../store-brands/store-brands.module';
 
 @Module({
-  imports: [
+  imports: [StoreBrandsModule, 
     BullModule.registerQueue({ name: SUPPORT_QUEUE }),
     JwtModule.registerAsync({
       useFactory: () => {

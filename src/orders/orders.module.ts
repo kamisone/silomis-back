@@ -19,9 +19,10 @@ import { OrdersAdminController } from './orders-admin.controller';
 import { OrdersPublicController } from './orders-public.controller';
 import { OrderStatusRefAdminController } from './order-status-ref-admin.controller';
 import { TestCheckoutGuard } from './test-checkout-guard.service';
+import { StoreBrandsModule } from '../store-brands/store-brands.module';
 
 @Module({
-  imports: [
+  imports: [StoreBrandsModule, 
     TranslationsModule,
     InventoryModule,
     CustomersModule,

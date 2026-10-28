@@ -13,7 +13,7 @@ function makeService(overlay: Record<string, string>) {
     void entityType;
     return rows.map((r) => ({ ...r, ...(overlay[r.id as string] ? { name: overlay[r.id as string] } : {}) }));
   });
-  const service = new ProductsService(null as never, null as never, null as never, { maybeApply } as never, null as never, null as never);
+  const service = new ProductsService(null as never, null as never, null as never, { maybeApply } as never, null as never, null as never, null as never);
   const translate = (product: Row, lang?: string) =>
     (service as unknown as { translateCategoriesInPlace(p: Row, l?: string): Promise<void> }).translateCategoriesInPlace(product, lang);
   return { translate, maybeApply };

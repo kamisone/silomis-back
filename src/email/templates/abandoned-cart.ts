@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, mutedText, esc, fmtCents } from './layout';
+import { baseLayout, ctaButton, mutedText, esc, fmtCents, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface AbandonedCartEmailData {
@@ -6,6 +6,8 @@ export interface AbandonedCartEmailData {
   items: Array<{ title: string; quantity: number; unitPriceCents: number }>;
   resumeUrl: string;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 export function renderAbandonedCart(data: AbandonedCartEmailData): {
@@ -32,6 +34,6 @@ export function renderAbandonedCart(data: AbandonedCartEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body, data.locale),
+    html: baseLayout(subject, body, data.locale, undefined, data.brand),
   };
 }

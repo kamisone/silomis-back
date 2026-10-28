@@ -13,6 +13,7 @@ import {
   OrderAccessLevel,
   secretsMatch,
 } from './order-access.constants';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 
 /** What a visitor presents to prove the order is theirs. */
 export interface OrderCredentials {
@@ -45,6 +46,7 @@ export class OrderAccessService {
     private readonly redis: RedisService,
     private readonly email: ShopEmailService,
     private readonly sms: CustomerSmsService,
+    private readonly storeBrands: StoreBrandsService,
   ) {}
 
   // ── Credentials → level ────────────────────────────────────────────────
@@ -206,6 +208,7 @@ export class OrderAccessService {
         customerName: order.customerName ?? order.customerEmail,
         trackingUrl,
         locale: order.customerLocale,
+        brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
       });
     } catch (err) {
       // A failure here is invisible to the caller by design, so it has to be

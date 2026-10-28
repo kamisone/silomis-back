@@ -99,7 +99,7 @@ export class PhoneVerificationService {
     await this.redis.client.set(this.codeKey(cartToken), JSON.stringify(pending), 'EX', CODE_TTL_SEC);
 
     try {
-      await this.sms.sendVerificationCode(phone, code, locale);
+      await this.sms.sendVerificationCode(phone, code, locale, cartToken);
     } catch (err) {
       this.logger.error(`Verification code for cart ${cartToken} could not be queued: ${(err as Error).message}`);
       await this.redis.client.del(this.codeKey(cartToken), cooldownKey);

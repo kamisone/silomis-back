@@ -5,6 +5,7 @@ import {
   mutedText,
   esc,
   fmtCents,
+  type EmailBrand,
 } from './layout';
 import { COPY, resolveLang } from './copy';
 import { PickupPointEmailData, pickupPointBlock } from './pickup-point-block';
@@ -37,6 +38,8 @@ export interface OrderConfirmedEmailData {
   /** Present only for a pickup-point method — the customer's only record of which point they chose. */
   pickupPoint?: PickupPointEmailData | null;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 /**
@@ -169,6 +172,6 @@ export function renderOrderConfirmed(data: OrderConfirmedEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body, data.locale),
+    html: baseLayout(subject, body, data.locale, undefined, data.brand),
   };
 }

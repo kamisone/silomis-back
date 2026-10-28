@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailTransportService } from './email-transport.service';
+import type { EmailBrand } from './templates/layout';
 import { renderSendInStatus, SendInStatusEmailData } from './templates/send-in-status';
 import {
   renderOrderConfirmed,
@@ -43,6 +44,11 @@ import {
   OrderMessageEmailData,
 } from './templates/order-message';
 
+/** The From name and Reply-To of an email sent under a store brand. */
+function senderOf(brand: EmailBrand | null | undefined) {
+  return brand ? { name: brand.name, replyTo: brand.supportEmail } : undefined;
+}
+
 @Injectable()
 export class ShopEmailService {
   private readonly logger = new Logger(ShopEmailService.name);
@@ -54,7 +60,7 @@ export class ShopEmailService {
     data: OrderConfirmedEmailData,
   ): Promise<void> {
     const { subject, html } = renderOrderConfirmed(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(
       `Order confirmed email sent to ${to} for ${data.orderNumber}`,
     );
@@ -69,7 +75,7 @@ export class ShopEmailService {
     data: OrderAccessLinkEmailData,
   ): Promise<void> {
     const { subject, html } = renderOrderAccessLink(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(`Order access link sent to ${to} for ${data.orderNumber}`);
   }
 
@@ -79,7 +85,7 @@ export class ShopEmailService {
     data: OrderMessageEmailData,
   ): Promise<void> {
     const { subject, html } = renderOrderMessage(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(`Order reply email sent to ${to} for ${data.orderNumber}`);
   }
 
@@ -88,7 +94,7 @@ export class ShopEmailService {
     data: AbandonedCartEmailData,
   ): Promise<void> {
     const { subject, html } = renderAbandonedCart(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(`Abandoned cart email sent to ${to}`);
   }
 
@@ -109,7 +115,7 @@ export class ShopEmailService {
     data: OrderStatusEmailData,
   ): Promise<void> {
     const { subject, html } = renderOrderStatus(kind, data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(
       `Order ${kind} email sent to ${to} for ${data.orderNumber}`,
     );
@@ -126,7 +132,7 @@ export class ShopEmailService {
     data: PaymentFailedEmailData,
   ): Promise<void> {
     const { subject, html } = renderPaymentFailed(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(
       `Payment failed email sent to ${to} for ${data.orderNumber}`,
     );
@@ -134,7 +140,7 @@ export class ShopEmailService {
 
   async sendBackInStock(to: string, data: BackInStockEmailData): Promise<void> {
     const { subject, html } = renderBackInStock(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(
       `Back-in-stock email sent to ${to} for ${data.productTitle}`,
     );
@@ -155,7 +161,7 @@ export class ShopEmailService {
     data: ReviewRequestEmailData,
   ): Promise<void> {
     const { subject, html } = renderReviewRequest(data);
-    await this.transport.send(to, subject, html);
+    await this.transport.send(to, subject, html, senderOf(data.brand));
     this.logger.log(
       `Review request email sent to ${to} for ${data.orderNumber}`,
     );

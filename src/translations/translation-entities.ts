@@ -30,3 +30,6 @@ export const ET_SHIPPING_ZONE = 'shop_shipping_zone';
 /** A method's `name` and `description` — shown at checkout and in the same
  *  delivery panel. */
 export const ET_SHIPPING_METHOD = 'shop_shipping_method';
+/** A store brand's copy — tagline, footer, about/contact/returns text, SEO —
+ *  plus its FAQ as "faq:<id>:question|answer". */
+export const ET_STORE_BRAND = 'shop_store_brand';

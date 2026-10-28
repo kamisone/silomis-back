@@ -19,7 +19,7 @@ function make(opts: { snapshot?: Record<string, unknown> | null; order?: Record<
   const email = { sendAbandonedCart: jest.fn().mockResolvedValue(undefined) };
   const sms = { sendAbandonedCart: jest.fn().mockResolvedValue(undefined) };
   const bus = { emit: jest.fn() };
-  const processor = new CartAbandonmentProcessor({} as never, prisma as never, email as never, sessions as never, bus as never, sms as never);
+  const processor = new CartAbandonmentProcessor({} as never, prisma as never, email as never, sessions as never, bus as never, sms as never, { emailBrandForProducts: jest.fn().mockResolvedValue(null) } as never);
   return { processor, email, sms };
 }
 

@@ -25,9 +25,10 @@ import { ProductSearchService } from './products/product-search.service';
 import { ProductSearchPublicController, ProductSearchAdminController } from './products/product-search.controller';
 import { SearchIndexListener } from './products/search-index.listener';
 import { ReviewsModule } from '../reviews/reviews.module';
+import { StoreBrandsModule } from '../store-brands/store-brands.module';
 
 @Module({
-  imports: [GcsModule, AssetUrlModule, MediaModule, TranslationsModule, ReviewsModule, AiModule],
+  imports: [GcsModule, AssetUrlModule, MediaModule, TranslationsModule, ReviewsModule, AiModule, StoreBrandsModule],
   controllers: [CategoryAdminController, CategoryPublicController, TagAdminController, VariantAttributeAdminController, VariantAttributePublicController, ProductAdminController, ProductPublicController, VariantStockController, ProductSearchPublicController, ProductSearchAdminController, CategoryFiltersAdminController, CategoryFiltersPublicController],
   providers: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, RecommendationListener, ProductSearchService, SearchIndexListener, CategoryFiltersService],
   exports: [CategoriesService, TagsService, VariantAttributesService, ProductsService, RecommendationService, ProductSearchService, CategoryFiltersService],

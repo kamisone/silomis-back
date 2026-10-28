@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { ShopEmailService } from './shop-email.service';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 import { designElementsOf } from '../personalization/design-elements';
 import {
   COMMERCE_EVENTS,
@@ -48,6 +49,7 @@ export class OrderEmailListener {
   constructor(
     private readonly prisma: PrismaService,
     private readonly email: ShopEmailService,
+    private readonly storeBrands: StoreBrandsService,
   ) {}
 
   @OnEvent(COMMERCE_EVENTS.PAYMENT_SUCCEEDED)
@@ -97,6 +99,7 @@ export class OrderEmailListener {
         trackingUrl,
         pickupPoint: toPickupPointEmailData(order.pickupPointSnapshot),
         locale: order.customerLocale,
+        brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
       });
     } catch (err) {
       this.logger.error(
@@ -132,6 +135,7 @@ export class OrderEmailListener {
         customerName: order.customerName ?? order.customerEmail,
         retryUrl,
         locale: order.customerLocale,
+        brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
       });
     } catch (err) {
       this.logger.error(
@@ -160,6 +164,7 @@ export class OrderEmailListener {
             trackingUrl,
             pickupPoint: toPickupPointEmailData(order.pickupPointSnapshot),
             locale: order.customerLocale,
+            brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
           });
         }
       } catch (err) {
@@ -200,6 +205,7 @@ export class OrderEmailListener {
         productTitle: first.titleSnapshot,
         reviewUrl: `${appUrl}/shop/${product.slug}`,
         locale: order.customerLocale,
+        brand: await this.storeBrands.emailBrandFor(order.storeBrandId, order.customerLocale),
       });
     } catch (err) {
       this.logger.error(

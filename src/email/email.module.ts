@@ -3,8 +3,10 @@ import { EmailTransportService } from './email-transport.service';
 import { ShopEmailService } from './shop-email.service';
 import { OrderEmailListener } from './order-email.listener';
 import { SendInEmailListener } from './send-in-email.listener';
+import { StoreBrandsModule } from '../store-brands/store-brands.module';
 
 @Module({
+  imports: [StoreBrandsModule],
   providers: [EmailTransportService, ShopEmailService, OrderEmailListener, SendInEmailListener],
   exports: [ShopEmailService, EmailTransportService],
 })

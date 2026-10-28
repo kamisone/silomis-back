@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, esc } from './layout';
+import { baseLayout, ctaButton, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface OrderMessageEmailData {
@@ -11,6 +11,8 @@ export interface OrderMessageEmailData {
   /** Opens the order's Messages tab directly. */
   conversationUrl: string;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 /** Long messages are cut rather than sent whole: the email is a nudge to the
@@ -51,5 +53,5 @@ export function renderOrderMessage(data: OrderMessageEmailData): {
     <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">${c.reply}</p>
   `;
 
-  return { subject, html: baseLayout(subject, body, data.locale) };
+  return { subject, html: baseLayout(subject, body, data.locale, undefined, data.brand) };
 }

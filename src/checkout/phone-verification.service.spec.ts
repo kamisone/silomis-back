@@ -56,7 +56,7 @@ describe('PhoneVerificationService', () => {
   it('texts a 6-digit code to the E.164 number and masks it in the answer', async () => {
     const { service, sms, sentCode } = makeService();
     const res = await service.sendCode(CART, '06 12 34 56 78', 'FR', 'fr');
-    expect(sms.sendVerificationCode).toHaveBeenCalledWith('+33612345678', expect.stringMatching(/^\d{6}$/), 'fr');
+    expect(sms.sendVerificationCode).toHaveBeenCalledWith('+33612345678', expect.stringMatching(/^\d{6}$/), 'fr', expect.any(String));
     expect(sentCode()).toHaveLength(6);
     expect(res.maskedPhone).toBe('+33 •••• 78');
   });

@@ -64,6 +64,7 @@ import { MetaCapiModule } from './marketing/meta-capi/meta-capi.module';
 import { TikTokEventsModule } from './marketing/tiktok-events/tiktok-events.module';
 import { BlogModule } from './blog/blog.module';
 import { PageContentModule } from './page-content/page-content.module';
+import { StoreBrandsModule } from './store-brands/store-brands.module';
 
 @Module({
   imports: [
@@ -179,6 +180,7 @@ import { PageContentModule } from './page-content/page-content.module';
     TikTokEventsModule,
     BlogModule,
     PageContentModule,
+    StoreBrandsModule,
     LoggerModule.forRoot({
       pinoHttp: {
         level:

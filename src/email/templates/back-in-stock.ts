@@ -1,10 +1,12 @@
-import { baseLayout, ctaButton, esc } from './layout';
+import { baseLayout, ctaButton, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface BackInStockEmailData {
   productTitle: string;
   productUrl: string;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 export function renderBackInStock(data: BackInStockEmailData): {
@@ -22,6 +24,6 @@ export function renderBackInStock(data: BackInStockEmailData): {
 
   return {
     subject,
-    html: baseLayout(subject, body, data.locale),
+    html: baseLayout(subject, body, data.locale, undefined, data.brand),
   };
 }

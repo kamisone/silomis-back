@@ -79,7 +79,12 @@ export class EmailTransportService implements OnModuleInit {
     return this.transport;
   }
 
-  async send(to: string | null | undefined, subject: string, html: string): Promise<void> {
+  /**
+   * `sender` is set for an email sent under a store brand: its name replaces
+   * the display name of SMTP_FROM (the address stays — it is the verified
+   * one), and replies go to the brand's support address when it has one.
+   */
+  async send(to: string | null | undefined, subject: string, html: string, sender?: { name: string; replyTo?: string | null }): Promise<void> {
     // A phone-only order has no address. Callers return early for it; this is
     // the net under the ones that do not, so nodemailer is never handed an
     // empty recipient.
@@ -93,17 +98,17 @@ export class EmailTransportService implements OnModuleInit {
     }
 
     const transport = await this.getTransport();
+    const from = process.env.SMTP_FROM ?? 'noreply@example.com';
+    const replyTo = sender?.replyTo || process.env.SMTP_REPLY_TO;
     await transport.sendMail({
-      from: process.env.SMTP_FROM ?? 'noreply@example.com',
+      from: sender ? { name: sender.name, address: from.match(/<([^>]+)>/)?.[1] ?? from.trim() } : from,
       to,
       subject,
       html,
       text: htmlToText(html),
       // Optional: without it a reply to an order email reaches nobody. With it,
       // the customer's reply lands wherever the shop actually reads mail.
-      ...(process.env.SMTP_REPLY_TO
-        ? { replyTo: process.env.SMTP_REPLY_TO }
-        : {}),
+      ...(replyTo ? { replyTo } : {}),
     });
     this.logger.log(`Email "${subject}" sent to ${to}`);
   }

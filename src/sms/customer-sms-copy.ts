@@ -112,9 +112,9 @@ const COPY: Record<Lang, Record<CustomerSmsKind, Line>> = {
   },
 };
 
-/** `[Brand] sentence` and, on its own line, the link — a bare URL is what phones make tappable. */
-export function renderCustomerSms(kind: CustomerSmsKind, orderNumber: string, url: string | null, locale?: string | null): string {
-  const brand = process.env.SELLER_NAME ?? 'Silomis';
+/** `[Brand] sentence` (the order's store brand when it has one) and, on its own line, the link — a bare URL is what phones make tappable. */
+export function renderCustomerSms(kind: CustomerSmsKind, orderNumber: string, url: string | null, locale?: string | null, storeBrand?: string | null): string {
+  const brand = storeBrand ?? process.env.SELLER_NAME ?? 'Silomis';
   const sentence = COPY[resolveLang(locale)][kind](orderNumber);
   if (url) return `${brand}: ${sentence}\n${url}`;
   // Every line ends by announcing the link ("… Details:"). Without a link that
@@ -138,8 +138,8 @@ const CODE_COPY: Record<Lang, (code: string) => string> = {
 };
 
 /** The code leads, so a phone's notification preview and its autofill both see it first. */
-export function renderVerificationSms(code: string, locale?: string | null): string {
-  const brand = process.env.SELLER_NAME ?? 'Silomis';
+export function renderVerificationSms(code: string, locale?: string | null, storeBrand?: string | null): string {
+  const brand = storeBrand ?? process.env.SELLER_NAME ?? 'Silomis';
   return `${brand}: ${CODE_COPY[resolveLang(locale)](code)}`;
 }
 
@@ -159,8 +159,8 @@ const CART_COPY: Record<Lang, { body: string; stop: string }> = {
   pt: { body: 'O seu carrinho está à espera! Conclua a encomenda aqui:', stop: 'Responda STOP para deixar de receber' },
 };
 
-export function renderAbandonedCartSms(url: string, locale?: string | null): string {
-  const brand = process.env.SELLER_NAME ?? 'Silomis';
+export function renderAbandonedCartSms(url: string, locale?: string | null, storeBrand?: string | null): string {
+  const brand = storeBrand ?? process.env.SELLER_NAME ?? 'Silomis';
   const c = CART_COPY[resolveLang(locale)];
   return `${brand}: ${c.body}\n${url}\n${c.stop}`;
 }

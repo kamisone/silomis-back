@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, mutedText, esc } from './layout';
+import { baseLayout, ctaButton, mutedText, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface PaymentFailedEmailData {
@@ -6,6 +6,8 @@ export interface PaymentFailedEmailData {
   customerName: string;
   retryUrl: string | null;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 export function renderPaymentFailed(data: PaymentFailedEmailData): {
@@ -23,5 +25,5 @@ export function renderPaymentFailed(data: PaymentFailedEmailData): {
     ${mutedText(c.note)}
   `;
 
-  return { subject, html: baseLayout(subject, body, data.locale) };
+  return { subject, html: baseLayout(subject, body, data.locale, undefined, data.brand) };
 }

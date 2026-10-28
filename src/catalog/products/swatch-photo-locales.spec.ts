@@ -60,7 +60,7 @@ describe('ProductsService — swatch photos per language', () => {
       },
     };
     const assetUrls = { resolve: jest.fn(async (k: string) => `https://cdn.test/${k}`) };
-    const service = new ProductsService(prisma as never, assetUrls as never, null as never, null as never, null as never, null as never);
+    const service = new ProductsService(prisma as never, assetUrls as never, null as never, null as never, null as never, null as never, null as never);
     return { service, prisma };
   }
 
@@ -110,7 +110,7 @@ describe('ProductsService — gallery saves keep swatch photos visible', () => {
         ),
       },
     };
-    const service = new ProductsService(prisma as never, null as never, null as never, null as never, null as never, null as never);
+    const service = new ProductsService(prisma as never, null as never, null as never, null as never, null as never, null as never, null as never);
     return (service as unknown as { assertVariantPhotosShared: Guard }).assertVariantPhotosShared.bind(service);
   }
 

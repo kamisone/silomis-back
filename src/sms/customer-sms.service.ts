@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmsService } from './sms.service';
+import { storeBrandName, storeBrandNameForCart } from '../store-brands/store-brand-of.util';
 import { CustomerSmsKind, renderAbandonedCartSms, renderCustomerSms, renderVerificationSms } from './customer-sms-copy';
 
 /**
@@ -17,6 +18,8 @@ export interface CustomerSmsOrder {
   orderNumber: string;
   customerPhone: string | null;
   customerLocale: string | null;
+  /** Signs the text with the store brand's name instead of Silomis. */
+  storeBrandId?: string | null;
 }
 
 /**
@@ -68,7 +71,7 @@ export class CustomerSmsService {
         await this.log(kind, order, 'skipped', 'Customer SMS switched off');
         return;
       }
-      await this.sms.addMessage(order.customerPhone, renderCustomerSms(kind, order.orderNumber, url, order.customerLocale));
+      await this.sms.addMessage(order.customerPhone, renderCustomerSms(kind, order.orderNumber, url, order.customerLocale, await storeBrandName(this.prisma, order.storeBrandId)));
       await this.log(kind, order, 'sent');
     } catch (err) {
       this.logger.error(`Customer SMS ${kind} failed for ${order.orderNumber}: ${(err as Error).message}`);
@@ -90,7 +93,7 @@ export class CustomerSmsService {
       if (!phone.startsWith('+')) return log('skipped', 'Phone not in international format');
       if (!(await this.isEnabled())) return log('skipped', 'Customer SMS switched off');
       if (await this.isOptedOut(phone)) return log('skipped', 'Number replied STOP');
-      await this.sms.addMessage(phone, renderAbandonedCartSms(resumeUrl, locale));
+      await this.sms.addMessage(phone, renderAbandonedCartSms(resumeUrl, locale, await storeBrandNameForCart(this.prisma, cartToken)));
       await log('sent');
     } catch (err) {
       this.logger.error(`Abandoned-cart SMS failed for cart ${cartToken}: ${(err as Error).message}`);
@@ -116,9 +119,10 @@ export class CustomerSmsService {
    * by the customer-SMS switch: the customer asked for this one. The code
    * itself never reaches the log.
    */
-  async sendVerificationCode(phone: string, code: string, locale: string | null): Promise<void> {
+  async sendVerificationCode(phone: string, code: string, locale: string | null, cartToken?: string): Promise<void> {
     try {
-      await this.sms.addMessage(phone, renderVerificationSms(code, locale));
+      const brand = cartToken ? await storeBrandNameForCart(this.prisma, cartToken) : null;
+      await this.sms.addMessage(phone, renderVerificationSms(code, locale, brand));
       await this.writeLog({ event: 'customer_phone_code', recipient: phone, status: 'sent' });
     } catch (err) {
       await this.writeLog({ event: 'customer_phone_code', recipient: phone, status: 'failed', error: (err as Error).message });

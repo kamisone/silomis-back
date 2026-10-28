@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AssetUrlService } from '../../asset-url/asset-url.service';
 import { MediaService } from '../../media/media.service';
 import { TranslationsService } from '../../translations/translations.service';
+import { StoreBrandsService } from '../../store-brands/store-brands.service';
 import { CommerceEventBus } from '../../commerce-events/commerce-event-bus.service';
 import { COMMERCE_EVENTS } from '../../commerce-events/commerce-events.constants';
 import { ProductSearchService } from './product-search.service';
@@ -60,6 +61,7 @@ export class ProductsService {
     private readonly translations: TranslationsService,
     private readonly eventBus: CommerceEventBus,
     private readonly searchService: ProductSearchService,
+    private readonly storeBrands: StoreBrandsService,
   ) {}
 
   private syncProductMediaUsage(product: Product): void {
@@ -771,6 +773,8 @@ export class ProductsService {
     await this.translateVariantOptionsInPlace(translated as never, lang);
     await this.translateCategoriesInPlace(translated as never, lang);
     delete (translated as unknown as Record<string, unknown>).privateLinks;
+    // The brand it is sold under (logo, footer, pages) — null for Silomis or a switched-off brand.
+    (translated as unknown as Record<string, unknown>).storeBrand = await this.storeBrands.chromeFor(product.storeBrandId, lang);
     // "from €X" / "Free on …" on the Personalise button — see personalizationOffers.
     if (product.personalizationTemplateId) {
       const offer = (await personalizationOffers(this.prisma, [product.id], lang)).get(product.id);
@@ -1075,6 +1079,7 @@ export class ProductsService {
           fastDelivery: dto.fastDelivery ?? false,
           trackedDelivery: dto.trackedDelivery ?? false,
           neutralLayout: dto.neutralLayout ?? false,
+          storeBrandId: dto.storeBrandId ?? null,
           askCompanyName: dto.askCompanyName ?? false,
           askPhone: dto.askPhone ?? false,
           askAddressLine2: dto.askAddressLine2 ?? false,
@@ -1212,6 +1217,7 @@ export class ProductsService {
         fastDelivery: dto.fastDelivery,
         trackedDelivery: dto.trackedDelivery,
         neutralLayout: dto.neutralLayout,
+        storeBrandId: dto.storeBrandId,
         askCompanyName: dto.askCompanyName,
         askPhone: dto.askPhone,
         askAddressLine2: dto.askAddressLine2,

@@ -17,7 +17,7 @@ function serviceWith(rows: Record<string, Record<string, string>>): ProductsServ
 
   // translations is the 4th constructor arg and the only collaborator this
   // code path reaches.
-  return new ProductsService({} as never, {} as never, {} as never, translations, {} as never, {} as never);
+  return new ProductsService({} as never, {} as never, {} as never, translations, {} as never, {} as never, null as never);
 }
 
 function productFixture() {

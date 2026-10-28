@@ -3,6 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { ShopEmailService } from '../email/shop-email.service';
 import { COMMERCE_EVENTS, InventoryRestockedEvent } from '../commerce-events/commerce-events.constants';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 
 /**
  * WishlistItem.userId has no backing "platform user" table in silomis (there
@@ -18,12 +19,13 @@ export class BackInStockListener {
   constructor(
     private readonly prisma: PrismaService,
     private readonly email: ShopEmailService,
+    private readonly storeBrands: StoreBrandsService,
   ) {}
 
   @OnEvent(COMMERCE_EVENTS.INVENTORY_RESTOCKED)
   async onInventoryRestocked(event: InventoryRestockedEvent): Promise<void> {
     try {
-      const product = await this.prisma.product.findUnique({ where: { id: event.productId }, select: { title: true, slug: true, status: true } });
+      const product = await this.prisma.product.findUnique({ where: { id: event.productId }, select: { title: true, slug: true, status: true, storeBrandId: true } });
       if (!product || product.status !== 'active') return;
 
       const wishlistItems = await this.prisma.wishlistItem.findMany({ where: { productId: event.productId, userId: { not: null } }, select: { userId: true } });
@@ -35,10 +37,11 @@ export class BackInStockListener {
 
       const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
       const productUrl = `${appUrl}/shop/${product.slug}`;
+      const brand = await this.storeBrands.emailBrandFor(product.storeBrandId);
 
       for (const customer of customers) {
         try {
-          await this.email.sendBackInStock(customer.email, { productTitle: product.title, productUrl });
+          await this.email.sendBackInStock(customer.email, { productTitle: product.title, productUrl, brand });
         } catch (err) {
           this.logger.warn(`Back-in-stock email failed for ${customer.email}: ${(err as Error).message}`);
         }

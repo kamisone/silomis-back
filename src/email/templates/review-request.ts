@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, mutedText, esc } from './layout';
+import { baseLayout, ctaButton, mutedText, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface ReviewRequestEmailData {
@@ -7,6 +7,8 @@ export interface ReviewRequestEmailData {
   productTitle: string;
   reviewUrl: string;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 export function renderReviewRequest(data: ReviewRequestEmailData): {
@@ -24,5 +26,5 @@ export function renderReviewRequest(data: ReviewRequestEmailData): {
     ${mutedText(`${c.fallback} ${esc(data.reviewUrl)}`)}
   `;
 
-  return { subject, html: baseLayout(subject, body, data.locale) };
+  return { subject, html: baseLayout(subject, body, data.locale, undefined, data.brand) };
 }

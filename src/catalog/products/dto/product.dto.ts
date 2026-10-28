@@ -138,6 +138,8 @@ export const CreateProductSchema = z.object({
   fastDelivery: z.boolean().optional(),
   trackedDelivery: z.boolean().optional(),
   neutralLayout: z.boolean().optional(),
+  /** Sold under this brand instead of Silomis; null puts it back. */
+  storeBrandId: z.string().uuid().nullish(),
   /** Checkout asks for these only when a product in the basket switches them on. */
   askCompanyName: z.boolean().optional(),
   askPhone: z.boolean().optional(),

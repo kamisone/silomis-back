@@ -16,9 +16,10 @@ import { CartController } from './cart.controller';
 import { CartAdminController } from './cart-admin.controller';
 import { CartAbandonmentProcessor } from './cart-abandonment.processor';
 import { CartCheckoutCompletionListener } from './cart-checkout-completion.listener';
+import { StoreBrandsModule } from '../store-brands/store-brands.module';
 
 @Module({
-  imports: [
+  imports: [StoreBrandsModule, 
     AssetUrlModule,
     TranslationsModule,
     EmailModule,

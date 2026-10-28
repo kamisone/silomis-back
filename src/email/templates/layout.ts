@@ -60,14 +60,29 @@ const BRAND_ACCENT = '#d9548c'; // --color-accent, blush pink
  * read. Only the `[if mso]` block below survives, because that one is
  * functional: it is how Outlook is told its own pixel density.
  */
+/**
+ * The brand an email is sent under when the order was sold under one of the
+ * shop's store brands (StoreBrand) rather than Silomis: its name and tagline
+ * in the header and footer, its square icon as the mark. Absent = Silomis.
+ */
+export interface EmailBrand {
+  name: string;
+  tagline: string | null;
+  /** The brand's square icon, absolute. */
+  logoUrl: string | null;
+  /** Reply-To for the message; the shop's own when null. */
+  supportEmail: string | null;
+}
+
 export function baseLayout(
   title: string,
   body: string,
   locale?: string | null,
   preheader?: string,
+  brand?: EmailBrand | null,
 ): string {
   const year = new Date().getFullYear();
-  const seller = esc(process.env.SELLER_NAME ?? 'Silomis');
+  const seller = esc(brand?.name ?? process.env.SELLER_NAME ?? 'Silomis');
   const appUrl = (process.env.APP_URL ?? '').replace(/\/$/, '');
   const lang = resolveLang(locale);
   const footer = COPY[lang].footer(year, seller);
@@ -75,10 +90,12 @@ export function baseLayout(
   // to the mark served by the storefront, so the lockup appears without anyone
   // having to set anything — and can still be pointed elsewhere if the asset
   // moves to a CDN.
-  const logoUrl =
-    process.env.EMAIL_LOGO_URL?.trim() ||
-    (appUrl ? `${appUrl}/assets/logo-email.png` : '');
-  const tagline = COPY[lang].tagline;
+  // A brand without an icon shows its name alone — never the Silomis mark.
+  const logoUrl = brand
+    ? (brand.logoUrl ?? '')
+    : process.env.EMAIL_LOGO_URL?.trim() ||
+      (appUrl ? `${appUrl}/assets/logo-email.png` : '');
+  const tagline = brand ? (brand.tagline ?? '') : COPY[lang].tagline;
 
   return `<!DOCTYPE html>
 <html lang="${lang}" dir="ltr">
@@ -117,9 +134,13 @@ export function baseLayout(
                       }
                       <td style="vertical-align:middle;">
                         <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:-0.02em;line-height:1.1;">${seller}</div>
-                        <div style="border-top:2px dashed rgba(255,255,255,0.55);margin-top:5px;padding-top:4px;">
+                        ${
+                          tagline
+                            ? `<div style="border-top:2px dashed rgba(255,255,255,0.55);margin-top:5px;padding-top:4px;">
                           <span style="color:rgba(255,255,255,0.86);font-size:9px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">${esc(tagline)}</span>
-                        </div>
+                        </div>`
+                            : ''
+                        }
                       </td>
                     </tr>
                   </table>

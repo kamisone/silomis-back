@@ -26,6 +26,7 @@ import {
   LineItemInput,
   PricingResult,
 } from '../promotions/pricing-engine.service';
+import { storeBrandIdForProducts } from '../store-brands/store-brand-of.util';
 import { containsTestProduct } from '../common/utils/test-product.util';
 import { toE164 } from '../common/utils/phone';
 import { PHONE_VERIFICATION_ERRORS, PhoneVerificationService } from './phone-verification.service';
@@ -232,6 +233,7 @@ export class CheckoutService {
           // Re-evaluate: a product may have been flagged as a test after this
           // order was created, and this branch is how a mid-checkout refresh resumes.
           isTestOrder: await containsTestProduct(this.prisma, productIds),
+          storeBrandId: await storeBrandIdForProducts(this.prisma, productIds),
         },
       });
       return this.toSnapshot(updated);
@@ -241,6 +243,7 @@ export class CheckoutService {
 
     const productIds = [...new Set(items.map((i) => i.productId))];
     const isTestOrder = await containsTestProduct(this.prisma, productIds);
+    const storeBrandId = await storeBrandIdForProducts(this.prisma, productIds);
     const subtotalCents = items.reduce(
       (sum, i) => sum + i.unitPriceCents * i.quantity,
       0,
@@ -269,6 +272,7 @@ export class CheckoutService {
           orderNumber,
           status: 'draft',
           isTestOrder,
+          storeBrandId,
           cartToken: dto.cartToken,
           customerEmail: contact.email,
           customerName:

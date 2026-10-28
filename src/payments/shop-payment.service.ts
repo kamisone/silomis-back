@@ -54,6 +54,16 @@ const REPLACEABLE_INTENT_STATUSES = new Set<string>(['requires_payment_method', 
 
 const AMOUNT_MUTABLE_INTENT_STATUSES = new Set<string>(['requires_payment_method', 'requires_confirmation', 'requires_action']);
 
+/**
+ * A store brand's name as Stripe accepts it after the account's statement
+ * prefix: Latin letters, digits and spaces, upper case, short enough that
+ * prefix + "* " + suffix stays within the 22 characters a statement shows.
+ */
+export function statementSuffix(name: string): string | null {
+  const clean = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, 12).trim();
+  return /[A-Z]/.test(clean) ? clean : null;
+}
+
 @Injectable()
 export class ShopPaymentService {
   private readonly logger = new Logger(ShopPaymentService.name);
@@ -215,11 +225,16 @@ export class ShopPaymentService {
       }
     }
 
+    const brand = order.storeBrandId ? await this.prisma.storeBrand.findUnique({ where: { id: order.storeBrandId }, select: { name: true } }) : null;
+    const suffix = brand ? statementSuffix(brand.name) : null;
     const intent = await this.stripe.paymentIntents.create(
       {
         amount: order.totalCents,
         currency: 'eur',
         ...PAYMENT_METHODS,
+        // An order sold under a store brand: "SILOMIS* BREWMINI" on the bank
+        // statement, so the customer recognises the charge instead of disputing it.
+        ...(suffix ? { statement_descriptor_suffix: suffix } : {}),
         metadata: {
           orderId: order.id,
           orderNumber: order.orderNumber,

@@ -27,7 +27,7 @@ function makeService(opts: {
     null as never,
     translations as never,
     null as never,
-    null as never,
+    null as never, null as never,
   );
   const resolve = (service as unknown as { resolveCardVariantOptionsInPlace: Resolver }).resolveCardVariantOptionsInPlace.bind(service);
   return { resolve, prisma, assetUrls };
@@ -148,8 +148,8 @@ describe('publicList card variant resolution', () => {
       null as never,
       translations as never,
       null as never,
-      null as never,
-    );
+      null as never, null as never,
+  );
     const products = [
       { id: 'p1', variants: [colourVariant()] },
       { id: 'p2', variants: [colourVariant()] },

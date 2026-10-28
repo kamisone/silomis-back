@@ -17,6 +17,7 @@ import {
   CART_ABANDONMENT_QUEUE,
   CartAbandonmentJobData,
 } from './cart-abandonment.constants';
+import { StoreBrandsService } from '../store-brands/store-brands.service';
 
 @Processor(CART_ABANDONMENT_QUEUE)
 export class CartAbandonmentProcessor extends DlqAwareWorker {
@@ -30,6 +31,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
     private readonly sessionService: CheckoutSessionService,
     private readonly eventBus: CommerceEventBus,
     private readonly customerSms: CustomerSmsService,
+    private readonly storeBrands: StoreBrandsService,
   ) {
     super(dlqService);
   }
@@ -147,6 +149,7 @@ export class CartAbandonmentProcessor extends DlqAwareWorker {
         unitPriceCents: i.unitPriceCents,
       })),
       locale,
+      brand: await this.storeBrands.emailBrandForProducts(cart.items.map((i) => i.productId), locale ?? undefined),
     });
 
     this.logger.log(`Abandoned cart email sent for cart ${cartToken}`);

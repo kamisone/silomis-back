@@ -19,7 +19,7 @@ function makeService() {
   };
   const noop = {} as never;
   const assetUrls = { resolveBatch: jest.fn(async () => new Map<string, string>()) };
-  const service = new ProductsService(prisma as never, assetUrls as never, noop, noop, noop, noop);
+  const service = new ProductsService(prisma as never, assetUrls as never, noop, noop, noop, noop, null as never);
   return { service, findMany };
 }
 

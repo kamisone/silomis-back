@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, mutedText, esc } from './layout';
+import { baseLayout, ctaButton, mutedText, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 import { PickupPointEmailData, pickupPointBlock } from './pickup-point-block';
 
@@ -12,6 +12,8 @@ export interface OrderStatusEmailData {
   /** Present only for a pickup-point method; repeated here so "shipped" says where to go. */
   pickupPoint?: PickupPointEmailData | null;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 export function renderOrderStatus(
@@ -31,5 +33,5 @@ export function renderOrderStatus(
     ${mutedText(c.helpText)}
   `;
 
-  return { subject, html: baseLayout(copy.heading, body, data.locale) };
+  return { subject, html: baseLayout(copy.heading, body, data.locale, undefined, data.brand) };
 }

@@ -1,4 +1,4 @@
-import { baseLayout, ctaButton, esc } from './layout';
+import { baseLayout, ctaButton, esc, type EmailBrand } from './layout';
 import { COPY, resolveLang } from './copy';
 
 export interface OrderAccessLinkEmailData {
@@ -6,6 +6,8 @@ export interface OrderAccessLinkEmailData {
   customerName: string;
   trackingUrl: string;
   locale?: string | null;
+  /** Sent under a store brand instead of Silomis when set. */
+  brand?: EmailBrand | null;
 }
 
 /**
@@ -31,5 +33,5 @@ export function renderOrderAccessLink(data: OrderAccessLinkEmailData): {
     <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">${c.ignore}</p>
   `;
 
-  return { subject, html: baseLayout(subject, body, data.locale) };
+  return { subject, html: baseLayout(subject, body, data.locale, undefined, data.brand) };
 }
